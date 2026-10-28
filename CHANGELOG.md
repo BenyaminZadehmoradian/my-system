@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 2026-10-28
+
+- Capacity: runs first seen mid-way (e.g. already running at install) are marked *partial* and never lower the
+  estimate; CPU need per job uses the job's busiest minute (not its share on a crowded machine), at least one thread.
+  Fixes impossible advice such as 17 parallel Vivado runs on 16 threads.
+
 ## 1.2.1 — 2026-10-28
 
 - Capacity guide: consistent thread advice (idle default = threads − 2), disk sizes in the same units as the rest of the app, wording fix.

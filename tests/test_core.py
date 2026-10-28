@@ -122,13 +122,21 @@ def test_policy():
 
 def test_capacity():
     tmp, ms = make_ms()
-    runs = [{"t": 0, "peak_gb": g, "cores": 1.4, "core_max": 2.0, "minutes": 50} for g in (4.1, 5.0, 6.2, 6.5, 5.5)]
-    (ms / "state/job_profiles.json").write_text(json.dumps({"vivado": runs}))
+    runs = [{"t": 0, "peak_gb": g, "cores": 0.9, "core_max": 1.4, "minutes": 50, "partial": False}
+            for g in (4.1, 5.0, 6.2, 6.5, 5.5)]
+    # runs adopted mid-way (old format has no flag) must not shrink the estimate
+    adopted = [{"t": 0, "peak_gb": 2.5, "cores": 0.3, "core_max": 0.9, "minutes": 30}]
+    (ms / "state/job_profiles.json").write_text(json.dumps({"vivado": runs + adopted, "xsim": adopted}))
     code = f"""
 import sys; sys.path.insert(0, {str(ms / 'lib')!r}); sys.path.insert(0, {str(ms / 'plugins')!r})
 from mysys import capacity, probes
+G = 2**30
 p = capacity.profiles()["vivado"]
-assert p["measured"] and p["runs"] == 5 and p["peak_gb"] == 6.5 and p["cores"] == 1.4, p
+assert p["measured"] and p["complete"] and p["runs"] == 5 and p["peak_gb"] == 6.5 and p["cores"] == 1.4, p
+x = capacity.profiles()["xsim"]
+assert not x["complete"] and x["peak_gb"] == 2.5 and x["cores"] == 1.0, x
+# never more jobs than threads, even for tiny jobs
+assert capacity.fit(16, 80 * G, 0.1, 0.0)[0] == 16
 G = 2**30
 # 16 threads, 92 GB: idle limit = min(16/1.4, (92-9.2)/6.5) = 11 (CPU)
 assert capacity.fit(16, 92 * G - capacity.reserve_bytes(92 * G), 6.5, 1.4) == (11, "CPU")

@@ -121,7 +121,8 @@ def track_jobs(s, now, conf):
     if s.get("v") != VERSION:              # older state format: adopt running jobs silently
         s.clear()
         s["v"] = VERSION
-        s["runs"] = {k: {x: j[x] for x in ("tool", "cwd", "start", "plugin", "cpu_ticks")} for k, j in seen.items()}
+        s["runs"] = {k: dict({x: j[x] for x in ("tool", "cwd", "start", "plugin", "cpu_ticks")}, partial=True)
+                     for k, j in seen.items()}
         s["pending"] = {}
     known = s.setdefault("runs", {})
     pending = s.setdefault("pending", {})
@@ -195,7 +196,9 @@ def track_jobs(s, now, conf):
                        "cpu_ticks": j["cpu_ticks"], "cores": c, "rss": j["rss"],
                        "peak_rss": max(j["rss"], prev.get("peak_rss", 0)),
                        "core_sum": prev.get("core_sum", 0.0) + (c or 0.0), "core_n": prev.get("core_n", 0) + (1 if c else 0),
-                       "core_max": max(c or 0.0, prev.get("core_max", 0.0))}
+                       "core_max": max(c or 0.0, prev.get("core_max", 0.0)),
+                       # seen first long after it started: peak memory of the early phases is unknown
+                       "partial": prev.get("partial", k not in known and now - j["start"] > 150)}
     s["runs"] = new_runs
     return cur
 
@@ -214,7 +217,8 @@ def record_profile(r, dur):
     lst = prof.setdefault(r["tool"], [])
     lst.append({"t": int(time.time()), "peak_gb": round(r["peak_rss"] / 2**30, 2),
                 "cores": round(r["core_sum"] / r["core_n"], 2) if r.get("core_n") else None,
-                "core_max": round(r.get("core_max", 0), 2), "minutes": round(dur / 60, 1)})
+                "core_max": round(r.get("core_max", 0), 2), "minutes": round(dur / 60, 1),
+                "partial": bool(r.get("partial", True))})
     prof[r["tool"]] = lst[-60:]
     try:
         PROFILES.write_text(json.dumps(prof, indent=1))

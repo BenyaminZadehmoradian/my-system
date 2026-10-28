@@ -103,16 +103,26 @@ def profiles():
     except (OSError, ValueError):
         raw = {}
     out = {}
-    for tool, runs in raw.items():
+    for tool, all_runs in raw.items():
+        # runs first seen mid-way (e.g. already running at install) miss their early peak: use them only
+        # when nothing complete exists, and never below the default estimate
+        full = [r for r in all_runs if r.get("partial") is False]
+        runs = full or all_runs
         peaks = sorted(r["peak_gb"] for r in runs if r.get("peak_gb"))
-        cores = [r["cores"] for r in runs if r.get("cores")]
+        # cores a job uses when it gets them: its busiest minute, not its average on a crowded machine
+        cores = [max(r.get("core_max") or 0, r.get("cores") or 0) for r in runs if r.get("core_max") or r.get("cores")]
         mins = [r["minutes"] for r in runs if r.get("minutes")]
         if not peaks:
             continue
         p90 = peaks[min(len(peaks) - 1, int(math.ceil(0.9 * len(peaks))) - 1)]
-        out[tool] = {"runs": len(runs), "peak_gb": round(p90, 1), "max_gb": round(peaks[-1], 1),
-                     "cores": round(statistics.median(cores), 1) if cores else None,
-                     "core_max": round(max((r.get("core_max") or 0) for r in runs), 1),
+        d = DEFAULT_PROFILES.get(tool, {})
+        if not full:
+            p90 = max(p90, d.get("peak_gb", 0))
+        c = statistics.median(cores) if cores else d.get("cores")
+        if not full and d.get("cores"):
+            c = max(c or 0, d["cores"])
+        out[tool] = {"runs": len(runs), "complete": bool(full), "peak_gb": round(p90, 1), "max_gb": round(peaks[-1], 1),
+                     "cores": round(max(1.0, c), 1) if c else None,
                      "minutes": round(statistics.median(mins)) if mins else None, "measured": True}
     for tool, d in DEFAULT_PROFILES.items():
         out.setdefault(tool, dict(d, runs=0, measured=False))
@@ -130,7 +140,7 @@ def live_samples(jobs):
 
 
 def fit(free_threads, free_mem, peak_gb, cores):
-    by_cpu = free_threads / max(0.5, cores or 1.0)
+    by_cpu = free_threads / max(1.0, cores or 1.0)          # a running job always holds at least one thread
     by_mem = free_mem / (max(0.5, peak_gb) * GiB)
     return max(0, int(min(by_cpu, by_mem))), ("memory" if by_mem < by_cpu else "CPU")
 
@@ -159,9 +169,11 @@ def now(tool=None):
     rec = {}
     for t in tools:
         p = prof.get(t, {"peak_gb": 2.0, "cores": 1.0, "measured": False, "runs": 0})
-        peak, cores, src = p["peak_gb"], p.get("cores") or 1.0, f"{p['runs']} measured runs" if p.get("measured") else "default estimate"
+        peak, cores = p["peak_gb"], p.get("cores") or 1.0
+        src = (f"{p['runs']} measured runs" + ("" if p.get("complete") else " (partial, floored at estimate)")
+               if p.get("measured") else "default estimate")
         if not p.get("measured") and t in live:
-            peak, cores = max(peak, live[t]["rss_gb"] * 1.3), live[t]["cores"] or cores
+            peak, cores = max(peak, live[t]["rss_gb"] * 1.3), max(1.0, live[t]["cores"] or cores)
             src = f"from {live[t]['n']} running job(s)"
         n, limit = fit(free_threads, free_mem, peak, cores)
         idle_n, idle_limit = fit(th, total - res, peak, cores)
@@ -243,7 +255,7 @@ def guide_md():
         if not p["measured"] and t not in ("vivado", "vitis_hls", "xsim"):
             continue
         n, lim = fit(th, total - res, p["peak_gb"], p.get("cores") or 1.0)
-        L.append(f"| {t} | {p['runs'] or 'none yet (estimate)'} | {p['peak_gb']} GB | {p.get('cores') or '?'} | "
+        L.append(f"| {t} | {(str(p['runs']) + ('' if p.get('complete') else ' partial')) if p['measured'] else 'none yet (estimate)'} | {p['peak_gb']} GB | {p.get('cores') or '?'} | "
                  f"{str(p['minutes']) + ' min' if p.get('minutes') else '–'} | {n} (by {lim}) |")
     gen = max(1, min(th - 2, int((total - res) / (1.5 * GiB))))
     L += ["",
