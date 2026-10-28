@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1 — 2026-10-28
+
+- Capacity guide: consistent thread advice (idle default = threads − 2), disk sizes in the same units as the rest of the app, wording fix.
+
 ## 1.2.0 — 2026-10-28
 
 - **Capacity guide for AI assistants**: the system map now has a section *This machine and how to run heavy work on it* —

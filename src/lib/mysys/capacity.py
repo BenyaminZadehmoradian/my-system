@@ -230,7 +230,7 @@ def guide_md():
     for d in s["disks"]:
         kind = {True: "HDD", False: "SSD", None: "disk"}[d["rotational"]]
         role = "system + home; small — keep big outputs off it" if d["mount"] == "/" else "large outputs, run folders, scratch"
-        L.append(f"- `{d['mount']}`: {kind}, {d['fs']}, {d['free'] / 1e9:.0f} GB free of {d['total'] / 1e9:.0f} GB — {role}")
+        L.append(f"- `{d['mount']}`: {kind}, {d['fs']}, {d['free'] / GiB:.0f} GB free of {d['total'] / GiB:.0f} GB — {role}")
     for sh in s["shares"]:
         L.append(f"- `{sh}`: network share (slow, shared) — never use for build or run output")
 
@@ -245,7 +245,7 @@ def guide_md():
         n, lim = fit(th, total - res, p["peak_gb"], p.get("cores") or 1.0)
         L.append(f"| {t} | {p['runs'] or 'none yet (estimate)'} | {p['peak_gb']} GB | {p.get('cores') or '?'} | "
                  f"{str(p['minutes']) + ' min' if p.get('minutes') else '–'} | {n} (by {lim}) |")
-    gen = max(1, min(th, int((total - res) / (1.5 * GiB))))
+    gen = max(1, min(th - 2, int((total - res) / (1.5 * GiB))))
     L += ["",
           "### Rules for running code here",
           "1. **Check before you start anything heavy** (builds, synthesis, simulations, sweeps, training):",
@@ -258,7 +258,7 @@ def guide_md():
           f"   On an idle machine N ≤ {max(1, th - 2)} for one job; with other jobs running use the number from `ms capacity`.",
           "4. **Vivado / Vitis**: run in batch mode (`vivado -mode batch -source x.tcl -nojournal`), put",
           "   `set_param general.maxThreads <k>` in the Tcl (default 8; with several parallel runs use 2),",
-          "   and give every run its own folder on the data disk. Parallel runs are limited by RAM — see the table.",
+          "   and give every run its own folder on the data disk. Parallel runs are limited by CPU or RAM — see the table.",
           "5. **Long jobs survive the terminal**: start them through `tsp` or inside `tmux`, never as a plain",
           "   background `&` from your shell session.",
           "6. **Be nice to the desktop**: prefix CPU-heavy commands with `nice -n 10`, disk-heavy ones with `ionice -c3`.",
