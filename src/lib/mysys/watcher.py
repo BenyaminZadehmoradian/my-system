@@ -152,6 +152,7 @@ def track_jobs(s, now, conf):
                 summ = None
         errs = (summ or {}).get("errors") or 0
         status = "failed" if errs else "ok" if summ else "ended"
+        record_profile(r, dur)
         res = record_result(r, dur, summ, status)
         with open(RUNS, "a") as f:
             f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "tool": r["tool"], "cwd": r["cwd"],
@@ -186,10 +187,39 @@ def track_jobs(s, now, conf):
                "high" if b["err"] else "default", "warning" if b["err"] else "white_check_mark")
         del pending[bkey]
 
-    s["runs"] = {k: {"tool": j["tool"], "cwd": j["cwd"], "start": j["start"], "plugin": j["plugin"],
-                     "cpu_ticks": j["cpu_ticks"], "cores": j.get("cores"), "rss": j["rss"]}
-                 for k, j in seen.items()}
+    new_runs = {}
+    for k, j in seen.items():
+        prev = known.get(k, {})
+        c = j.get("cores")
+        new_runs[k] = {"tool": j["tool"], "cwd": j["cwd"], "start": j["start"], "plugin": j["plugin"],
+                       "cpu_ticks": j["cpu_ticks"], "cores": c, "rss": j["rss"],
+                       "peak_rss": max(j["rss"], prev.get("peak_rss", 0)),
+                       "core_sum": prev.get("core_sum", 0.0) + (c or 0.0), "core_n": prev.get("core_n", 0) + (1 if c else 0),
+                       "core_max": max(c or 0.0, prev.get("core_max", 0.0))}
+    s["runs"] = new_runs
     return cur
+
+
+PROFILES = config.STATE / "job_profiles.json"
+
+
+def record_profile(r, dur):
+    """Remember peak memory, CPU use and duration of finished jobs per tool (last 60 runs each)."""
+    if not r.get("peak_rss") or dur < 120:
+        return
+    try:
+        prof = json.loads(PROFILES.read_text())
+    except (OSError, ValueError):
+        prof = {}
+    lst = prof.setdefault(r["tool"], [])
+    lst.append({"t": int(time.time()), "peak_gb": round(r["peak_rss"] / 2**30, 2),
+                "cores": round(r["core_sum"] / r["core_n"], 2) if r.get("core_n") else None,
+                "core_max": round(r.get("core_max", 0), 2), "minutes": round(dur / 60, 1)})
+    prof[r["tool"]] = lst[-60:]
+    try:
+        PROFILES.write_text(json.dumps(prof, indent=1))
+    except OSError:
+        pass
 
 
 def advise_parallel(cur, s):

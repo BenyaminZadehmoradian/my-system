@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from . import config, detect, probes
+from . import capacity, config, detect, probes
 
 
 def _home(p):
@@ -50,6 +50,11 @@ def build():
                          + (f" (e.g. `{c.get('BIG_FOLDER_DEST')}`)" if c.get("BIG_FOLDER_DEST") else ""))
     for sh in config.words("NET_SHARES") or d.get("net_shares", []):
         lines.append(f"- Network share `{sh}` (shared, may be slow; not for scratch data)")
+
+    try:
+        lines += ["", capacity.guide_md()]
+    except Exception as e:  # never lose the whole map because one probe failed
+        lines += ["", f"(capacity guide unavailable: {type(e).__name__})"]
 
     lines += ["", "## Toolchains (detected)", "| Name | Install root |", "|---|---|"]
     lines += [f"| {l} | `{_home(p)}` |" for l, p in d.get("tools", [])] or ["| (none found) | |"]

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 — 2026-10-28
+
+- **Capacity guide for AI assistants**: the system map now has a section *This machine and how to run heavy work on it* —
+  CPU, vector ISA, caches, RAM and reserve, swap/zram, GPU/CUDA availability, disk roles, measured cost of each tool,
+  and ten concrete rules (check first, queue with tsp, cap threads, Vivado maxThreads, nice/ionice, outputs on the data disk).
+- `ms capacity [TOOL] [--json]`: live headroom and how many more jobs of each kind fit right now; BUSY when the machine is saturated.
+- The watcher now measures every finished job (peak RAM, CPU cores, duration) per tool in `state/job_profiles.json`.
+- AI rules: run `ms capacity` before heavy work. System report: new *Capacity for heavy work* section.
+
 ## 1.1.2 — 2026-10-28
 
 - New **System report** page in the app: every report is shown inside the app (light/dark), with *Create report now* and *Hardware check now*; no browser needed.

@@ -120,6 +120,33 @@ def test_policy():
     assert p["permissions"]["disableBypassPermissionsMode"] == "disable"
 
 
+def test_capacity():
+    tmp, ms = make_ms()
+    runs = [{"t": 0, "peak_gb": g, "cores": 1.4, "core_max": 2.0, "minutes": 50} for g in (4.1, 5.0, 6.2, 6.5, 5.5)]
+    (ms / "state/job_profiles.json").write_text(json.dumps({"vivado": runs}))
+    code = f"""
+import sys; sys.path.insert(0, {str(ms / 'lib')!r}); sys.path.insert(0, {str(ms / 'plugins')!r})
+from mysys import capacity, probes
+p = capacity.profiles()["vivado"]
+assert p["measured"] and p["runs"] == 5 and p["peak_gb"] == 6.5 and p["cores"] == 1.4, p
+G = 2**30
+# 16 threads, 92 GB: idle limit = min(16/1.4, (92-9.2)/6.5) = 11 (CPU)
+assert capacity.fit(16, 92 * G - capacity.reserve_bytes(92 * G), 6.5, 1.4) == (11, "CPU")
+# busy box: 2 threads free, 30 GB usable -> 1 more
+assert capacity.fit(2, 30 * G, 6.5, 1.4)[0] == 1
+probes.meminfo = lambda: {{"MemTotal": 92 * G, "MemAvailable": 33 * G, "SwapTotal": 8 * G, "SwapFree": 8 * G}}
+probes.loadavg = lambda: (33.0, 30.0, 28.0)
+probes.threads = lambda: 16
+n = capacity.now("vivado")
+assert n["busy"] and n["tools"]["vivado"]["more_now"] == 0, n
+assert "BUSY" in capacity.now_text("vivado")
+g = capacity.guide_md()
+assert "ms capacity" in g and "| vivado | 5 | 6.5 GB | 1.4 |" in g, g
+"""
+    env = dict(os.environ, MY_SYSTEM=str(ms))
+    subprocess.run([sys.executable, "-c", code], env=env, check=True)
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

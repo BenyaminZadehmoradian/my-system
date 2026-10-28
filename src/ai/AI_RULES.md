@@ -18,8 +18,12 @@ These rules are installed by **my-system** and are read-only. The machine-specif
 5. **Never delete** outside the project folder. Inside it, ask before deleting anything you
    did not create in this session.
 6. **Large outputs go to the data disk** named in the system map, not the root disk.
-7. **Long jobs:** start them with `vrun <command>` so the user is notified when they finish;
-   queue many of them with `tsp vrun <command>` instead of starting them all at once.
+7. **Before any heavy work, run `ms capacity`** and start no more jobs than it allows. It knows the
+   live load, free RAM and the measured cost of each tool on this machine. Cap thread counts
+   explicitly (`make -j N`, `OMP_NUM_THREADS`, `set_param general.maxThreads`), never "all cores".
+8. **Long jobs:** start them with `vrun <command>` so the user is notified when they finish;
+   queue many of them with `tsp nice -n 10 vrun <command>` (slots: `tsp -S N`) instead of
+   starting them all at once. The section *How to run heavy work* in the system map has the details.
 
 ## Transparency
 Every tool call is logged and visible to the user in the my-system app (AI guard tab).

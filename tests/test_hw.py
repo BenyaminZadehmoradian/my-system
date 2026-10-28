@@ -96,7 +96,7 @@ def test_report():
     md = (ms / "reports/system/latest.md").read_text()
     for s in ("Summary", "Memory and swap", "Disk health", "SK hynix PC711", "KF3200C16D4/32GX", "Changes since the last report",
               "Packages installed", "borgbackup", "libreoffice", "unsafe shutdowns 190 → 203", "1.37.0",
-              "Open issues and recommendations", "~/Desktop", "+27.0 GB"):
+              "Open issues and recommendations", "~/Desktop", "+27.0 GB", "Capacity for heavy work"):
         assert s in md, f"missing in md: {s}"
     assert "<table>" in html and "prefers-color-scheme" in html
     snap = json.loads(next((ms / "reports/system").glob("20[!0]*.json")).read_text())

@@ -12,7 +12,7 @@ import re
 import subprocess
 import time
 
-from . import __version__, config, detect, gitstat, hw, probes, watcher
+from . import __version__, capacity, config, detect, gitstat, hw, probes, watcher
 
 OUT = config.REPORTS / "system"
 
@@ -397,6 +397,27 @@ def build(c, prev):
     if lmax is not None:
         intro += f". Load average peak {lmax:.0f} on {c['cpu']['threads']} threads (average {lavg:.1f})"
     S.append(("Temperature and cooling", intro + ".", blocks))
+
+    try:
+        spec = capacity.static_specs()
+        prof = capacity.profiles()
+        th, total = spec["cpu"]["threads"], spec["mem_total"]
+        res = capacity.reserve_bytes(total)
+        prow = []
+        for t, p in sorted(prof.items(), key=lambda x: (not x[1]["measured"], x[0])):
+            if not p["measured"] and t not in ("vivado", "vitis_hls", "xsim"):
+                continue
+            n, lim = capacity.fit(th, total - res, p["peak_gb"], p.get("cores") or 1.0)
+            prow.append((t, str(p["runs"]) if p["measured"] else "estimate", f"{p['peak_gb']} GB", str(p.get("cores") or "?"),
+                         f"{p['minutes']} min" if p.get("minutes") else "–", f"{n} (by {lim})"))
+        isa = ", ".join(spec["isa"])
+        S.append(("Capacity for heavy work",
+                  f"{th} threads, {gib(total)} RAM with {gib(res)} kept free; vector ISA: {isa or '?'}"
+                  + ("" if spec["cuda_ok"] else "; no usable CUDA GPU") + ". AI assistants get these numbers and run "
+                  "`ms capacity` before starting jobs.",
+                  [("table", ["Tool", "Runs measured", "Peak RAM / job", "Cores / job", "Typical time", "Max parallel (idle)"], prow)]))
+    except Exception:
+        pass
 
     rows = [("Release", c["os"]), ("Kernel running", c["kernel_running"]),
             ("Kernels installed", ", ".join(c["kernels"]) or "–"),

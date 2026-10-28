@@ -23,6 +23,7 @@ machine-specific code: everything specific lives in a few config files.
 | **Projects** | Git status of every repository found: uncommitted work, unpushed commits, no remote, not covered by the backup. |
 | **Backup** | Encrypted, deduplicated [borg](https://www.borgbackup.org/) backup every night, passphrase in the desktop keyring, retention 7/4/6, and a **monthly restore test** that really restores files and compares them. |
 | **AI guard** | For Claude Code: a root-owned managed policy plus a `PreToolUse` hook that blocks writes to protected paths (system, toolchains, environments, shell start-up files, my-system itself) — including shell redirections that permission rules miss — and logs every tool call. AI instructions are split into fixed rules + a **system map regenerated daily**, so assistants know where everything is without searching the disk. |
+| **Capacity** | Every finished job is measured (peak RAM, CPU cores, time) per tool. `ms capacity` says how many more jobs fit right now; AI assistants get the machine's spec plus concrete rules (queue with `tsp`, cap threads, Vivado `maxThreads`, outputs on the data disk) so they use the whole machine without overloading it. |
 | **Notifications** | Desktop + phone via [ntfy](https://ntfy.sh) (private random topic). Weekly digest every Friday. |
 | **Hardware** | A small root-owned collector reads disk health (SMART: wear, bad sectors, errors, unsafe shutdowns), memory modules and available firmware updates once a day — read-only, installed outside your home. Fans, sensors, zram and Secure Boot are read without root. |
 | **Full report** | `ms report` (and automatically on the 1st of each month) writes one complete report — summary, hardware, memory, storage and disk health, cooling, OS and security, software, Python environments, projects, backup, **what changed since last time** and prioritised recommendations — shown on the app's **System report** page (also saved as HTML and as Markdown for AI assistants). |
@@ -53,6 +54,7 @@ ms                 status at a glance
 ms gui             the desktop app (also in the app menu as "My System")
 ms check           full health check now
 ms report --open   full system report (HTML + Markdown)
+ms capacity        how many more jobs fit right now
 ms hw              disk health, memory modules, fans, firmware
 ms results DIR     extract results from existing run folders
 ms git             project status

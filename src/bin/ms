@@ -18,6 +18,7 @@
   ms backup-setup | backup | backup-verify
   ms move FOLDER         move a folder to the data disk and leave a link
   ms report [--open]     full system report (HTML + Markdown) in reports/system/
+  ms capacity [TOOL]     how many more jobs fit right now (for you and AI assistants)
   ms hw                  hardware health (disks, memory modules, fans, firmware)
   ms doctor              self-check of my-system itself
 """
@@ -30,7 +31,7 @@ MS = Path(os.environ.get("MY_SYSTEM", Path.home() / "My_System"))
 sys.path.insert(0, str(MS / "lib"))
 sys.path.insert(0, str(MS / "plugins"))
 
-from mysys import __version__, aictx, config, detect, digest, gitstat, hw, plugins, probes, sysreport, watcher  # noqa: E402
+from mysys import __version__, aictx, capacity, config, detect, digest, gitstat, hw, plugins, probes, sysreport, watcher  # noqa: E402
 
 BIN = MS / "bin"
 
@@ -192,6 +193,12 @@ def main(argv):
             print(f"  [{p}] {t}")
         if "--open" in rest:
             subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif cmd == "capacity":
+        if "--json" in rest:
+            import json
+            print(json.dumps(capacity.now(next((r for r in rest if not r.startswith("-")), None)), indent=1, default=str))
+        else:
+            print(capacity.now_text(next((r for r in rest if not r.startswith("-")), None)))
     elif cmd == "hw":
         hw.health_lines(update_prev=False)
     elif cmd == "doctor":
