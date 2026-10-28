@@ -4,6 +4,7 @@ projects, backups, AI guard, reports, inventory and notifications. Follows the d
 light/dark setting. It only reads system state; buttons run the my-system commands."""
 import csv
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -936,9 +937,6 @@ class ReportsPage(Page):
         self.days.currentItemChanged.connect(self.show)
         ll.addWidget(self.days)
         ll.addWidget(btn("History log", lambda: self.view.setPlainText(read(REPORTS / "history.log", "(empty)"))))
-        ll.addWidget(btn("Hardware health", self.hardware))
-        ll.addWidget(btn("Full system report", self.full_report, "primary"))
-        ll.addWidget(btn("Open last full report", self.open_full))
         self.view = mono(QPlainTextEdit())
         self.view.setReadOnly(True)
         split.addWidget(left)
@@ -964,20 +962,96 @@ class ReportsPage(Page):
         if item:
             self.view.setPlainText(read(Path(item.data(Qt.ItemDataRole.UserRole)) / "health.txt", "(no health.txt)"))
 
+
+class SystemPage(Page):
+    title, icon, fallback = "System report", "computer", "video-display"
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._shown = None
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("System report", "The whole machine on one page: hardware, disk health, memory, cooling, "
+                                              "OS and security, software, projects, backup, what changed and what to do. "
+                                              "Made automatically on the 1st of every month."))
+        split = QSplitter()
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.addWidget(btn("Create report now", self.create, "primary"))
+        ll.addWidget(btn("Hardware check now", self.hardware))
+        self.list = QListWidget()
+        self.list.setObjectName("plain")
+        self.list.currentItemChanged.connect(self.show)
+        ll.addWidget(self.list, 1)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(False)
+        split.addWidget(left)
+        split.addWidget(self.view)
+        split.setSizes([200, 940])
+        lay.addWidget(split, 1)
+        self.setMinimumHeight(640)
+
+    def refresh(self):
+        from mysys import sysreport as SR
+        dates = [d for d, _ in SR.list_reports()]
+        if dates == [self.list.item(i).text() for i in range(self.list.count())]:
+            return
+        cur = self.list.currentItem().text() if self.list.currentItem() else None
+        self.list.blockSignals(True)
+        self.list.clear()
+        for d, p in SR.list_reports():
+            it = QListWidgetItem(d)
+            it.setData(Qt.ItemDataRole.UserRole, str(p))
+            self.list.addItem(it)
+        self.list.blockSignals(False)
+        if not dates:
+            self.view.setHtml(f"<p style='color:{T['muted']}'>No system report yet — press <b>Create report now</b> "
+                              "(takes up to a minute).</p>")
+            return
+        match = [self.list.item(i) for i in range(self.list.count()) if self.list.item(i).text() == cur]
+        self.list.setCurrentItem(match[0] if match else self.list.item(0))
+
+    def show(self, item, _p=None):
+        if not item:
+            return
+        from mysys import sysreport as SR
+        p = Path(item.data(Qt.ItemDataRole.UserRole))
+        try:
+            snap = json.loads(p.read_text())
+        except (OSError, ValueError):
+            snap = {}
+        if snap.get("sections"):
+            meta = {k: snap.get(k, "") for k in ("label", "time", "os", "version")}
+            self.view.setHtml(SR.to_qt_html(meta, snap["sections"], dict(T, warn=T["warn2"])))
+        else:   # reports made before 1.1.2 only have Markdown
+            self.view.setMarkdown(read(p.with_suffix(".md"), "(report not found)"))
+        self._shown = p
+
+    def create(self):
+        self.view.setHtml(f"<p style='color:{T['muted']}'>Building the system report (up to a minute)…</p>")
+        self.list.clear()
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "report"], None, None, self.refresh)
+
     def hardware(self):
-        self.view.setPlainText("Reading hardware data…")
-        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "hw"], self.view)
+        self.list.clearSelection()
+        try:
+            out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "hw"], capture_output=True, text=True,
+                                 timeout=30).stdout
+        except (OSError, subprocess.TimeoutExpired) as e:
+            out = f"error: {e}"
+        rows = []
+        for line in out.splitlines():
+            lv = "bad" if line.startswith("  !!") else "ok" if line.startswith("  ok") else "info" if line.startswith("  --") else None
+            txt = html.escape(line.strip().lstrip("!-ok ").strip() if lv else line.strip())
+            dot = f"<span style='color:{tone(lv)}'>●</span>&nbsp;" if lv else "&nbsp;&nbsp;&nbsp;"
+            rows.append(f"<div style='margin:3px 0'>{dot}{txt}</div>")
+        self.view.setHtml(f"<h2>Hardware now</h2><p style='color:{T['muted']}'>{time.strftime('%Y-%m-%d %H:%M')} · "
+                          "disk health, memory modules and firmware come from the daily root collector</p>" + "".join(rows))
 
-    def full_report(self):
-        self.view.setPlainText("Building the full system report (takes up to a minute)…")
-        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "report"], self.view, None, self.open_full)
-
-    def open_full(self):
-        f = REPORTS / "system" / "latest.html"
-        if f.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f.resolve())))
-        else:
-            self.view.setPlainText("No full report yet — press 'Full system report'.")
+    def nav_status(self):
+        from mysys import sysreport as SR
+        r = SR.list_reports()
+        return (r[0][0] if r else "none yet"), ("info" if r else None)
 
 
 class InventoryPage(Page):
@@ -1375,7 +1449,7 @@ class NavItem(QWidget):
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    PAGES = [OverviewPage, RunsPage, ResultsPage, StoragePage, ProjectsPage, BackupPage, GuardPage,
+    PAGES = [OverviewPage, RunsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
              ReportsPage, InventoryPage, NotifyPage, SettingsPage]
 
     def __init__(self):

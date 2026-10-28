@@ -534,9 +534,49 @@ def to_html(c, S):
     return "".join(parts)
 
 
-def snapshot(c):
+def to_qt_html(meta, S, col):
+    """Rich text for Qt's QTextBrowser (no CSS variables): meta = {label, time, os, version}, col = colour dict."""
+    def inl(t):
+        t = html.escape(str(t))
+        t = re.sub(r"\*\*now\*\*", f"<b style='color:{col['bad']}'>now</b>", t)
+        t = re.sub(r"\*\*when idle\*\*", f"<b style='color:{col['warn']}'>when idle</b>", t)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        return re.sub(r"`([^`]+)`", rf"<code style='background:{col['surface2']}'>&nbsp;\1&nbsp;</code>", t)
+
+    out = [f"<div style='color:{col['muted']}'>{html.escape(meta.get('time', ''))} · {html.escape(meta.get('os', ''))}"
+           f" · my-system {html.escape(str(meta.get('version', '')))} · read-only snapshot</div>"]
+    for title, intro, blocks in S:
+        out.append(f"<h2 style='margin-top:22px'>{html.escape(title)}</h2>")
+        if intro:
+            out.append(f"<p>{inl(intro)}</p>")
+        for b in blocks:
+            if b[0] == "p":
+                out.append(f"<p>{inl(b[1])}</p>")
+            elif b[0] == "h3":
+                out.append(f"<h4 style='color:{col['muted']}; margin-top:14px'>{html.escape(b[1].upper())}</h4>")
+            elif b[0] == "list":
+                out.append("<ul>" + "".join(f"<li style='margin-bottom:4px'>{inl(x)}</li>" for x in b[1]) + "</ul>")
+            elif b[0] == "table":
+                head = "".join(f"<th align='left' style='background:{col['surface2']}; color:{col['muted']}'>{html.escape(str(h))}</th>"
+                               for h in b[1])
+                body = "".join("<tr>" + "".join(f"<td>{'<b>' + inl(x) + '</b>' if i == 0 else inl(x)}</td>" for i, x in enumerate(r))
+                               + "</tr>" for r in b[2])
+                out.append(f"<table width='100%' cellspacing='0' cellpadding='6' border='1' "
+                           f"style='border-collapse:collapse; border-color:{col['border']}; margin:6px 0'>"
+                           f"<tr>{head}</tr>{body}</table>")
+    return "".join(out)
+
+
+def snapshot(c, S=None):
     s = {k: v for k, v in c.items() if k not in ("sizes_hist",)}
+    if S is not None:
+        s["sections"] = S
     return json.loads(json.dumps(s, default=list))
+
+
+def list_reports():
+    """[(date, json path)] newest first."""
+    return sorted(((p.stem, p) for p in OUT.glob("20??-??-??.json")), reverse=True)
 
 
 def run(notify=False):
@@ -547,7 +587,7 @@ def run(notify=False):
     base = OUT / c["date"]
     base.with_suffix(".md").write_text(to_md(c, S))
     base.with_suffix(".html").write_text(to_html(c, S))
-    base.with_suffix(".json").write_text(json.dumps(snapshot(c), indent=1))
+    base.with_suffix(".json").write_text(json.dumps(snapshot(c, S), indent=1))
     for ext in (".html", ".md"):
         link = OUT / f"latest{ext}"
         try:

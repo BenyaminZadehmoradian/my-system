@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2 — 2026-10-28
+
+- New **System report** page in the app: every report is shown inside the app (light/dark), with *Create report now* and *Hardware check now*; no browser needed.
+
 ## 1.1.1 — 2026-10-28
 
 - Memory makers shown by name when the BIOS only reports JEDEC codes (e.g. 0198… → Kingston, 802C… → Micron).
