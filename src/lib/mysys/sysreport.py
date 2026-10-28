@@ -275,9 +275,15 @@ def recommendations(c):
     note = hw.memory_note((c["hw"].get("memory") or {}).get("modules") or [])
     if note:
         r.append(("sometime", f"Memory: {note}. Matched modules would run at full speed."))
-    gp = [g for g in c["git"] if gitstat.problems(g)]
-    if gp:
-        r.append(("sometime", f"{len(gp)} git project(s) have uncommitted, unpushed or unbacked-up work (Projects page)."))
+    kinds = {}
+    for g in c["git"]:
+        for p in gitstat.problems(g):
+            k = re.sub(r"^\d+ ", "", p)
+            kinds[k] = kinds.get(k, 0) + 1
+    if kinds:
+        r.append(("sometime", "Git projects — " + ", ".join(f"{k.replace('(s)', 's')}: {n}" for k, n in
+                                                          sorted(kinds.items(), key=lambda x: -x[1]))
+                  + " (see the Projects page; add important ones to config/backup_sources.txt)."))
     if c["hw_state"] == "missing":
         r.append(("sometime", "Hardware collector not installed: re-run ./install.sh to get disk health and memory details."))
     elif c["hw_state"] == "stale":
@@ -320,7 +326,7 @@ def build(c, prev):
     mods = mem.get("modules") or []
     if mods:
         blocks.append(("table", ["Slot", "Size", "Type", "Maker", "Part number", "Rated", "Running at"],
-                       [(m["slot"], m["size"], m["type"], m["maker"], m["part"], m["speed"], m["configured_speed"]) for m in mods]))
+                       [(m["slot"], m["size"], m["type"], hw.maker(m["maker"]), m["part"], m["speed"], m["configured_speed"]) for m in mods]))
         n = hw.memory_note(mods)
         if n:
             blocks.append(("p", n[0].upper() + n[1:] + "."))

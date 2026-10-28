@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-10-28
+
+- Memory makers shown by name when the BIOS only reports JEDEC codes (e.g. 0198… → Kingston, 802C… → Micron).
+- Git recommendation broken down by problem (not in backup, uncommitted, unpushed, no remote).
+- zram size shown in GiB.
+
 ## 1.1.0 — 2026-10-28
 
 - **Full system report**: `ms report [--open]`, monthly on the 1st (timer), and a button on the Reports page.

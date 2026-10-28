@@ -18,6 +18,23 @@ def human_bytes(n):
         n /= 1000
 
 
+# JEDEC manufacturer codes as dmidecode prints them when it cannot name the maker
+JEDEC = {"0198": "Kingston", "802C": "Micron", "2C00": "Micron", "80CE": "Samsung", "CE00": "Samsung",
+         "80AD": "SK hynix", "AD00": "SK hynix", "859B": "Crucial", "9B05": "Crucial", "029E": "Corsair",
+         "9E02": "Corsair", "04CD": "G.Skill", "CD04": "G.Skill", "04CB": "ADATA", "CB04": "ADATA",
+         "0198 ": "Kingston", "8551": "Qimonda", "80B3": "Hynix", "0443": "Ramaxel", "4304": "Ramaxel",
+         "051E": "Patriot", "1E05": "Patriot", "8A45": "Nanya", "830B": "Nanya", "0B83": "Nanya",
+         "01BA": "PNY", "BA01": "PNY", "04EF": "Team Group", "EF04": "Team Group", "0E79": "Lexar"}
+
+
+def maker(name):
+    """Readable module maker: 'Kingston' for 'Kingston' or JEDEC ids like '01980000802C'."""
+    n = (name or "").strip()
+    if n and all(ch in "0123456789ABCDEFabcdef" for ch in n) and len(n) >= 4:
+        return JEDEC.get(n[:4].upper(), n)
+    return n
+
+
 def disk_label(d):
     cap = d.get("capacity_bytes")
     return f"{d.get('model', '?')} ({human_bytes(cap)}, {d.get('kind', '?').upper()})" if cap else d.get("model", "?")
@@ -134,11 +151,11 @@ def health_lines(update_prev=True):
             print(f"  -- firmware update available: {u['device']} {u['current']} → {u['available']}")
         mods = (hw.get("memory") or {}).get("modules") or []
         if mods:
-            print(f"     memory: {len(mods)} modules — " + ", ".join(f"{m['slot']} {m['size']} {m['maker']}" for m in mods))
+            print(f"     memory: {len(mods)} modules — " + ", ".join(f"{m['slot']} {m['size']} {maker(m['maker'])}" for m in mods))
             n = memory_note(mods)
             if n:
                 print(f"  -- memory: {n}")
     for lab, rpm, mx in probes.fans():
         print(f"     fan {lab}: {rpm} rpm" + (f" (max {mx})" if mx else ""))
     for z in probes.zram():
-        print(f"     zram {z['device']}: {human_bytes(z['size'])} {z['algorithm']}, {human_bytes(z['stored'])} stored")
+        print(f"     zram {z['device']}: {z['size'] / 2**30:.0f} GiB {z['algorithm']}, {human_bytes(z['stored'])} stored")
