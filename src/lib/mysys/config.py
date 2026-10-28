@@ -121,3 +121,43 @@ def backup_repo():
         except OSError:
             r = ""
     return _expand(r)
+
+
+def backup_running():
+    """True while a backup holds state/backup.lock (works for runs started by any version)."""
+    import fcntl
+    try:
+        with open(STATE / "backup.lock") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
+
+
+def backup_state():
+    """(state, text) with state in ok | running | first | failed | stale | off."""
+    import time
+    b = kv_file(STATE / "backup_status")
+    last = float(b.get("last_success", 0) or 0)
+    if backup_running():
+        try:
+            start = (STATE / "backup.lock").stat().st_mtime
+            since = time.strftime("%H:%M", time.localtime(start))
+        except OSError:
+            since = "?"
+        first = "first backup " if not last else ""
+        return "running", f"{first}running (since {since})"
+    if b.get("last_result"):
+        res = b["last_result"]
+        if res.startswith("failed"):
+            return "failed", res
+        if last and time.time() - last > 48 * 3600:
+            return "stale", f"last success {(time.time() - last) / 86400:.0f} days ago"
+        return "ok", res
+    if backup_repo():
+        return "first", "configured, first backup not finished yet"
+    return "off", "not set up (ms backup-setup)"

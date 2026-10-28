@@ -53,8 +53,7 @@ def status():
     print(f"  cpu        load {l1:.1f} / {probes.threads()} threads" + (f", {t} °C" if t is not None else ""))
     j = watcher.jobs()
     print(f"  jobs       {len(j)} running" + (": " + ", ".join(sorted({x['tool'] for x in j})) if j else ""))
-    b = config.kv_file(config.STATE / "backup_status")
-    print(f"  backup     {b.get('last_result', 'not set up')}")
+    print(f"  backup     {config.backup_state()[1]}")
     s = (config.REPORTS / "latest" / "summary.txt")
     if s.exists():
         w = [l for l in s.read_text().splitlines() if l.startswith("WARN")]
@@ -97,7 +96,10 @@ def results_backfill(root, write):
 
 def doctor():
     ok = True
-    for unit in ("my-system-watch.timer", "my-system-daily.timer"):
+    units = ["my-system-watch.timer", "my-system-daily.timer"]
+    if config.backup_repo():
+        units += ["my-system-backup.timer", "my-system-verify.timer"]
+    for unit in units:
         r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
         good = r.stdout.strip() == "active"
         ok &= good
@@ -108,6 +110,10 @@ def doctor():
     print(f"  {'ok ' if age < 300 else 'BAD'} watcher last ran {age / 60:.0f} min ago")
     pol = Path("/etc/claude-code/managed-settings.json")
     print(f"  {'ok ' if pol.exists() else 'BAD'} Claude Code policy {'installed' if pol.exists() else 'missing'}")
+    st, txt = config.backup_state()
+    good = st in ("ok", "running", "first")
+    ok &= good
+    print(f"  {'ok ' if good else 'BAD'} backup: {txt}")
     locked = (MS / "bin").stat().st_uid == 0
     print(f"  {'ok ' if locked else '!! '} code/config {'locked' if locked else 'unlocked'}")
     print(f"  plugins: {', '.join(p.NAME for p in plugins.load()) or 'none'}")

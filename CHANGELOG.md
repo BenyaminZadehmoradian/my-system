@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — 2026-10-28
+
+- Backup status now says *running (since HH:MM)* or *first backup not finished yet* instead of *not set up* while the first backup runs.
+- `ms doctor` checks the backup and restore-test timers and the backup state.
+- No "backup is behind" alert while a backup is still running.
+
 ## 1.0.0 — 2026-10-28
 First general release: auto-detection, config-driven everything, plugins (Vivado, Vitis HLS,
 yosys/nextpnr/VPR, simulators, make), results extraction, CPU overload advice, reboot hint,

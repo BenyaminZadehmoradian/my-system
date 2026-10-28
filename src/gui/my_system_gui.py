@@ -477,11 +477,9 @@ class OverviewPage(Page):
                 self.c[key].set("not mounted", path, "bad")
         b = kv(STATE / "backup_status")
         ls = float(b.get("last_success", 0) or 0)
-        if not b:
-            self.c["backup"].set("not set up", "ms backup-setup", "warn")
-        else:
-            fresh = ls and time.time() - ls < 48 * 3600
-            self.c["backup"].set(ago(ls), b.get("last_result", ""), "ok" if fresh else "bad")
+        st, txt = CFG.backup_state()
+        tone = {"ok": "ok", "running": "info", "first": "info", "off": "warn"}.get(st, "bad")
+        self.c["backup"].set("running…" if st == "running" else ago(ls) if ls else txt.split(" (")[0], txt, tone)
         jobs = W.jobs()
         self.c["jobs"].set(str(len(jobs)), ", ".join(sorted({j["tool"] for j in jobs})) or "idle", "info" if jobs else None)
         self.c["jobs"].t.setText("TRACKED JOBS RUNNING")
@@ -746,12 +744,14 @@ class BackupPage(Page):
         conf = kv(BASE / "config/backup.conf")
         running = self.active("my-system-backup.service")
         ls = float(b.get("last_success", 0) or 0)
-        if not b:
+        st, txt = CFG.backup_state()
+        running = running or st == "running"
+        if st == "off":
             self.c_last.set("not set up", "run: ms backup-setup", "warn")
+        elif st in ("running", "first"):
+            self.c_last.set("running…" if running else "no backup yet", txt, "info")
         else:
-            fresh = ls and time.time() - ls < 48 * 3600
-            self.c_last.set("running…" if running else ago(ls), b.get("last_result", ""),
-                            "info" if running else "ok" if fresh else "bad")
+            self.c_last.set(ago(ls), txt, "ok" if st == "ok" else "bad")
         self.c_new.set(b.get("last_size", "–") or "–", b.get("last_archive", ""))
         if v:
             self.c_test.set(v.get("last_result", "?"), f"{ago(v.get('last_run'))} · {v.get('detail', '')}",

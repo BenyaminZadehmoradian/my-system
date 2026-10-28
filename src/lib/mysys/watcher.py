@@ -261,7 +261,7 @@ def tick():
         notify("Daily check stopped", "No health report for 30 h — check: systemctl --user status my-system-daily.timer",
                "high", "warning")
     b = config.kv_file(config.STATE / "backup_status")
-    if b and now - float(b.get("last_success", 0) or 0) > 50 * 3600 and rate_ok(s, "backup_stale", 12 * 3600):
+    if b and now - float(b.get("last_success", 0) or 0) > 50 * 3600 and not config.backup_running() and rate_ok(s, "backup_stale", 12 * 3600):
         notify("Backup is behind", f"Last successful backup: {b.get('last_success') and time.strftime('%Y-%m-%d %H:%M', time.localtime(float(b['last_success']))) or 'never'}",
                "high", "floppy_disk")
 
