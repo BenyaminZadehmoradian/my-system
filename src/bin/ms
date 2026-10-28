@@ -1,0 +1,183 @@
+#!/usr/bin/python3
+"""ms — my-system command line.
+
+  ms                     status summary
+  ms gui                 open the desktop app
+  ms check               full health check now (same as the daily job)
+  ms watch               one watcher tick (run every minute by a timer)
+  ms detect [--state]    show what was detected (--state: refresh state/detected.json)
+  ms ai-context          regenerate the AI system map (state/SYSTEM_MAP.md, state/AGENTS.md)
+  ms results DIR         extract results from finished runs below DIR into reports/results.csv
+  ms git                 git status of all detected projects
+  ms sizes               measure tracked folder sizes
+  ms forecast            root-disk forecast
+  ms digest              weekly summary now
+  ms notify-test         send a test notification
+  ms accept              accept the current content of watched files
+  ms lock | unlock       protect / edit config, rules and code (needs sudo)
+  ms backup-setup | backup | backup-verify
+  ms move FOLDER         move a folder to the data disk and leave a link
+  ms doctor              self-check of my-system itself
+"""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+MS = Path(os.environ.get("MY_SYSTEM", Path.home() / "My_System"))
+sys.path.insert(0, str(MS / "lib"))
+sys.path.insert(0, str(MS / "plugins"))
+
+from mysys import __version__, aictx, config, detect, digest, gitstat, plugins, probes, watcher  # noqa: E402
+
+BIN = MS / "bin"
+
+
+def sh(script, *args):
+    return subprocess.call([str(BIN / script), *args])
+
+
+def status():
+    d = probes.disk("/")
+    c = config.load()
+    print(f"my-system {__version__} · {c['MACHINE_LABEL']} · {probes.os_name()}")
+    if d:
+        print(f"  root disk  {d[0] / d[2] * 100:.0f}% used, {d[1] / 2**30:.0f} GB free — {watcher.forecast_text()}")
+    for dd in config.words("DATA_DISKS"):
+        x = probes.disk(dd)
+        print(f"  {dd:10} " + (f"{x[1] / 2**40:.1f} TB free" if x else "NOT MOUNTED"))
+    m = probes.meminfo()
+    print(f"  memory     {m.get('MemAvailable', 0) / 2**30:.0f} GB available of {m.get('MemTotal', 0) / 2**30:.0f} GB")
+    t = probes.cpu_temp()
+    l1 = probes.loadavg()[0]
+    print(f"  cpu        load {l1:.1f} / {probes.threads()} threads" + (f", {t} °C" if t is not None else ""))
+    j = watcher.jobs()
+    print(f"  jobs       {len(j)} running" + (": " + ", ".join(sorted({x['tool'] for x in j})) if j else ""))
+    b = config.kv_file(config.STATE / "backup_status")
+    print(f"  backup     {b.get('last_result', 'not set up')}")
+    s = (config.REPORTS / "latest" / "summary.txt")
+    if s.exists():
+        w = [l for l in s.read_text().splitlines() if l.startswith("WARN")]
+        print(f"  last check {len(w)} warning(s)" + "".join(f"\n    - {x[6:]}" for x in w))
+    if probes.reboot_required():
+        print("  reboot     required")
+
+
+def results_backfill(root, write):
+    root = Path(root).resolve()
+    names = set()
+    for p in plugins.load():
+        for v in getattr(p, "LOGS", {}).values():
+            names.update(v)
+    n = 0
+    for dirpath, dirnames, files in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in (".Xil",)]
+        hit = names.intersection(files)
+        if not hit:
+            continue
+        for p in plugins.load():
+            for tool, logs in getattr(p, "LOGS", {}).items():
+                if set(logs) & hit and hasattr(p, "results"):
+                    try:
+                        res = p.results(dirpath, tool)
+                    except Exception:
+                        res = None
+                    summ = p.log_summary(dirpath, tool) if hasattr(p, "log_summary") else None
+                    if res is None and summ is None:
+                        continue
+                    n += 1
+                    errs = (summ or {}).get("errors") or 0
+                    print(f"{tool:9} {('FAILED' if errs else 'ok'):6} {dirpath}  {res or ''}")
+                    if write:
+                        r = {"tool": tool, "cwd": dirpath, "start": 0, "plugin": p.NAME}
+                        watcher.record_result(r, 0, summ, "failed" if errs else "ok")
+                    break
+    print(f"{n} run folder(s) found" + (" and added to reports/results.csv" if write and n else ""))
+
+
+def doctor():
+    ok = True
+    for unit in ("my-system-watch.timer", "my-system-daily.timer"):
+        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
+        good = r.stdout.strip() == "active"
+        ok &= good
+        print(f"  {'ok ' if good else 'BAD'} {unit}: {r.stdout.strip()}")
+    w = config.STATE / "watch.json"
+    import time
+    age = time.time() - w.stat().st_mtime if w.exists() else 1e9
+    print(f"  {'ok ' if age < 300 else 'BAD'} watcher last ran {age / 60:.0f} min ago")
+    pol = Path("/etc/claude-code/managed-settings.json")
+    print(f"  {'ok ' if pol.exists() else 'BAD'} Claude Code policy {'installed' if pol.exists() else 'missing'}")
+    locked = (MS / "bin").stat().st_uid == 0
+    print(f"  {'ok ' if locked else '!! '} code/config {'locked' if locked else 'unlocked'}")
+    print(f"  plugins: {', '.join(p.NAME for p in plugins.load()) or 'none'}")
+    return 0 if ok else 1
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    rest = argv[2:]
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+    elif cmd == "status":
+        status()
+    elif cmd == "gui":
+        os.execv("/usr/bin/python3", ["/usr/bin/python3", str(MS / "gui" / "my_system_gui.py")])
+    elif cmd == "check":
+        return sh("run_daily.sh")
+    elif cmd == "watch":
+        watcher.tick()
+    elif cmd == "detect":
+        d = detect.write_state() if "--state" in rest else detect.detect_all()
+        print(detect.summary(d))
+    elif cmd == "write-initial-config":           # used by install.sh
+        d, written = detect.write_initial(rest[0] if rest else None)
+        print(detect.summary(d))
+        print("config files written: " + (", ".join(written) or "none (all existed)"))
+    elif cmd == "ai-context":
+        aictx.write()
+        print(f"written {aictx.path()}")
+    elif cmd == "results":
+        if not rest:
+            print("usage: ms results DIR [--dry-run]")
+            return 2
+        results_backfill(rest[0], "--dry-run" not in rest)
+    elif cmd == "git":
+        for s in gitstat.run():
+            p = gitstat.problems(s)
+            print(f"{'!!' if p else 'ok'} {s['path']} [{s['branch']}] {', '.join(p)}")
+    elif cmd == "sizes":
+        for r in watcher.daily_sizes():
+            print(f"{r[2]:>9} GB  {r[3]:4}  {r[1]}")
+    elif cmd == "forecast":
+        days, _, _ = watcher.forecast()
+        print(watcher.forecast_text())
+        return 1 if days is not None and days < 14 else 0
+    elif cmd == "digest":
+        print(digest.run())
+    elif cmd == "notify-test":
+        return sh("notify.sh", "Test from my-system", "If you see this on your phone, alerts work.", "default", "tada")
+    elif cmd == "accept":
+        return sh("accept_changes.sh")
+    elif cmd in ("lock", "unlock"):
+        return sh(f"{cmd}.sh")
+    elif cmd == "backup-setup":
+        return sh("backup_setup.sh")
+    elif cmd == "backup":
+        return sh("backup.sh")
+    elif cmd == "backup-verify":
+        return sh("backup_verify.sh")
+    elif cmd == "move":
+        return sh("move_to_hdd.sh", *rest)
+    elif cmd == "doctor":
+        return doctor()
+    elif cmd == "version":
+        print(__version__)
+    else:
+        print(f"unknown command: {cmd}\n{__doc__}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv) or 0)

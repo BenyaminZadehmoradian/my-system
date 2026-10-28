@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profile>
+  <PerformanceEstimates>
+    <SummaryOfTimingAnalysis><unit>ns</unit><EstimatedClockPeriod>7.300</EstimatedClockPeriod></SummaryOfTimingAnalysis>
+    <SummaryOfOverallLatency><unit>clock cycles</unit><Best-caseLatency>1024</Best-caseLatency><Worst-caseLatency>4100</Worst-caseLatency></SummaryOfOverallLatency>
+  </PerformanceEstimates>
+  <AreaEstimates><Resources><BRAM_18K>4</BRAM_18K><DSP>12</DSP><FF>3456</FF><LUT>5678</LUT><URAM>0</URAM></Resources></AreaEstimates>
+</profile>

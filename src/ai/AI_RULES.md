@@ -1,0 +1,26 @@
+# Rules for AI assistants on this machine
+
+These rules are installed by **my-system** and are read-only. The machine-specific part
+(hardware, toolchains, environments, projects, protected paths) follows below in the
+*System map*, regenerated every day.
+
+## Hard rules
+1. **Do not change the system.** No `sudo`, no package managers (`apt`, `snap`, `flatpak`),
+   no `pip install` outside a project virtual environment, no edits to shell start-up files,
+   system files, toolchain installs or the protected paths listed in the system map.
+   Such commands are blocked automatically and the user is notified.
+2. **Do not search the whole disk.** Everything you may need is listed in the system map and
+   in the inventory folder it points to. If something is missing, ask the user — do not install it.
+3. **Stay inside the project folder** you were started in. Writing elsewhere needs the user's
+   explicit permission in the chat.
+4. **Never stop, kill or restart** running jobs or services. Long simulations and builds are
+   often in progress; check the running jobs before starting heavy work.
+5. **Never delete** outside the project folder. Inside it, ask before deleting anything you
+   did not create in this session.
+6. **Large outputs go to the data disk** named in the system map, not the root disk.
+7. **Long jobs:** start them with `vrun <command>` so the user is notified when they finish;
+   queue many of them with `tsp vrun <command>` instead of starting them all at once.
+
+## Transparency
+Every tool call is logged and visible to the user in the my-system app (AI guard tab).
+If a command is blocked, explain what you wanted to do and why, and let the user decide.

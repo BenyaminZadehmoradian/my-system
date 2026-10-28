@@ -1,0 +1,19 @@
+# borg exclude patterns (sh: = shell style; ** crosses folders). Regenerable data only.
+sh:**/.git/objects/pack/*.tmp
+sh:**/.Xil
+sh:**/*.cache
+sh:**/xsim.dir
+sh:**/.autopilot
+sh:**/work
+sh:**/build
+sh:**/.venv
+sh:**/.venv-*
+sh:**/venv
+sh:**/node_modules
+sh:**/__pycache__
+sh:**/.pytest_cache
+sh:**/.ipynb_checkpoints
+sh:**/*.jou
+sh:**/*.backup.log
+sh:**/*.o
+sh:**/.cache

@@ -1,0 +1,3 @@
+INFO: start
+CRITICAL WARNING: [Timing 38-282] The design failed to meet the timing requirements.
+INFO: [Route 35-57] Estimated Timing Summary | WNS=-0.231 | TNS=-4.512 | WHS=0.052 | THS=0.000 |

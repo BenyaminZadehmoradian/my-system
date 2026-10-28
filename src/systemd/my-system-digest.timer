@@ -1,0 +1,9 @@
+[Unit]
+Description=my-system: weekly summary
+
+[Timer]
+OnCalendar=Fri *-*-* 16:47
+Persistent=true
+
+[Install]
+WantedBy=timers.target

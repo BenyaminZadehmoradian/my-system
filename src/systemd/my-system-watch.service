@@ -1,0 +1,9 @@
+[Unit]
+Description=my-system: watcher (disk, heat, jobs, metrics)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+Environment=MY_SYSTEM=@MS@
+ExecStart=/usr/bin/python3 @MS@/bin/ms watch

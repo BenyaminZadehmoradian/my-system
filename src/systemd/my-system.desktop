@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=My System
+Comment=Health, runs, results, storage, backups and AI guard for this workstation
+Exec=/usr/bin/python3 @MS@/gui/my_system_gui.py
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+StartupWMClass=my-system
+Terminal=false

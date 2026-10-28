@@ -1,0 +1,9 @@
+[Unit]
+Description=my-system: daily check
+
+[Timer]
+OnCalendar=*-*-* 08:41
+Persistent=true
+
+[Install]
+WantedBy=timers.target
