@@ -24,6 +24,8 @@ machine-specific code: everything specific lives in a few config files.
 | **Backup** | Encrypted, deduplicated [borg](https://www.borgbackup.org/) backup every night, passphrase in the desktop keyring, retention 7/4/6, and a **monthly restore test** that really restores files and compares them. |
 | **AI guard** | For Claude Code: a root-owned managed policy plus a `PreToolUse` hook that blocks writes to protected paths (system, toolchains, environments, shell start-up files, my-system itself) — including shell redirections that permission rules miss — and logs every tool call. AI instructions are split into fixed rules + a **system map regenerated daily**, so assistants know where everything is without searching the disk. |
 | **Notifications** | Desktop + phone via [ntfy](https://ntfy.sh) (private random topic). Weekly digest every Friday. |
+| **Hardware** | A small root-owned collector reads disk health (SMART: wear, bad sectors, errors, unsafe shutdowns), memory modules and available firmware updates once a day — read-only, installed outside your home. Fans, sensors, zram and Secure Boot are read without root. |
+| **Full report** | `ms report` (and automatically on the 1st of each month) writes one complete report — summary, hardware, memory, storage and disk health, cooling, OS and security, software, Python environments, projects, backup, **what changed since last time** and prioritised recommendations — as HTML for you and Markdown for AI assistants. |
 | **Tamper evidence** | Code, rules and config are root-owned; watched files are fingerprinted daily and changes are reported. |
 
 ## Install
@@ -50,6 +52,8 @@ reports and state are kept.
 ms                 status at a glance
 ms gui             the desktop app (also in the app menu as "My System")
 ms check           full health check now
+ms report --open   full system report (HTML + Markdown)
+ms hw              disk health, memory modules, fans, firmware
 ms results DIR     extract results from existing run folders
 ms git             project status
 ms move FOLDER     move a folder to the data disk, leave a link
@@ -96,6 +100,9 @@ def results(cwd, tool):                           # any columns of results.csv
 
 ## Security notes
 
+- The hardware collector (`/usr/local/lib/my-system/ms-hwinfo`, `my-system-hwinfo.timer`) is the only
+  part that runs as root. It only reads (smartctl, dmidecode, fwupdmgr), lives in a root-owned
+  location, never imports code from your home, and stores no serial numbers.
 - The guard is a strong safety net, not a sandbox: an assistant with arbitrary code execution
   can still find creative ways around pattern checks. Keep reviewing permission prompts.
 - The ntfy topic works like a password; messages contain status text only, never file contents.

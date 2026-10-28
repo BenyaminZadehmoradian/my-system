@@ -1,0 +1,54 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 3.2.0 present.
+
+Handle 0x003D, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x003C
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Locator: DIMM1
+	Bank Locator: Not Specified
+	Type: DDR4
+	Speed: 2400 MT/s
+	Manufacturer: Kingston
+	Serial Number: 1234ABCD
+	Part Number: KF3200C16D4/32GX     
+	Configured Memory Speed: 2400 MT/s
+
+Handle 0x003E, DMI type 17, 84 bytes
+Memory Device
+	Size: 32 GB
+	Locator: DIMM2
+	Type: DDR4
+	Speed: 2400 MT/s
+	Manufacturer: Kingston
+	Part Number: KF3200C16D4/32GX
+	Configured Memory Speed: 2400 MT/s
+
+Handle 0x003F, DMI type 17, 84 bytes
+Memory Device
+	Size: 16 GB
+	Locator: DIMM3
+	Type: DDR4
+	Speed: 3200 MT/s
+	Manufacturer: Micron
+	Part Number: 8ATF2G64AZ-3G2E1
+	Configured Memory Speed: 2400 MT/s
+
+Handle 0x0040, DMI type 17, 84 bytes
+Memory Device
+	Size: 16 GB
+	Locator: DIMM4
+	Type: DDR4
+	Speed: 3200 MT/s
+	Manufacturer: Micron
+	Part Number: 8ATF2G64AZ-3G2E1
+	Configured Memory Speed: 2400 MT/s
+
+Handle 0x0041, DMI type 17, 84 bytes
+Memory Device
+	Size: No Module Installed
+	Locator: DIMM5

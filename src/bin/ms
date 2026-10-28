@@ -17,6 +17,8 @@
   ms lock | unlock       protect / edit config, rules and code (needs sudo)
   ms backup-setup | backup | backup-verify
   ms move FOLDER         move a folder to the data disk and leave a link
+  ms report [--open]     full system report (HTML + Markdown) in reports/system/
+  ms hw                  hardware health (disks, memory modules, fans, firmware)
   ms doctor              self-check of my-system itself
 """
 import os
@@ -28,7 +30,7 @@ MS = Path(os.environ.get("MY_SYSTEM", Path.home() / "My_System"))
 sys.path.insert(0, str(MS / "lib"))
 sys.path.insert(0, str(MS / "plugins"))
 
-from mysys import __version__, aictx, config, detect, digest, gitstat, plugins, probes, watcher  # noqa: E402
+from mysys import __version__, aictx, config, detect, digest, gitstat, hw, plugins, probes, sysreport, watcher  # noqa: E402
 
 BIN = MS / "bin"
 
@@ -96,11 +98,12 @@ def results_backfill(root, write):
 
 def doctor():
     ok = True
-    units = ["my-system-watch.timer", "my-system-daily.timer"]
+    units = ["my-system-watch.timer", "my-system-daily.timer", "my-system-report.timer"]
     if config.backup_repo():
         units += ["my-system-backup.timer", "my-system-verify.timer"]
-    for unit in units:
-        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
+    sysu = ["my-system-hwinfo.timer"] if Path("/etc/systemd/system/my-system-hwinfo.timer").exists() else []
+    for unit in units + sysu:
+        r = subprocess.run(["systemctl", *([] if unit in sysu else ["--user"]), "is-active", unit], capture_output=True, text=True)
         good = r.stdout.strip() == "active"
         ok &= good
         print(f"  {'ok ' if good else 'BAD'} {unit}: {r.stdout.strip()}")
@@ -114,6 +117,13 @@ def doctor():
     good = st in ("ok", "running", "first")
     ok &= good
     print(f"  {'ok ' if good else 'BAD'} backup: {txt}")
+    hst, _, age = hw.collector_state()
+    if hst == "missing":
+        print("  !!  hardware collector not installed (re-run ./install.sh)")
+    else:
+        good = hst == "ok"
+        ok &= good
+        print(f"  {'ok ' if good else 'BAD'} hardware data {age:.0f} h old")
     locked = (MS / "bin").stat().st_uid == 0
     print(f"  {'ok ' if locked else '!! '} code/config {'locked' if locked else 'unlocked'}")
     print(f"  plugins: {', '.join(p.NAME for p in plugins.load()) or 'none'}")
@@ -175,6 +185,15 @@ def main(argv):
         return sh("backup_verify.sh")
     elif cmd == "move":
         return sh("move_to_hdd.sh", *rest)
+    elif cmd == "report":
+        path, recs = sysreport.run(notify="--notify" in rest)
+        print(f"written {path}  (and {path.with_suffix('.md').name})")
+        for p, t in recs:
+            print(f"  [{p}] {t}")
+        if "--open" in rest:
+            subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif cmd == "hw":
+        hw.health_lines(update_prev=False)
     elif cmd == "doctor":
         return doctor()
     elif cmd == "version":

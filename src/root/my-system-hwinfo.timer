@@ -1,0 +1,10 @@
+[Unit]
+Description=my-system: hardware collector, daily and after boot
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* 07:53
+Persistent=true
+
+[Install]
+WantedBy=timers.target

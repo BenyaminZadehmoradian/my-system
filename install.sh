@@ -83,7 +83,7 @@ update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 ln -sfn "$MS/bin/ms" "$HOME/.local/bin/ms"
 ln -sfn "$MS/bin/vrun.sh" "$HOME/.local/bin/vrun"
 systemctl --user daemon-reload
-systemctl --user enable --now my-system-watch.timer my-system-daily.timer my-system-digest.timer >/dev/null
+systemctl --user enable --now my-system-watch.timer my-system-daily.timer my-system-digest.timer my-system-report.timer >/dev/null
 repo=$("$PY" -c "import sys; sys.path.insert(0,'$MS/lib'); from mysys import config; print(config.backup_repo())")
 if [ -n "$repo" ] && [ -d "$repo" ]; then
   systemctl --user enable --now my-system-backup.timer my-system-verify.timer >/dev/null
@@ -109,6 +109,22 @@ ln -sfn "$MS/state/AGENTS.md" "$HOME/AGENTS.md"
 say "Locking code, rules and config (sudo)"
 "$MS/bin/lock.sh"
 "$MS/bin/accept_changes.sh"
+
+# ---- 8. read-only hardware collector (root): SMART, memory modules, firmware ------
+# Installed outside your home (root-owned) so nothing running as you can change what root runs.
+if [ -f /etc/systemd/system/my-system-hwinfo.timer ] || ask "Install the read-only hardware collector (disk health, memory modules, firmware updates; runs daily as root)?"; then
+  hwneed=()
+  command -v smartctl >/dev/null || hwneed+=(smartmontools)
+  command -v dmidecode >/dev/null || hwneed+=(dmidecode)
+  if [ ${#hwneed[@]} -gt 0 ] && command -v apt-get >/dev/null; then sudo apt-get install -y --no-install-recommends "${hwneed[@]}"; fi
+  sudo install -D -m 755 -o root -g root "$SRC/root/ms-hwinfo" /usr/local/lib/my-system/ms-hwinfo
+  sudo install -d -m 755 /var/lib/my-system
+  sudo install -m 644 -o root -g root "$SRC/root/my-system-hwinfo.service" "$SRC/root/my-system-hwinfo.timer" /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now my-system-hwinfo.timer >/dev/null 2>&1
+  sudo systemctl start --no-block my-system-hwinfo.service
+  echo "hardware collector installed (first data in about a minute: ms hw)"
+fi
 "$PY" "$MS/bin/ms" watch || true
 systemctl --user start --no-block my-system-daily.service
 
@@ -116,6 +132,7 @@ echo
 say "Done."
 echo "  App:       'My System' in the app menu   (or: ms gui)"
 echo "  Terminal:  ms            (status)   ms help   (all commands)"
+echo "  Report:    ms report --open   (full system report; also on the 1st of every month)"
 echo "  Phone:     install the ntfy app, subscribe to the topic shown in Notifications, then: ms notify-test"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  Note: add ~/.local/bin to PATH to use 'ms' and 'vrun' (log out and in on Ubuntu)";; esac
 if [ ! -f "$MS/state/backup_configured" ] && [ ! -f "$MS/state/backup_status" ] && [ -z "$repo" ] && [ -t 0 ]; then

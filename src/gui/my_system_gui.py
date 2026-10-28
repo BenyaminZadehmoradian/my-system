@@ -926,7 +926,7 @@ class ReportsPage(Page):
     def __init__(self, win):
         super().__init__(win)
         lay = QVBoxLayout(self)
-        lay.addLayout(header("Reports", "One full health check per day (kept 60 days)."))
+        lay.addLayout(header("Reports", "One health check per day (kept 60 days); a full system report on the 1st of every month."))
         split = QSplitter()
         left = QWidget()
         ll = QVBoxLayout(left)
@@ -936,6 +936,9 @@ class ReportsPage(Page):
         self.days.currentItemChanged.connect(self.show)
         ll.addWidget(self.days)
         ll.addWidget(btn("History log", lambda: self.view.setPlainText(read(REPORTS / "history.log", "(empty)"))))
+        ll.addWidget(btn("Hardware health", self.hardware))
+        ll.addWidget(btn("Full system report", self.full_report, "primary"))
+        ll.addWidget(btn("Open last full report", self.open_full))
         self.view = mono(QPlainTextEdit())
         self.view.setReadOnly(True)
         split.addWidget(left)
@@ -960,6 +963,21 @@ class ReportsPage(Page):
     def show(self, item, _p=None):
         if item:
             self.view.setPlainText(read(Path(item.data(Qt.ItemDataRole.UserRole)) / "health.txt", "(no health.txt)"))
+
+    def hardware(self):
+        self.view.setPlainText("Reading hardware data…")
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "hw"], self.view)
+
+    def full_report(self):
+        self.view.setPlainText("Building the full system report (takes up to a minute)…")
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "report"], self.view, None, self.open_full)
+
+    def open_full(self):
+        f = REPORTS / "system" / "latest.html"
+        if f.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f.resolve())))
+        else:
+            self.view.setPlainText("No full report yet — press 'Full system report'.")
 
 
 class InventoryPage(Page):

@@ -1,0 +1,9 @@
+[Unit]
+Description=my-system: monthly full system report (1st of the month)
+
+[Timer]
+OnCalendar=*-*-01 06:23
+Persistent=true
+
+[Install]
+WantedBy=timers.target

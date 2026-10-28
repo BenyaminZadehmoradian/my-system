@@ -1,0 +1,199 @@
+#!/usr/bin/python3 -I
+"""my-system hardware collector — runs as root once a day, READ-ONLY.
+
+Collects what an ordinary user cannot read and writes it to /var/lib/my-system/hw.json
+(world-readable, no serial numbers):
+  * disk health (smartctl): result, wear, written data, errors, unsafe shutdowns, temperature
+  * memory modules (dmidecode): slot, size, maker, part number, rated and configured speed
+  * firmware updates available (fwupdmgr), if fwupd is installed
+
+It changes nothing on the system. Installed to /usr/local/lib/my-system/ by install.sh,
+started by my-system-hwinfo.timer. Self-contained on purpose: it never imports code from a
+user-writable place.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+OUT = os.environ.get("MS_HWINFO_OUT", "/var/lib/my-system/hw.json")
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+
+
+def run(cmd, timeout=60):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=ENV)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+
+
+# ---------------- disks ----------------
+ATA_IDS = {5: "reallocated", 187: "uncorrectable", 188: "command_timeout", 197: "pending",
+           198: "offline_uncorrectable", 199: "crc_errors", 9: "power_on_hours_attr", 12: "power_cycles",
+           192: "power_off_retracts", 194: "temperature_attr", 177: "wear_leveling", 231: "life_left",
+           233: "media_wearout", 241: "lbas_written"}
+
+
+def parse_smart(j):
+    """smartctl -j -a output -> compact dict."""
+    d = {
+        "model": j.get("model_name") or j.get("model_family") or "?",
+        "firmware": j.get("firmware_version", ""),
+        "protocol": (j.get("device") or {}).get("protocol", ""),
+        "capacity_bytes": (j.get("user_capacity") or {}).get("bytes") or j.get("nvme_total_capacity"),
+        "rotation_rate": j.get("rotation_rate"),
+        "passed": (j.get("smart_status") or {}).get("passed"),
+        "power_on_hours": (j.get("power_on_time") or {}).get("hours"),
+        "power_cycles": j.get("power_cycle_count"),
+        "temperature": (j.get("temperature") or {}).get("current"),
+    }
+    nv = j.get("nvme_smart_health_information_log")
+    if nv:
+        d.update({
+            "kind": "nvme",
+            "wear_pct": nv.get("percentage_used"),
+            "spare_pct": nv.get("available_spare"),
+            "spare_threshold_pct": nv.get("available_spare_threshold"),
+            "written_tb": round(nv.get("data_units_written", 0) * 512000 / 1e12, 2),
+            "read_tb": round(nv.get("data_units_read", 0) * 512000 / 1e12, 2),
+            "media_errors": nv.get("media_errors"),
+            "unsafe_shutdowns": nv.get("unsafe_shutdowns"),
+            "critical_warning": nv.get("critical_warning"),
+            "warning_temp_minutes": nv.get("warning_temp_time"),
+            "critical_temp_minutes": nv.get("critical_comp_time"),
+        })
+    else:
+        d["kind"] = "hdd" if (d.get("rotation_rate") or 0) > 0 else "ssd"
+        for a in (j.get("ata_smart_attributes") or {}).get("table", []):
+            key = ATA_IDS.get(a.get("id"))
+            if key:
+                d[key] = (a.get("raw") or {}).get("value")
+                if key in ("wear_leveling", "life_left", "media_wearout"):
+                    d[key + "_norm"] = a.get("value")
+        t = j.get("temperature") or {}
+        if t.get("lifetime_min") is not None:
+            d["temp_min_max"] = [t.get("lifetime_min"), t.get("lifetime_max")]
+        st = (j.get("ata_smart_self_test_log") or {}).get("standard", {}).get("table") or []
+        if st:
+            d["last_selftest"] = {"type": st[0].get("type", {}).get("string"),
+                                  "passed": (st[0].get("status") or {}).get("passed"),
+                                  "hours": st[0].get("lifetime_hours")}
+    if d.get("power_on_hours") is None:
+        d["power_on_hours"] = d.get("power_on_hours_attr", d.get("power_on_hours"))
+    return d
+
+
+def disks():
+    if not shutil.which("smartctl"):
+        return {"error": "smartmontools not installed"}
+    rc, out = run(["smartctl", "--scan-open", "-j"])
+    try:
+        devs = json.loads(out).get("devices", [])
+    except ValueError:
+        devs = []
+    res = []
+    for dv in devs:
+        name = dv.get("name")
+        if not name or name.startswith("/dev/bus/"):
+            continue
+        cmd = ["smartctl", "-j", "-a", name]
+        if dv.get("type") and dv["type"] not in ("nvme", "scsi"):
+            cmd[3:3] = ["-d", dv["type"]]
+        _, o = run(cmd, timeout=90)
+        try:
+            j = json.loads(o)
+        except ValueError:
+            continue
+        if not j.get("smart_support", {}).get("available", True) and not j.get("nvme_smart_health_information_log"):
+            continue
+        d = parse_smart(j)
+        d["device"] = name
+        res.append(d)
+    return {"disks": res}
+
+
+# ---------------- memory ----------------
+def parse_dmidecode_memory(text):
+    mods, slots = [], 0
+    for block in text.split("\n\n"):
+        if "Memory Device" not in block:
+            continue
+        kv = {}
+        for line in block.splitlines():
+            m = re.match(r"\s+([^:]+):\s*(.*)", line)
+            if m:
+                kv[m.group(1).strip()] = m.group(2).strip()
+        slots += 1
+        size = kv.get("Size", "")
+        if not size or "No Module" in size or size.startswith("0"):
+            continue
+        mods.append({
+            "slot": kv.get("Locator", "?"),
+            "size": size,
+            "type": kv.get("Type", ""),
+            "maker": kv.get("Manufacturer", ""),
+            "part": kv.get("Part Number", "").strip(),
+            "speed": kv.get("Speed", ""),
+            "configured_speed": kv.get("Configured Memory Speed", kv.get("Configured Clock Speed", "")),
+            "form": kv.get("Form Factor", ""),
+        })
+    return {"modules": mods, "slots": slots}
+
+
+def parse_dmidecode_array(text):
+    m = re.search(r"Maximum Capacity:\s*(.+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def memory():
+    if not shutil.which("dmidecode"):
+        return {"error": "dmidecode not installed"}
+    _, out = run(["dmidecode", "-t", "17"])
+    d = parse_dmidecode_memory(out)
+    _, arr = run(["dmidecode", "-t", "16"])
+    d["max_capacity"] = parse_dmidecode_array(arr)
+    return d
+
+
+# ---------------- firmware ----------------
+def parse_fwupd(j):
+    ups = []
+    for dev in j.get("Devices", []):
+        rel = (dev.get("Releases") or [{}])[0]
+        ups.append({"device": dev.get("Name", "?"), "current": dev.get("Version", ""),
+                    "available": rel.get("Version", ""), "summary": rel.get("Summary", "")})
+    return ups
+
+
+def firmware():
+    if not shutil.which("fwupdmgr"):
+        return {"error": "fwupd not installed"}
+    rc, out = run(["fwupdmgr", "get-updates", "--json", "--no-unreported-check", "--no-metadata-check"], timeout=120)
+    try:
+        return {"updates": parse_fwupd(json.loads(out))}
+    except ValueError:
+        return {"updates": [], "note": "no updates or fwupd unavailable"}
+
+
+def main():
+    data = {"collected_at": int(time.time()), "version": 1}
+    for name, fn in (("storage", disks), ("memory", memory), ("firmware", firmware)):
+        try:
+            data[name] = fn()
+        except Exception as e:  # never fail the whole collection
+            data[name] = {"error": f"{type(e).__name__}: {e}"}
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    tmp = OUT + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT)
+    print(f"written {OUT}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

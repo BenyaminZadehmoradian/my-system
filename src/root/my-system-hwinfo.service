@@ -1,0 +1,16 @@
+[Unit]
+Description=my-system: read-only hardware collector (SMART, memory modules, firmware)
+Documentation=file:///usr/local/lib/my-system/ms-hwinfo
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/my-system/ms-hwinfo
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=full
+PrivateTmp=yes
+ReadWritePaths=/var/lib/my-system
+TimeoutStartSec=10min

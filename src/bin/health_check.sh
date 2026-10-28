@@ -63,6 +63,11 @@ if command -v docker >/dev/null; then
 fi
 [ -f /var/run/reboot-required ] && warn "reboot required ($(uname -r) running)"
 
+echo; echo "## Hardware"
+hw_out=$(pyq "from mysys import hw; hw.health_lines()")
+echo "${hw_out:-  -- no hardware data}"
+while IFS= read -r l; do WARN+=("${l#  !! }"); done < <(grep '^  !! ' <<< "$hw_out")
+
 echo; echo "## Toolchains and known paths"
 pyq "
 import json
