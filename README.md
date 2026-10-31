@@ -84,6 +84,7 @@ ms doctor          self-check
 ms q explain ID    why a job is still waiting
 ms replay 07:30    what the machine was doing then
 ms brief --send    status report to the phone now
+ms pause queue --for 2h   turn a part off for a while (ms pause help); ms resume all
 ms log compare DIR runs side by side (--sort METRIC --desc)
 vrun <cmd>         run anything long and get notified
 ```

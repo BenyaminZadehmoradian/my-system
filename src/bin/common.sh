@@ -10,3 +10,13 @@ NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 REPORT_KEEP_DAYS="${REPORT_KEEP_DAYS:-60}"
 PY=/usr/bin/python3
 ms() { "$PY" "$MS/bin/ms" "$@"; }
+# is_paused FEATURE: true while `ms pause FEATURE` (or `ms pause all`) is in effect
+is_paused() {
+  local f v now; now=$(date +%s)
+  for f in "$1" all; do
+    [ -f "$MS/state/paused/$f" ] || continue
+    v=$(cat "$MS/state/paused/$f" 2>/dev/null); v=${v%%.*}
+    { [ -z "$v" ] || [ "$v" = 0 ] || [ "$v" -gt "$now" ]; } && return 0
+  done
+  return 1
+}

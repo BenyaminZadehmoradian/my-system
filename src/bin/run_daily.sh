@@ -3,6 +3,7 @@
 # AI system map. Writes reports/<date>/ and points reports/latest at it.
 # shellcheck source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
+is_paused daily && { echo "daily check paused (ms resume daily)"; exit 0; }
 DAY="$MS/reports/$(date +%F)"
 mkdir -p "$DAY"
 low() { nice -n 19 ionice -c3 "$@"; }

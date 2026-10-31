@@ -328,6 +328,16 @@ def tick():
     s = load_state()
     now = time.time()
     config.REPORTS.mkdir(parents=True, exist_ok=True)
+    from . import pause
+    if pause.paused("watcher"):          # ms pause watcher: only keep the minute history (cheap, no messages)
+        try:
+            from . import history
+            history.record(s)
+        except Exception:
+            pass
+        s["last_tick"] = now
+        save_state(s)
+        return
 
     d = probes.disk("/")
     if d:
@@ -438,11 +448,13 @@ def tick():
 
     # watchdog: daily check and backups
     latest = config.REPORTS / "history.log"
-    if latest.exists() and now - latest.stat().st_mtime > 30 * 3600 and rate_ok(s, "daily_stale", 12 * 3600):
+    if latest.exists() and now - latest.stat().st_mtime > 30 * 3600 and not pause.paused("daily") \
+            and rate_ok(s, "daily_stale", 12 * 3600):
         notify("Daily check stopped", "No health report for 30 h — check: systemctl --user status my-system-daily.timer",
                "high", "warning")
     b = config.kv_file(config.STATE / "backup_status")
-    if b and now - float(b.get("last_success", 0) or 0) > 50 * 3600 and not config.backup_running() and rate_ok(s, "backup_stale", 12 * 3600):
+    if b and now - float(b.get("last_success", 0) or 0) > 50 * 3600 and not config.backup_running() \
+            and not pause.paused("backup") and rate_ok(s, "backup_stale", 12 * 3600):
         notify("Backup is behind", f"Last successful backup: {b.get('last_success') and time.strftime('%Y-%m-%d %H:%M', time.localtime(float(b['last_success']))) or 'never'}",
                "high", "floppy_disk")
 

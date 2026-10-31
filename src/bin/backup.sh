@@ -3,6 +3,9 @@
 # Passphrase comes from the desktop keyring (secret-tool).
 # shellcheck source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
+# paused: only the nightly timer is skipped; "Back up now" / ms backup (MS_FORCE or a one-time flag) still run
+if [ -f "$MS/state/backup_force" ]; then rm -f "$MS/state/backup_force"; MS_FORCE=1; fi
+if is_paused backup && [ "${MS_FORCE:-}" != 1 ]; then echo "backup paused (ms resume backup)"; exit 0; fi
 # shellcheck source=/dev/null
 . "$MS/config/backup.conf"
 [ -z "${REPO:-}" ] && REPO=$(cat "$MS/state/backup_repo" 2>/dev/null)

@@ -34,6 +34,8 @@
   ms ping NAME [start|fail|CODE]   dead-man's-switch ping to PING_<NAME> in my_system.conf
   ms housekeeping        rotate / trim my-system's own logs (daily job does this)
   ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, status (ms remote help)
+  ms pause FEATURE|all [--for 2h|--until 08:00]   turn a part of my-system off for a while (ms pause help)
+  ms resume FEATURE|all  turn it on again;  ms paused  what is off
   ms brief [--send]      status report: system, running, waiting, last 3 finished (--send: to the phone now)
 """
 import os
@@ -424,9 +426,11 @@ def main(argv):
         return sh(f"{cmd}.sh")
     elif cmd == "backup-setup":
         return sh("backup_setup.sh")
-    elif cmd == "backup":
+    elif cmd == "backup":                          # by hand: runs even while backups are paused
+        os.environ["MS_FORCE"] = "1"
         return sh("backup.sh")
     elif cmd == "backup-verify":
+        os.environ["MS_FORCE"] = "1"
         return sh("backup_verify.sh")
     elif cmd == "move":
         return sh("move_to_hdd.sh", *rest)
@@ -490,6 +494,9 @@ def main(argv):
     elif cmd == "remote":
         from mysys import remote
         return remote.cli(rest)
+    elif cmd in ("pause", "resume", "paused"):
+        from mysys import pause
+        return pause.cli(cmd, rest)
     elif cmd == "brief":
         from mysys import brief
         return brief.cli(rest)

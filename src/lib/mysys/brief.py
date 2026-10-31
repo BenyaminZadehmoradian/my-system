@@ -146,6 +146,9 @@ def attention():
             out.append(f"{n} Python package(s) with known security issues")
     except (OSError, ValueError):
         pass
+    from . import pause
+    if pause.active():
+        out.append("paused: " + pause.summary() + " (ms resume …)")
     if probes.reboot_required() and not any("reboot" in x.lower() for x in out):
         out.append("reboot needed to finish updates")
     return list(dict.fromkeys(out))
@@ -349,6 +352,9 @@ def send(prio=None):
 def due(s, now=None):
     """True when one of PHONE_REPORT_TIMES has passed and was not yet sent today (checked every minute)."""
     now = now or time.time()
+    from . import pause
+    if pause.paused("status-report"):
+        return False
     times = config.words("PHONE_REPORT_TIMES")
     lt = time.localtime(now)
     sent = s.setdefault("brief_sent", {})

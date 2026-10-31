@@ -94,7 +94,8 @@ def test_report():
     (day / "apt_manual.txt").write_text("git\nvim\nborgbackup\n")
     (day / "tools.txt").write_text("# Tools\ngit            /usr/bin/git    git version 2.53\n\n# Toolchains (detected installs)\n")
     with open(ms / "reports/sizes.csv", "w") as f:
-        f.write("date,folder,gb,disk,kind\n2026-10-01,~/Desktop,160.0,root,dir\n"
+        f.write("date,folder,gb,disk,kind\n" + time.strftime("%Y-%m-%d", time.localtime(time.time() - 20 * 86400))
+                + ",~/Desktop,160.0,root,dir\n"
                 f"{time.strftime('%Y-%m-%d')},~/Desktop,187.0,root,dir\n")
     # a previous snapshot to diff against
     (ms / "reports/system").mkdir(parents=True)

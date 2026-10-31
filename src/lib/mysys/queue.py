@@ -958,8 +958,14 @@ class Scheduler:
 
     # ---------------------------------------------------------------- start what fits
     def start_jobs(self, jobs, byid, cap, now):
-        from . import flow, resources
+        from . import flow, pause, resources
         running = [j for j in jobs if j["state"] in ACTIVE]
+        if pause.paused("queue"):            # ms pause queue: running jobs continue, nothing new starts
+            msg = f"waiting: the queue is paused {pause.describe(pause.until('queue'))} (ms resume queue)"
+            for j in jobs:
+                if j["state"] == "queued" and j.get("reason") != msg:
+                    update(j["id"], reason=msg)
+            return
         if cap["no_new"]:
             for j in jobs:
                 if j["state"] == "queued" and j.get("reason") != "waiting: reserved time window":
@@ -1020,6 +1026,11 @@ class Scheduler:
             j = load(j["id"])
             if (j.get("inputs") or j.get("outputs")) and j.get("incremental", True) and not j.get("force") and up_to_date(j):
                 update(j["id"], state="cached", reason="up to date (same command, parameters and inputs)", ended=now)
+                continue
+            if j.get("remote") and pause.paused("remote"):
+                msg = f"waiting: sending jobs to servers is paused (ms resume remote)"
+                if j.get("reason") != msg:
+                    update(j["id"], reason=msg)
                 continue
             if j.get("remote"):                # runs on a server: local CPU/RAM/pressure do not matter
                 from . import remote as RM
@@ -1122,7 +1133,7 @@ class Scheduler:
             msg = f"waiting for {why} ({need_m / GiB:.1f} GB, {need_t:.1f} cores needed)"
             if j.get("reason") != msg:
                 update(j["id"], reason=msg)
-            if rms:                            # busy here: may it run on a remote server instead?
+            if rms and not pause.paused("remote"):   # busy here: may it run on a remote server instead?
                 from . import remote as RM
                 target = RM.offload_target(j, all_jobs(), waited, cap)
                 if target:

@@ -806,11 +806,19 @@ class BackupPage(Page):
                 self.out.verticalScrollBar().setValue(self.out.verticalScrollBar().maximum())
 
     def backup_now(self):
+        try:
+            (STATE / "backup_force").write_text("1\n")      # runs even while backups are paused
+        except OSError:
+            pass
         subprocess.run(["systemctl", "--user", "start", "--no-block", "my-system-backup.service"])
         self.out.setPlainText("Backup started in the background (lowest priority)…")
         QTimer.singleShot(2000, self.refresh)
 
     def verify_now(self):
+        try:
+            (STATE / "backup_force").write_text("1\n")      # runs even while backups are paused
+        except OSError:
+            pass
         subprocess.run(["systemctl", "--user", "start", "--no-block", "my-system-verify.service"])
         self.out.setPlainText("Restore test started in the background — result appears here and on your phone.")
 
@@ -1388,6 +1396,11 @@ class NotifyPage(Page):
             pass
 
     def nav_status(self):
+        from mysys import pause as PZ
+        if PZ.paused("notifications"):
+            return f"all paused {PZ.describe(PZ.until('notifications'))}", "warn"
+        if PZ.paused("phone"):
+            return f"phone paused {PZ.describe(PZ.until('phone'))}", "warn"
         tp = self.topic()
         on = bool(tp) and not (STATE / "ntfy_off").exists()
         return ("phone on" if on else "phone off"), ("ok" if on else None)
@@ -2283,6 +2296,30 @@ class SettingsPage(Page):
         rrow.addStretch()
         rl.addLayout(rrow)
         lay.addWidget(rc)
+        from mysys import pause as PZ
+        pc, pl = _card()
+        pl.addWidget(_lab("PAUSE PARTS OF MY-SYSTEM (the AI guard always stays on)", "cardTitle"))
+        self.pause_state = _lab("", wrap=True)
+        pl.addWidget(self.pause_state)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        self.pause_box = {}
+        for i, (f, d) in enumerate(PZ.FEATURES.items()):
+            cb = QCheckBox(f)
+            cb.setToolTip(d)
+            self.pause_box[f] = cb
+            grid.addWidget(cb, i // 4, i % 4)
+        pl.addLayout(grid)
+        prow = QHBoxLayout()
+        self.pause_for = QComboBox()
+        self.pause_for.addItems(["for 1 hour", "for 4 hours", "until tomorrow 08:00", "until I turn it on"])
+        prow.addWidget(self.pause_for)
+        prow.addWidget(btn("Pause selected", self.do_pause, "primary"))
+        prow.addWidget(btn("Turn selected on", self.do_resume))
+        prow.addWidget(btn("Turn everything on", lambda: self.do_resume(all_=True)))
+        prow.addStretch()
+        pl.addLayout(prow)
+        lay.addWidget(pc)
         split = QSplitter(Qt.Orientation.Vertical)
         self.det = mono(QPlainTextEdit())
         self.det.setReadOnly(True)
@@ -2299,6 +2336,7 @@ class SettingsPage(Page):
                               "\n\nToolchains:\n" + "\n".join(f"  {l:26} {p}" for l, p in d.get("tools", [])) +
                               "\n\nPython environments:\n" + "\n".join(f"  {v['path']}  ({v.get('python') or '?'})"
                                                                        for v in d.get("venvs", [])))
+        self._pause_refresh()
         try:
             from mysys import remote as RM
             rs = RM.remotes()
@@ -2319,6 +2357,48 @@ class SettingsPage(Page):
             parts.append(f"──── {f.name} " + "─" * max(0, 60 - len(f.name)) + "\n" + read(f).rstrip())
         self.conf.setPlainText("\n\n".join(parts) or "(no config files)")
 
+    def _pause_refresh(self):
+        from mysys import pause as PZ
+        act = dict(PZ.active())
+        self.pause_state.setText(("Paused now: " + PZ.summary()) if act else "Everything is on.")
+        self.pause_state.setStyleSheet(f"color:{tone('warn')};" if act else f"color:{tone('ok')};")
+        for f, cb in self.pause_box.items():
+            cb.setText(f + (f"  (paused {PZ.describe(act[f])})" if f in act else ""))
+
+    def do_pause(self):
+        from mysys import pause as PZ
+        sel = [f for f, cb in self.pause_box.items() if cb.isChecked()]
+        if not sel:
+            QMessageBox.information(self, "Pause", "Tick what to pause first.")
+            return
+        i = self.pause_for.currentIndex()
+        now = time.time()
+        if i == 0:
+            end = now + 3600
+        elif i == 1:
+            end = now + 4 * 3600
+        elif i == 2:
+            lt = time.localtime(now + 86400)
+            end = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 8, 0, 0, 0, 0, -1))
+        else:
+            end = 0
+        for f in sel:
+            PZ.set_pause(f, end)
+            self.pause_box[f].setChecked(False)
+        self._pause_refresh()
+        self.win.refresh_nav()
+
+    def do_resume(self, all_=False):
+        from mysys import pause as PZ
+        if all_:
+            PZ.resume("all")
+        for f, cb in self.pause_box.items():
+            if cb.isChecked() or all_:
+                PZ.resume(f)
+                cb.setChecked(False)
+        self._pause_refresh()
+        self.win.refresh_nav()
+
     def remote(self, what):
         from mysys import remote as RM
         names = list(RM.remotes())
@@ -2335,6 +2415,10 @@ class SettingsPage(Page):
         self.win.run_in_dialog("Self-check", ["/usr/bin/python3", str(SCRIPTS / "ms"), "doctor"])
 
     def nav_status(self):
+        from mysys import pause as PZ
+        act = PZ.active()
+        if act:
+            return f"{len(act)} paused", "warn"
         locked = SCRIPTS.exists() and SCRIPTS.stat().st_uid == 0
         return ("locked" if locked else "unlocked"), (None if locked else "warn")
 

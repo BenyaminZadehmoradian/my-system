@@ -31,6 +31,7 @@ HARD = [
     (re.compile(r"\bsystemctl\b.*\b(stop|restart|disable|mask|kill|poweroff|reboot)\b"), "stopping services is not allowed"),
     (re.compile(r"(^|[;&|(\s])(reboot|shutdown|poweroff|halt)(\s|$)"), "rebooting is not allowed"),
     (re.compile(r"\bcrontab\s+(-r|-e|\S+\s*$)"), "changing crontab is not allowed"),
+    (re.compile(r"(^|[;&|(\s/])ms\s+(pause|resume|unlock|lock)\b"), "only the user may pause, resume, unlock or lock my-system"),
     (re.compile(r"\bpip3?\s+install\b.*--break-system-packages"), "installing into system Python is not allowed"),
     (re.compile(r"(^|[;&|(\s])(mkfs\S*|fdisk|parted|wipefs|dd\s+.*of=/dev/)"), "disk tools are not allowed"),
 ]

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.0 — 2026-11-01
+
+- Pause parts of my-system for a while or until you turn them on again: `ms pause FEATURE|all [--for 2h | --until 08:00]`,
+  `ms resume FEATURE|all`, `ms paused`; in the app: Settings → "Pause parts of my-system".
+  Features: notifications (still logged), phone, status-report, watcher, daily, backup (the nightly one; "Back up now"
+  and `ms backup` still run), queue (running jobs continue, nothing new starts), remote (jobs wait here).
+- What is paused shows in the Overview's attention list, the phone status report, and the sidebar.
+- Only you can pause: the AI guard blocks `ms pause`, `ms resume`, `ms lock` and `ms unlock` for assistants.
+  The AI guard itself cannot be paused.
+
 ## 1.10.1 — 2026-10-31
 
 - Phone: only what needs you (failures, warnings, disk/RAM/crash alerts) plus the status report (08:00 13:00 19:00
