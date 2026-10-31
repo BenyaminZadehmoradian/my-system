@@ -59,6 +59,7 @@ def fake_ms():
     for d in ("config", "state", "reports"):
         (ms / d).mkdir()
     (ms / "config/plugins.conf").write_text("vivado\n")
+    (ms / "config/my_system.conf").write_text('PHONE_REPORT_TIMES=""\nPHONE_REQUESTS=0\n')   # no clock-dependent reports
     (ms / "bin/notify.sh").write_text(f'#!/bin/sh\necho "$1|$2" >> {tmp}/notes\n')
     (ms / "bin/notify.sh").chmod(0o755)
     (tmp / "work").mkdir()

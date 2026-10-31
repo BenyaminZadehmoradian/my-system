@@ -340,7 +340,8 @@ def send(prio=None):
     serious = any("unexpected stop" in a or "not answering" in a or "not mounted" in a for a in info["attention"])
     p = "high" if serious else (prio or ("default" if info["attention"] else "low"))
     subprocess.run([str(config.MS / "bin" / "notify.sh"), title, text, p, "bar_chart"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+                   env=dict(os.environ, MS_PHONE="1"))         # always to the phone, even when sent quietly
     return title, text
 
 

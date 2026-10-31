@@ -26,7 +26,9 @@ cp -r "$(map "${args[0]}")" "$(map "${args[1]}")"
 ''',
     "sbatch": r'''#!/bin/bash
 script="${@: -1}"
+exec 9>"$FAKE_SLURM/lock"; flock 9          # job numbers are unique, like real Slurm
 n=$(( $(cat "$FAKE_SLURM/seq" 2>/dev/null || echo 100) + 1 )); echo $n > "$FAKE_SLURM/seq"
+flock -u 9
 grep -q '^#SBATCH --account=' "$script" || { echo "sbatch: error: account required" >&2; exit 1; }
 cp "$script" "$FAKE_SLURM/$n.sh"
 echo RUNNING > "$FAKE_SLURM/$n.state"
@@ -117,7 +119,8 @@ assert jb["state"] == "failed" and jb["rc"] == 3, (jb["state"], jb["rc"], jb["re
 script = open(os.path.join(os.environ["FAKE_SLURM"], ja["remote_job"] + ".sh")).read()
 for want in ("--account=bzm", "--partition=batch", "--qos=batch_qos", "--cpus-per-task=2", "--mem=5G"):
     assert want in script, want
-assert not any(f.endswith((".msq_rc", ".msq_outputs")) for f in os.listdir(os.path.join(W, "p")))
+assert not any(f.startswith(".msq-") for f in os.listdir(os.path.join(W, "p"))), os.listdir(os.path.join(W, "p"))
+assert os.path.exists(os.path.join(W, "p", f"msq-{a['id']}.log")) and os.path.exists(os.path.join(W, "p", f"msq-{b['id']}.log"))
 print("ok")
 '''
 

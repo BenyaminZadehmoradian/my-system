@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.1 — 2026-10-31
+
+- Phone: only what needs you (failures, warnings, disk/RAM/crash alerts) plus the status report (08:00 13:00 19:00
+  and on request) and the weekly summary. Successful batches stay on the desktop, in the app and in the status report.
+  PHONE_MIN_PRIO=low brings them back to the phone.
+- One summary per sweep: tool folders inside a design (V1009/prj/sol/sim/verilog …) count as the design, so a sweep of
+  V1009…V1012 gives one "Finished: 8 runs (vitis_hls, xelab) in extra_int32_guided/" instead of four "… in sim/".
+- Remote jobs: two jobs in the same folder could mix up their exit codes and logs (control files and the node log are
+  now per job: msq-<id>.log).
+
 ## 1.10.0 — 2026-10-31
 
 Remote servers (Slurm, e.g. Titan at UGent CSL PerfLab)

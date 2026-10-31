@@ -181,21 +181,21 @@ else
   copy "$HEAD:$REMOTE_DIR/in.tar.gz" in.tar.gz || {{ echo "cannot fetch the job files from $HEAD" >&2; exit 92; }}
   tar xzf in.tar.gz && rm -f in.tar.gz
 fi
-touch .msq_start; sleep 1
-echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > run.log
-export MSQ_OUTPUTS="$W/.msq_outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} OMP_NUM_THREADS={cores}
-: > .msq_outputs
-( while sleep 60; do [ "$SHARED" = 1 ] && cp run.log ../run.log || copy run.log "$HEAD:$REMOTE_DIR/run.log"; done ) &
+touch .msq-{jid}-start; sleep 1
+echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > msq-{jid}.log
+export MSQ_OUTPUTS="$W/.msq-{jid}-outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} OMP_NUM_THREADS={cores}
+: > .msq-{jid}-outputs
+( while sleep 60; do [ "$SHARED" = 1 ] && cp msq-{jid}.log ../msq-{jid}.log || copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; done ) &
 SYNC=$!
-{run_line} >> run.log 2>&1
+{run_line} >> msq-{jid}.log 2>&1
 RC=$?
 kill $SYNC 2>/dev/null
-echo "[remote] finished $(date '+%F %T') rc=$RC" >> run.log
-echo $RC > .msq_rc
-find . -newer .msq_start -type f ! -name in.tar.gz ! -name out.tar.gz ! -name .msq_start -printf '%P\n' > .msq_changed
-tar czf out.tar.gz -T .msq_changed .msq_rc .msq_outputs run.log 2>/dev/null
-if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp run.log ../run.log
-else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy run.log "$HEAD:$REMOTE_DIR/run.log"; cd /; rm -rf "$W"; fi
+echo "[remote] finished $(date '+%F %T') rc=$RC" >> msq-{jid}.log
+echo $RC > .msq-{jid}-rc
+find . -newer .msq-{jid}-start -type f ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
+tar czf out.tar.gz -T .msq-{jid}-changed .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
+if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp msq-{jid}.log ../msq-{jid}.log
+else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; cd /; rm -rf "$W"; fi
 exit $RC
 """
 
@@ -220,7 +220,7 @@ def job_script(r, j, remote_dir):
     env = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (j.get("env") or {}).items())
     inner = (env + " " if env else "") + "bash -c " + shlex.quote(j["cmd"])
     if r.get("container"):
-        run = (f'docker run --rm --init -v "$W":/mnt/run -w /mnt/run -e MSQ_OUTPUTS=/mnt/run/.msq_outputs '
+        run = (f'docker run --rm --init -v "$W":/mnt/run -w /mnt/run -e MSQ_OUTPUTS=/mnt/run/.msq-{j["id"]}-outputs '
                f'-e OMP_NUM_THREADS={cores} --cpus={cores} --memory={mem}g {r.get("docker_args", "")} '
                f'{shlex.quote(r["container"])} bash -c {shlex.quote(inner)}')
     else:
@@ -283,7 +283,7 @@ def run_job(jid):
                   flush=True)
             return 130
         rc, out, _ = ssh(r, f"squeue -h -j {sid} -o '%T|%N|%r' 2>/dev/null; echo ===; "
-                            f"tail -c +{offset + 1} {shlex.quote(rdir)}/run.log 2>/dev/null", 60)
+                            f"tail -c +{offset + 1} {shlex.quote(rdir)}/msq-{jid}.log 2>/dev/null", 60)
         if rc == 0:
             state_part, _, log_part = out.partition("===\n")
             st = state_part.strip()
@@ -320,16 +320,17 @@ def run_job(jid):
             except TypeError:                     # Python < 3.12
                 tf.extractall(src, members=members)
         tmp.unlink(missing_ok=True)
+        tag = f".msq-{jid}-"                 # per job: two jobs in one folder never mix up their results
         try:
-            job_rc = int(Path(src, ".msq_rc").read_text().strip())
+            job_rc = int(Path(src, tag + "rc").read_text().strip())
         except (OSError, ValueError):
             job_rc = None
-        outs = Path(src, ".msq_outputs")
+        outs = Path(src, tag + "outputs")
         if outs.exists() and os.environ.get("MSQ_OUTPUTS"):
             with open(os.environ["MSQ_OUTPUTS"], "a") as f:
                 f.write(outs.read_text())
-        for f in (".msq_rc", ".msq_outputs", ".msq_changed", ".msq_start"):
-            Path(src, f).unlink(missing_ok=True)
+        for f in ("rc", "outputs", "changed", "start"):
+            Path(src, tag + f).unlink(missing_ok=True)
         print(f"[{r['name']}] results copied back" + (f" (Slurm: {acct})" if acct else ""), flush=True)
     else:
         print(f"[{r['name']}] no results came back (Slurm: {acct or 'unknown'}). Files stay in {r['ssh']}:{rdir}", flush=True)
@@ -471,7 +472,7 @@ def _test_job(r, out):
         os.chdir(old)
     queue.update(j["id"], state="done" if rc == 0 else "failed", ended=time.time(), rc=rc)
     log = ""
-    for f in ("run.log",):
+    for f in (f"msq-{j['id']}.log",):
         try:
             log = Path(d, f).read_text()
         except OSError:

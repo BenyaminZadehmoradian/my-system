@@ -1271,9 +1271,10 @@ class NotifyPage(Page):
     def __init__(self, win):
         super().__init__(win)
         lay = QVBoxLayout(self)
-        lay.addLayout(header("Notifications", "Alerts go to this desktop and, through ntfy, to your phone: "
-                                              "failed runs and finished batches, disk filling fast, overload advice, "
-                                              "backup problems, blocked AI commands, daily warnings, weekly summary."))
+        lay.addLayout(header("Notifications", "Everything appears on this desktop and in the list below. Your phone gets "
+                                              "only what needs you — failures, warnings, disk/RAM/crash alerts — plus the "
+                                              "status report and the weekly summary. Successful runs are in the status report. "
+                                              "To get successes on the phone too: PHONE_MIN_PRIO=low in my_system.conf."))
         card = QFrame()
         card.setObjectName("card")
         cl = QVBoxLayout(card)

@@ -35,7 +35,7 @@ def make_ms():
     (ms / "reports").mkdir()
     (ms / "config" / "protected_paths.txt").write_text("/etc\n/opt\n~/.bashrc\n~/.venvs\n~/My_System\n")
     (ms / "config" / "plugins.conf").write_text("vivado\nvitis_hls\n")
-    (ms / "config" / "my_system.conf").write_text('MIN_RUN=60\nBATCH_QUIET=300\n')
+    (ms / "config" / "my_system.conf").write_text('MIN_RUN=60\nBATCH_QUIET=300\nPHONE_REPORT_TIMES=""\n')
     note = ms / "bin" / "notify.sh"
     note.write_text(f'#!/bin/sh\necho "$1|$2|$3" >> {tmp}/notes\n')
     note.chmod(0o755)

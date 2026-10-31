@@ -53,7 +53,8 @@ DEFAULTS = {
     "BACKUP_COUNT_TOLERANCE_PCT": "10",
     "BACKUP_REPO_CHECK_DAYS": "90",
     "PHONE_REPORT_TIMES": "08:00 13:00 19:00",   # status report to the phone (ms brief); empty = only on request
-    "PHONE_REQUESTS": "1",          # 1 = answer "status" typed in the ntfy app with a status report
+    "PHONE_REQUESTS": "1",
+    "PHONE_MIN_PRIO": "default",    # what else goes to the phone: default = problems and warnings; low = also successes          # 1 = answer "status" typed in the ntfy app with a status report
     # dead-man's-switch URLs (healthchecks.io or compatible, optional): PING_WATCH PING_DAILY PING_BACKUP PING_VERIFY
 }
 

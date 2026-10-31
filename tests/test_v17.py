@@ -107,6 +107,73 @@ print("ok")
     assert "failures: [Place 30-58] IO placement is infeasible ×4" in notes, notes
 
 
+
+def test_one_quiet_summary_for_a_sweep():
+    tmp, ms = fake_ms()
+    (ms / "config/my_system.conf").write_text('BATCH_QUIET=0\n')
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    code = r'''
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib")); sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "plugins"))
+from mysys import watcher, config
+d = str(config.HOME) + "/eFPGA/work/gemm/dse/extra_int32_guided"
+assert watcher.batch_key(d + "/V1009/prj/sol/sim/verilog") == d
+assert watcher.batch_key(d + "/V1010/prj/sol/sim") == d
+class Plug:
+    NAME = "fake"
+    def log_summary(self, cwd, tool):
+        return {"errors": 0, "critical": 0, "first_error": "", "log": ""}
+watcher.plugin_by_name = lambda n: Plug()
+watcher.record_result = lambda r, d_, summ, st: {}
+watcher.record_profile = lambda r, d_: None
+now = time.time()
+runs = {}
+for v in ("V1009", "V1010", "V1011", "V1012"):
+    for tool, sub in (("vitis_hls", "/prj/sol/sim"), ("xelab", "/prj/sol/sim/verilog")):
+        runs[f"{tool}{v}"] = {"tool": tool, "cwd": f"{d}/{v}{sub}", "start": now - 300, "plugin": "fake", "cpu_ticks": 0}
+s = {"v": watcher.VERSION, "runs": runs, "pending": {}, "last_tick": now - 60}
+watcher.jobs = lambda: []
+watcher.track_jobs(s, now, {"MIN_RUN": 60, "BATCH_QUIET": 0})
+print("ok")
+'''
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+    notes = (tmp / "notes").read_text().splitlines()
+    fin = [n for n in notes if n.startswith("Finished")]
+    assert len(fin) == 1 and "8 runs (vitis_hls, xelab) in extra_int32_guided/" in fin[0], notes
+
+
+def test_phone_gets_only_what_needs_you():
+    tmp, ms = fake_ms()
+    real = Path(__file__).resolve().parent.parent
+    src = real / "src" / "bin" if (real / "src").is_dir() else real / "bin"
+    import shutil
+    for f in ("notify.sh", "common.sh"):
+        shutil.copy(src / f, ms / "bin" / f)
+        (ms / "bin" / f).chmod(0o755)
+    (ms / "state/ntfy_topic").write_text("topic\n")
+    stubs = tmp / "stubs"
+    stubs.mkdir()
+    (stubs / "curl").write_text(f'#!/bin/sh\necho "$@" >> {tmp}/curl.log\n')
+    (stubs / "curl").chmod(0o755)
+    (stubs / "notify-send").write_text("#!/bin/sh\nexit 0\n")
+    (stubs / "notify-send").chmod(0o755)
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp), PATH=f"{stubs}:{os.environ['PATH']}")
+    n = str(ms / "bin/notify.sh")
+    subprocess.run([n, "Finished: 8 runs", "all OK", "low"], env=env, check=True)
+    subprocess.run([n, "Backup done", "x", "min"], env=env, check=True)
+    subprocess.run([n, "vivado failed", "ERROR", "high"], env=env, check=True)
+    subprocess.run([n, "Status: 9 running", "SYSTEM", "low"], env=dict(env, MS_PHONE="1"), check=True)
+    sent = (tmp / "curl.log").read_text()
+    assert "vivado failed" in sent and "Status: 9 running" in sent, sent
+    assert "Finished: 8 runs" not in sent and "Backup done" not in sent, sent
+    log = (ms / "reports/notifications.log").read_text()
+    assert "Finished: 8 runs" in log, "quiet messages are still logged (app, desktop)"
+    (ms / "config/my_system.conf").write_text('PHONE_MIN_PRIO=low\n')
+    subprocess.run([n, "Finished: 3 runs", "all OK", "low"], env=env, check=True)
+    assert "Finished: 3 runs" in (tmp / "curl.log").read_text(), "PHONE_MIN_PRIO=low sends successes too"
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):
@@ -114,3 +181,4 @@ if __name__ == "__main__":
             fn()
             print("ok", k)
     print(f"all passed in {time.time() - t0:.1f}s")
+

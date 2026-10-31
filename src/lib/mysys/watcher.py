@@ -85,9 +85,12 @@ def _roots():
 
 
 def batch_key(cwd):
-    """Runs in sibling folders form one batch (their parent). A run directly in a project folder whose parent is
-    home or a data disk is its own batch (named after the project, not 'benyamin/')."""
-    cwd = os.path.normpath(cwd or "/")
+    """Runs of sibling designs form one batch (their parent). Tool folders inside a design (prj/sol/sim/verilog,
+    impl_1 …) count as the design itself, so V1009/prj/sol/sim and V1010/prj/sol/sim are one batch
+    'extra_int32_guided', not four batches 'sim'. A run directly in a project folder whose parent is home or a data
+    disk is its own batch (named after the project, not 'benyamin/')."""
+    from .brief import design_dir
+    cwd = os.path.normpath(design_dir(os.path.normpath(cwd or "/")))
     parent = os.path.dirname(cwd)
     return cwd if parent in _roots() else parent
 
@@ -225,6 +228,8 @@ def track_jobs(s, now, conf):
                        + (" (more failures of this batch come in its summary)" if b["n"] else ""), "high", "x")
         b["n"] += 1
         b["err"] += 1 if errs else 0
+        if r["tool"] not in b.setdefault("tools", [b["tool"]]):
+            b["tools"].append(r["tool"])
         b["crit"] += (summ or {}).get("critical") or 0
         b["longest"] = max(b["longest"], dur)
         b["last_end"] = now
@@ -237,7 +242,9 @@ def track_jobs(s, now, conf):
         if waiting and now - b.setdefault("first_end", now) < 6 * 3600:
             continue
         ok_n = b["n"] - b["err"]
-        what = f"{b['n']} {b['tool']} run{'s' if b['n'] > 1 else ''}"
+        tools = b.get("tools") or [b["tool"]]
+        what = f"{b['n']} run{'s' if b['n'] > 1 else ''} ({', '.join(tools)})" if len(tools) > 1 else \
+            f"{b['n']} {b['tool']} run{'s' if b['n'] > 1 else ''}"
         detail = (f"{ok_n} OK" + (f", {b['err']} failed" if b["err"] else "") +
                   (f", {b['crit']} critical warnings" if b["crit"] else "") + f" · longest {hms(b['longest'])}" +
                   (f" · best WNS {b['best_wns']:+.3f} ns" if b.get("best_wns") is not None else ""))
@@ -246,8 +253,9 @@ def track_jobs(s, now, conf):
             detail += " · failures: " + "; ".join(f"{k} ×{v}" for k, v in top)
         if waiting:
             detail += " · still running, summary of the last 6 h"
+        # all OK: quiet (desktop, app, status report); with failures: to the phone
         notify(f"{'Progress' if waiting else 'Finished'}: {what} in {Path(bkey).name}/", detail,
-               "high" if b["err"] else "default", "warning" if b["err"] else "white_check_mark")
+               "high" if b["err"] else "low", "warning" if b["err"] else "white_check_mark")
         del pending[bkey]
 
     new_runs = {}

@@ -68,5 +68,7 @@ def run():
     d = config.REPORTS / "weekly"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{time.strftime('%G-W%V')}.md").write_text(text)
+    import os
+    os.environ["MS_PHONE"] = "1"
     watcher.notify("Weekly summary", short, "low", "bar_chart")
     return text
