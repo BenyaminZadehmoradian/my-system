@@ -269,6 +269,8 @@ KEEP_MONTHLY=6
 # QUEUE_OOM_SCORE_ADJ=300      # if RAM runs out, the kernel kills queue jobs before your desktop
 # QUEUE_SLOW_FACTOR=2          # notify when a job runs this many times longer than usual
 """
+    from . import remote as _rm
+    files["remotes.conf"] = _rm.TEMPLATE
     files["groups.conf"] = """# Job groups: NAME LIMIT — at most LIMIT jobs of the group run at once (ms q add --group NAME, flow key group:)
 # vivado_impl 3
 # sims 6

@@ -1,0 +1,213 @@
+"""Remote Slurm server (Titan-like) against a simulated cluster: fake ssh/scp/sbatch/squeue/sacct/sinfo/scancel.
+The fake head node is a folder; compute nodes fetch files with scp like on Titan (or see a shared disk).
+Run: python3 tests/test_remote.py"""
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_features import HARNESS, fake_ms  # noqa: E402
+
+STUBS = {
+    # ssh [opts] HOST CMD  -> run CMD in the head node's home
+    "ssh": r'''#!/bin/bash
+while [ $# -gt 0 ]; do case "$1" in -o|-p|-i|-l) shift 2;; -*) shift;; *) break;; esac; done
+host="$1"; shift
+[ "$host" = "deadhost" ] && { echo "ssh: connect to host deadhost: Connection refused" >&2; exit 255; }
+cd "$FAKE_HEAD" && HOME="$FAKE_HEAD" exec bash -c "$*"
+''',
+    # scp [opts] SRC DST ; host:path -> $FAKE_HEAD/path
+    "scp": r'''#!/bin/bash
+args=(); while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) args+=("$1"); shift;; esac; done
+map() { case "$1" in *:*) p="${1#*:}"; case "$p" in /*) echo "$p";; *) echo "$FAKE_HEAD/$p";; esac;; *) echo "$1";; esac; }
+cp -r "$(map "${args[0]}")" "$(map "${args[1]}")"
+''',
+    "sbatch": r'''#!/bin/bash
+script="${@: -1}"
+n=$(( $(cat "$FAKE_SLURM/seq" 2>/dev/null || echo 100) + 1 )); echo $n > "$FAKE_SLURM/seq"
+grep -q '^#SBATCH --account=' "$script" || { echo "sbatch: error: account required" >&2; exit 1; }
+cp "$script" "$FAKE_SLURM/$n.sh"
+echo RUNNING > "$FAKE_SLURM/$n.state"
+if [ "$FAKE_SHARED" = 1 ]; then run_in="$FAKE_HEAD"; else run_in=$(mktemp -d); fi
+cat > "$FAKE_SLURM/$n.run" <<EOF
+cd "$run_in"; bash "$FAKE_SLURM/$n.sh" > "$FAKE_SLURM/$n.out" 2>&1; rc=\$?
+if [ "\$(cat "$FAKE_SLURM/$n.state")" != CANCELLED ]; then
+  [ \$rc = 0 ] && echo COMPLETED > "$FAKE_SLURM/$n.state" || echo FAILED > "$FAKE_SLURM/$n.state"; echo \$rc > "$FAKE_SLURM/$n.rc"; fi
+EOF
+# like a real cluster: the job runs detached from whoever submitted it
+setsid bash "$FAKE_SLURM/$n.run" > /dev/null 2>&1 < /dev/null &
+echo $! > "$FAKE_SLURM/$n.pid"
+echo "$n"
+''',
+    "squeue": r'''#!/bin/bash
+j=""; while [ $# -gt 0 ]; do case "$1" in -j) j="$2"; shift 2;; -o|-A) shift 2;; *) shift;; esac; done
+for f in "$FAKE_SLURM"/*.state; do [ -e "$f" ] || continue; n=$(basename "$f" .state)
+  [ -n "$j" ] && [ "$n" != "$j" ] && continue
+  st=$(cat "$f"); [ "$st" = RUNNING ] && { [ -n "$j" ] && echo "RUNNING|node07|None" || echo RUNNING; }; done
+''',
+    "sacct": r'''#!/bin/bash
+j=""; while [ $# -gt 0 ]; do case "$1" in -j) j="$2"; shift 2;; *) shift;; esac; done
+echo "$(cat "$FAKE_SLURM/$j.state")|$(cat "$FAKE_SLURM/$j.rc" 2>/dev/null || echo 0):0"
+''',
+    "sinfo": r'''#!/bin/bash
+case "$*" in *-N*) echo "node07 16 64000 idle"; echo "node08 16 64000 mix";; *) echo "8/24/0/32";; esac
+''',
+    "scancel": r'''#!/bin/bash
+echo CANCELLED > "$FAKE_SLURM/$1.state"; pkill -TERM -s "$(cat "$FAKE_SLURM/$1.pid")" 2>/dev/null; exit 0
+''',
+}
+
+
+def cluster(tmp, shared):
+    stubs, head, slurm = tmp / "stubs", tmp / "head", tmp / "slurm"
+    for d in (stubs, head, slurm):
+        d.mkdir(exist_ok=True)
+    for n, body in STUBS.items():
+        (stubs / n).write_text(body)
+        (stubs / n).chmod(0o755)
+    home = tmp
+    (home / ".ssh").mkdir(exist_ok=True)
+    (home / ".ssh/config").write_text("Host titan\n  Hostname bacchus.example\n  User slurmslave\n")
+    return dict(PATH=f"{stubs}:{os.environ['PATH']}", FAKE_HEAD=str(head), FAKE_SLURM=str(slurm),
+                FAKE_SHARED="1" if shared else "0", MSQ_REMOTE_POLL="0.3")
+
+
+CONF = """[titan]
+type = slurm
+ssh = titan
+head = titan
+account = bzm
+partition = batch
+qos = batch_qos
+max_jobs = 2
+max_upload_gb = 0.001
+offload = {offload}
+offload_after_min = 0
+"""
+
+
+def run(code, shared=True, offload="never"):
+    tmp, ms = fake_ms()
+    (ms / "config/remotes.conf").write_text(CONF.format(offload=offload))
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp), WORK=str(tmp / "work"))
+    env.update(cluster(tmp, shared))
+    r = subprocess.run([sys.executable, "-c", HARNESS + code], env=env, capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    notes = (tmp / "notes").read_text() if (tmp / "notes").exists() else ""
+    return r.stdout, notes, tmp, ms, env
+
+
+JOB = r'''
+os.makedirs(os.path.join(W, "p"), exist_ok=True)
+open(os.path.join(W, "p", "design.v"), "w").write("module top; endmodule\n")
+a = queue.submit("cat design.v > copy.v; echo hello-from-node; echo wns=0.25 >> $MSQ_OUTPUTS; exit 0",
+                 cwd=os.path.join(W, "p"), name="impl", mem_gb=4, cores=2, remote="titan")
+b = queue.submit("echo broken; exit 3", cwd=os.path.join(W, "p"), name="bad", mem_gb=1, cores=1, remote="titan")
+assert until(lambda: st(a["id"]) in queue.TERMINAL and st(b["id"]) in queue.TERMINAL, 90), (queue.load(a["id"]), queue.load(b["id"]))
+ja, jb = queue.load(a["id"]), queue.load(b["id"])
+log = open(queue.LOGS / f"{a['id']}.log").read()
+assert ja["state"] == "done", (ja["state"], ja["reason"], log)
+assert open(os.path.join(W, "p", "copy.v")).read() == "module top; endmodule\n", "result file came back"
+assert ja["outputs"].get("wns") == "0.25", ja["outputs"]
+assert "submitted as Slurm job" in log and "hello-from-node" in log and "results copied back" in log, log
+assert ja.get("remote_job") and not os.path.exists(os.path.join(os.environ["FAKE_HEAD"], ja["remote_dir"])), "cleaned up there"
+assert jb["state"] == "failed" and jb["rc"] == 3, (jb["state"], jb["rc"], jb["reason"])
+script = open(os.path.join(os.environ["FAKE_SLURM"], ja["remote_job"] + ".sh")).read()
+for want in ("--account=bzm", "--partition=batch", "--qos=batch_qos", "--cpus-per-task=2", "--mem=5G"):
+    assert want in script, want
+assert not any(f.endswith((".msq_rc", ".msq_outputs")) for f in os.listdir(os.path.join(W, "p")))
+print("ok")
+'''
+
+
+def test_remote_job_shared_disk():
+    out, notes, *_ = run(JOB, shared=True)
+    assert "ok" in out
+
+
+def test_remote_job_node_fetches_with_scp():
+    out, notes, *_ = run(JOB, shared=False)
+    assert "ok" in out
+
+
+def test_cancel_limits_and_refusals():
+    out, notes, tmp, ms, env = run(r'''
+os.makedirs(os.path.join(W, "q"), exist_ok=True)
+open(os.path.join(W, "q", "a.txt"), "w").write("x")
+c = queue.submit("sleep 60", cwd=os.path.join(W, "q"), name="long", mem_gb=1, cores=1, remote="titan")
+assert until(lambda: queue.load(c["id"]).get("remote_job"), 30)
+d = queue.submit("sleep 60", cwd=os.path.join(W, "q"), name="long2", mem_gb=1, cores=1, remote="titan")
+e = queue.submit("true", cwd=os.path.join(W, "q"), name="third", mem_gb=1, cores=1, remote="titan")
+assert until(lambda: st(d["id"]) == "running", 30)
+S.tick()
+assert st(e["id"]) == "queued" and "2 job(s) already on titan" in queue.load(e["id"])["reason"]
+queue.cancel(c["id"]); queue.cancel(d["id"]); queue.cancel(e["id"])
+assert until(lambda: st(c["id"]) in queue.TERMINAL and not queue._alive(queue.load(c["id"]).get("pid")), 40)
+sid = queue.load(c["id"])["remote_job"]
+assert open(os.path.join(os.environ["FAKE_SLURM"], sid + ".state")).read().strip() == "CANCELLED"
+# too big without declared inputs, then fine with --inputs
+os.makedirs(os.path.join(W, "big"), exist_ok=True)
+open(os.path.join(W, "big", "huge.bin"), "wb").write(os.urandom(2 * 2**20))
+open(os.path.join(W, "big", "top.v"), "w").write("module t; endmodule\n")
+f = queue.submit("ls > files.txt", cwd=os.path.join(W, "big"), name="big", mem_gb=1, cores=1, remote="titan")
+assert until(lambda: st(f["id"]) in queue.TERMINAL, 40)
+assert st(f["id"]) == "failed" and "limit" in open(queue.LOGS / f"{f['id']}.log").read()
+g = queue.submit("ls > files.txt", cwd=os.path.join(W, "big"), name="big2", mem_gb=1, cores=1, remote="titan", inputs=["*.v"])
+assert until(lambda: st(g["id"]) in queue.TERMINAL, 40), queue.load(g["id"])
+assert st(g["id"]) == "done" and "huge.bin" not in open(os.path.join(W, "big", "files.txt")).read()
+h = queue.submit("true", cwd=os.path.join(W, "q"), name="sec", mem_gb=1, cores=1, remote="titan", secrets=["TOKEN"])
+assert until(lambda: st(h["id"]) in queue.TERMINAL, 30)
+assert st(h["id"]) == "failed" and "never sent" in open(queue.LOGS / f"{h['id']}.log").read()
+x = queue.submit("true", cwd=os.path.join(W, "q"), name="nope", mem_gb=1, cores=1, remote="nosuch")
+S.tick()
+assert st(x["id"]) == "failed" and "no remote 'nosuch'" in queue.load(x["id"])["reason"]
+print("ok")
+''')
+    assert "ok" in out
+
+
+def test_auto_offload_when_busy():
+    out, notes, *_ = run(r'''
+probes.meminfo = lambda: {"MemTotal": 16 * G, "MemAvailable": 3 * G, "SwapTotal": 0, "SwapFree": 0}
+os.makedirs(os.path.join(W, "o"), exist_ok=True)
+a = queue.submit("echo ran-there > where.txt", cwd=os.path.join(W, "o"), name="auto", mem_gb=8, cores=2, remote="auto")
+loc = queue.submit("true", cwd=os.path.join(W, "o"), name="local_only", mem_gb=8, cores=2)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+ja = queue.load(a["id"])
+assert ja["state"] == "done" and ja["remote"] == "titan" and "sent to titan" in ja.get("start_note", ""), ja
+assert open(os.path.join(W, "o", "where.txt")).read().strip() == "ran-there"
+S.tick()
+assert st(loc["id"]) == "queued" and not queue.load(loc["id"]).get("remote"), "jobs without --on auto stay here"
+ex = dict((c, d) for ok, c, d in queue.explain(loc["id"]))
+print("ok")
+''', offload="busy")
+    assert "ok" in out
+
+
+def test_check_and_probe():
+    tmp, ms = fake_ms()
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never"))
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
+    env.update(cluster(tmp, shared=False))
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "test", "titan"], env=env, capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for want in ("ok  ~/.ssh/config has 'Host titan'", "ok  ssh titan works", "ok  Slurm commands found",
+                 "24 of 32 CPUs idle", "2 node(s)", "cpus=", "tool_vivado=", "ok  test job ran"):
+        assert want in r.stdout, (want, r.stdout)
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "status", "titan"], env=env, capture_output=True, text=True)
+    assert "24 of 32 CPUs idle" in r.stdout, r.stdout
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never").replace("ssh = titan", "ssh = deadhost"))
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "check", "titan"], env=env, capture_output=True, text=True)
+    assert r.returncode == 1 and "NO  ~/.ssh/config has 'Host deadhost'" in r.stdout and "fix:" in r.stdout, r.stdout
+
+
+if __name__ == "__main__":
+    t0 = time.time()
+    for k, fn in list(globals().items()):
+        if k.startswith("test_"):
+            fn()
+            print("ok", k)
+    print(f"all passed in {time.time() - t0:.1f}s")

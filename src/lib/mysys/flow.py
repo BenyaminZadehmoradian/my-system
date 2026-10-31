@@ -52,7 +52,7 @@ STEP_KEYS = {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix
              "protect", "ensure", "keep_incomplete", "publish", "junit", "quality_gate", "follow", "exit_codes",
              "warn_patterns", "resources", "disk_gb", "disk_path", "benchmark", "cache_mode", "rerun_on", "cache",
              "on_error", "secrets", "notify", "begin", "deadline", "collapse_key", "max_parallel", "require_outputs",
-             "respect_reservations", "stop_when", "stop_after", "group", "labels", "stdin"}
+             "respect_reservations", "stop_when", "stop_after", "group", "labels", "stdin", "remote"}
 DEFAULT_KEYS = STEP_KEYS - {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix_mode", "matrix_csv",
                             "folder", "depends", "description", "foreach", "flow", "with", "wait", "approval"}
 PASS_KEYS = ["mem_gb", "cores", "gpus", "priority", "retries", "retry_on", "retry_delay", "retry_backoff",
@@ -61,7 +61,7 @@ PASS_KEYS = ["mem_gb", "cores", "gpus", "priority", "retries", "retry_on", "retr
              "keep_incomplete", "quality_gate", "exit_codes", "warn_patterns", "resources", "disk_gb", "benchmark",
              "cache_mode", "rerun_on", "cache", "secrets", "notify", "collapse_key", "max_parallel", "require_outputs",
              "respect_reservations", "repeat", "approval", "stub", "begin", "deadline", "stop_when", "stop_after",
-             "group", "labels", "stdin"]
+             "group", "labels", "stdin", "remote"]
 PH = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 LATE = re.compile(r"^steps\.[A-Za-z0-9_.+-]+\.(outputs|metrics)\.[A-Za-z0-9_]+$")
 

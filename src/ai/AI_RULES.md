@@ -42,7 +42,10 @@ These rules are installed by **my-system** and are read-only. The machine-specif
 11. **Make jobs observable:** print progress with `echo PERCENT >&3`, pass results to later steps by
     writing `key=value` lines to `$MSQ_OUTPUTS`, put temporary files in `$TMPDIR`, and declare
     `inputs`/`outputs` in flow steps so unchanged work is skipped.
-12. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
+12. **Remote servers** (Slurm, e.g. Titan) are configured by the user in `config/remotes.conf`. Send a job there only
+    with `ms q add --on NAME` / `--on auto` (or the `on` field of `queue_submit`), never with your own ssh/sbatch.
+    The server is shared: never put passwords, keys or private data into jobs sent there.
+13. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
     (or the `runs_compare` MCP tool) instead of parsing logs yourself. To find out what the machine was
     doing at a given time (e.g. why a run was slow or the machine froze) use `ms replay TIME`.
 

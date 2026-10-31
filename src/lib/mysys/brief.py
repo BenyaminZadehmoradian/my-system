@@ -173,6 +173,8 @@ def running():
         if j.get("rss"):
             bits.append(f"{j['rss'] / GiB:.1f} GB")
         st = " PAUSED" if j["state"] == "suspended" else ""
+        if j.get("remote"):
+            st += f" on {j['remote']}" + (f" ({j['remote_state'].lower()})" if j.get("remote_state") and j["remote_state"] != "RUNNING" else "")
         rows.append((j.get("started") or 0, f"#{j['id']} {j['name']}{st} — " + ", ".join(bits)))
     _CACHE.clear()
     try:

@@ -2271,6 +2271,17 @@ class SettingsPage(Page):
         row.addWidget(btn("Self-check (doctor)", self.doctor))
         row.addStretch()
         lay.addLayout(row)
+        rc, rl = _card()
+        rl.addWidget(_lab("REMOTE SERVERS (run jobs on a Slurm cluster such as Titan)", "cardTitle"))
+        self.remote_info = _lab("", wrap=True)
+        rl.addWidget(self.remote_info)
+        rrow = QHBoxLayout()
+        rrow.addWidget(btn("Check connection", lambda: self.remote("check")))
+        rrow.addWidget(btn("Test with a small job", lambda: self.remote("test")))
+        rrow.addWidget(btn("Status", lambda: self.remote("status")))
+        rrow.addStretch()
+        rl.addLayout(rrow)
+        lay.addWidget(rc)
         split = QSplitter(Qt.Orientation.Vertical)
         self.det = mono(QPlainTextEdit())
         self.det.setReadOnly(True)
@@ -2287,10 +2298,34 @@ class SettingsPage(Page):
                               "\n\nToolchains:\n" + "\n".join(f"  {l:26} {p}" for l, p in d.get("tools", [])) +
                               "\n\nPython environments:\n" + "\n".join(f"  {v['path']}  ({v.get('python') or '?'})"
                                                                        for v in d.get("venvs", [])))
+        try:
+            from mysys import remote as RM
+            rs = RM.remotes()
+        except Exception:
+            rs = {}
+        if rs:
+            lines = []
+            for n, r in rs.items():
+                c = RM._cache(n)
+                st = "not checked yet" if not c else (f"reachable, {c.get('idle_cpus')} of {c.get('total_cpus')} CPUs idle"
+                                                      if c.get("ok") else f"not reachable: {c.get('error', '')[:80]}")
+                lines.append(f"{n}: ssh {r['ssh']} · account {r['account'] or '(not set)'} · automatic use: {r['offload']} · {st}")
+            self.remote_info.setText("\n".join(lines) + "\nUse: ms q add --on " + next(iter(rs)) + " -- CMD   (or --on auto)")
+        else:
+            self.remote_info.setText("None configured. Set up: ms remote help (Titan: ms remote setup titan).")
         parts = []
         for f in sorted((BASE / "config").glob("*")):
             parts.append(f"──── {f.name} " + "─" * max(0, 60 - len(f.name)) + "\n" + read(f).rstrip())
         self.conf.setPlainText("\n\n".join(parts) or "(no config files)")
+
+    def remote(self, what):
+        from mysys import remote as RM
+        names = list(RM.remotes())
+        if not names:
+            QMessageBox.information(self, "Remote servers", "No server configured yet.\n\nIn a terminal: ms unlock, then "
+                                    "ms remote setup titan, edit config/remotes.conf, then ms lock. Details: ms remote help")
+            return
+        self.win.run_in_dialog(f"Remote {names[0]}: {what}", ["/usr/bin/python3", str(SCRIPTS / "ms"), "remote", what, names[0]])
 
     def redetect(self):
         self.win.run_in_dialog("Detection", ["/usr/bin/python3", str(SCRIPTS / "ms"), "detect", "--state"])

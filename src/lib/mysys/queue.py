@@ -184,6 +184,8 @@ def submit(cmd, cwd=None, name=None, **opt):
     prof = capacity.profiles().get(tool or "", {})
     j = dict(DEFAULTS)
     j.update({k: v for k, v in opt.items() if v is not None})
+    if j.get("remote") == "auto":          # may run on a remote server when this machine is busy
+        j["remote"], j["remote_ok"] = None, True
     if j.get("mem_gb") is None:
         j["mem_gb"] = prof.get("peak_gb", 2.0)
     if j.get("cores") is None:
@@ -268,8 +270,8 @@ def signal_job(j, sig):
         return False
     sent = False
     for pid, _, _ in _session_procs(sid):
-        if pid == j.get("pid") and sig in (signal.SIGSTOP, signal.SIGCONT):
-            continue                          # keep the runner itself responsive
+        if pid == j.get("pid") and sig != signal.SIGKILL:
+            continue                          # the runner stays: it finishes the job's log and cleans up (e.g. scancel)
         try:
             os.kill(pid, sig)
             sent = True
@@ -339,6 +341,8 @@ def free_gpus():
 # ---------------------------------------------------------------- the runner (one per job)
 def build_command(j):
     """argv that runs the job's command with nice, memory limit, container or remote host."""
+    if j.get("remote"):                    # Slurm cluster: a small local process uploads, follows and downloads
+        return [sys.executable, str(config.MS / "bin" / "ms"), "remote", "_run", str(j["id"])]
     cmd = j["cmd"]
     if j.get("container"):
         uid, gid = os.getuid(), os.getgid()
@@ -632,6 +636,11 @@ def explain(jid):
     sch = Scheduler()
     cap = sch.capacity(jobs)
     out = [(j["state"] in ("queued",), "state", j["state"] + (f" — {j['reason']}" if j.get("reason") else ""))]
+    if j.get("remote"):
+        out.append((True, "runs on", f"{j['remote']}" + (f" (Slurm job {j['remote_job']})" if j.get("remote_job") else "")
+                    + " — local CPU and RAM do not matter"))
+    elif j.get("remote_ok"):
+        out.append((True, "may run on a server", "when this machine stays busy (offload in config/remotes.conf)"))
     if j["state"] in TERMINAL | ACTIVE:
         return out
     out.append(((j.get("begin") or 0) <= now and (j.get("not_before") or 0) <= now, "start time",
@@ -987,6 +996,11 @@ class Scheduler:
         for r in running:
             if r.get("group"):
                 gcount[r["group"]] = gcount.get(r["group"], 0) + 1
+        try:
+            from . import remote as RM
+            rms = RM.remotes()
+        except Exception:
+            rms = {}
         protect = None                    # (job, need_t, need_m): room kept free for a job that waited too long
         starve = float(config.num("QUEUE_STARVE_MIN") or 0) * 60
         short = float(config.num("QUEUE_BACKFILL_MIN") or 0) * 60
@@ -1006,6 +1020,26 @@ class Scheduler:
             j = load(j["id"])
             if (j.get("inputs") or j.get("outputs")) and j.get("incremental", True) and not j.get("force") and up_to_date(j):
                 update(j["id"], state="cached", reason="up to date (same command, parameters and inputs)", ended=now)
+                continue
+            if j.get("remote"):                # runs on a server: local CPU/RAM/pressure do not matter
+                from . import remote as RM
+                try:
+                    rmt = RM.get(j["remote"])
+                except KeyError as e:
+                    update(j["id"], state="failed", ended=now, reason=str(e).strip("'\""))
+                    continue
+                ok, why = check_require(j.get("require"), j["cwd"])
+                if not ok:
+                    if j.get("reason") != f"waiting: {why}":
+                        update(j["id"], reason=f"waiting: {why}")
+                    continue
+                if RM.running_here(j["remote"], all_jobs()) >= int(rmt["max_jobs"]):
+                    msg = f"waiting: {rmt['max_jobs']} job(s) already on {j['remote']}"
+                    if j.get("reason") != msg:
+                        update(j["id"], reason=msg)
+                    continue
+                _launch(load(j["id"]))
+                self.last_start = now
                 continue
             if not why_p and self.io_since and now - self.last_start < 300:
                 why_p = "waiting: the disks are still overloaded — starting one job every 5 minutes"
@@ -1088,6 +1122,15 @@ class Scheduler:
             msg = f"waiting for {why} ({need_m / GiB:.1f} GB, {need_t:.1f} cores needed)"
             if j.get("reason") != msg:
                 update(j["id"], reason=msg)
+            if rms:                            # busy here: may it run on a remote server instead?
+                from . import remote as RM
+                target = RM.offload_target(j, all_jobs(), waited, cap)
+                if target:
+                    update(j["id"], remote=target, remote_auto=True,
+                           start_note=f"sent to {target}: this machine had no room ({why}) after {waited / 60:.0f} min")
+                    _launch(load(j["id"]))
+                    self.last_start = now
+                    continue
             key, val = ("max_free_t", free_t) if why == "CPU" else ("max_free_gb", free_m / GiB)
             if val > float(j.get(key) if j.get(key) is not None else -1) + 0.5:
                 update(j["id"], **{key: round(max(0.0, val), 1)})

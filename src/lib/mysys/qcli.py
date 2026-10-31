@@ -22,6 +22,8 @@ Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and
     other       --name N  --nice N  --no-limit  --container IMG  --host SSH  --env K=V  --require "mounted /mnt/data"
                 --approval "text" (wait for ms q approve)  --notify always|failure|never  --secret NAME  --wait
                 --group G (limit per group in config/groups.conf)  --label L  --stdin (accept ms q send)
+    server      --on NAME (run on a Slurm server from config/remotes.conf)  --on auto (there only when this
+                machine is busy)  — see ms remote help
   ms q [list] [--all] [--state S] [--name RE] [--label L] [--group G] [--json]   jobs
   ms q show ID | log ID | stat ID    details | output | memory/CPU over time
   ms q cancel|hold|release|suspend|resume|retry|requeue|top|approve|reject ID ...
@@ -109,6 +111,7 @@ step        name cmd depends[steps] dep_mode(ok|any|notok) folder
             when_idle preempt priority begin deadline collapse_key respect_reservations group labels[..] stdin
   race      stop_when "expr on outputs/metrics" (e.g. "wns >= 0") stop_after N — once N variants of the step reach
             the goal, the others are stopped and do not count as failures
+  server    remote: NAME (run on that Slurm server) | auto (there only when this machine is busy)
   failure   retries retry_on[oom,timeout,fail,any] retry_exit_codes[..] retry_delay retry_backoff retry_max_delay
             retry_delays[30s,2m,10m] retry_scale{mem,time} timeout(2h|auto|300%) idle_timeout signal_before(USR1@300)
             kill_seq(TERM,30,KILL) exit_codes{1: warning} warn_patterns[...] on_error(terminate|finish|ignore|retry)
@@ -187,7 +190,7 @@ ADD_SIMPLE = {"--name": "name", "--mem": "mem_gb", "--cores": "cores", "--priori
               "--kill-seq": "kill_seq", "--retry-delay": "retry_delay", "--retry-backoff": "retry_backoff",
               "--begin": "begin", "--deadline": "deadline", "--collapse": "collapse_key", "--disk-gb": "disk_gb",
               "--disk-path": "disk_path", "--approval": "approval", "--notify": "notify", "--benchmark": "benchmark",
-              "--group": "group"}
+              "--group": "group", "--on": "remote"}
 ADD_LIST = {"--require": "require", "--follow": "follow", "--outputs": "outputs", "--inputs": "inputs",
             "--warn-pattern": "warn_patterns", "--secret": "secrets", "--junit": "junit", "--label": "labels"}
 ADD_FLAG = {"--no-limit": ("limit_memory", False), "--when-idle": ("when_idle", True), "--preempt": ("preempt", True),

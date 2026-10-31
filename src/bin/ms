@@ -33,6 +33,7 @@
   ms replay TIME         what the machine was doing then (load, RAM, biggest programs, jobs); ms replay crashes
   ms ping NAME [start|fail|CODE]   dead-man's-switch ping to PING_<NAME> in my_system.conf
   ms housekeeping        rotate / trim my-system's own logs (daily job does this)
+  ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, status (ms remote help)
   ms brief [--send]      status report: system, running, waiting, last 3 finished (--send: to the phone now)
 """
 import os
@@ -486,6 +487,9 @@ def main(argv):
             print("usage: ms ping NAME [start|fail|EXIT_CODE]   (URL from PING_<NAME> in my_system.conf)")
             return 2
         return 0 if config.ping(rest[0], rest[1] if len(rest) > 1 else "") else 1
+    elif cmd == "remote":
+        from mysys import remote
+        return remote.cli(rest)
     elif cmd == "brief":
         from mysys import brief
         return brief.cli(rest)

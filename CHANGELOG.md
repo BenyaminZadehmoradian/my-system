@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.10.0 — 2026-10-31
+
+Remote servers (Slurm, e.g. Titan at UGent CSL PerfLab)
+- `config/remotes.conf` + `ms remote setup|list|check|test|status NAME`. `check` goes step by step (ssh config, key login,
+  Slurm commands, account, work folder, nodes) and says how to fix each step; `test` also sends a 1-minute job that
+  reports what the nodes offer (CPUs, RAM, Vivado/Vitis/xsim, docker images, /mnt/perflab).
+- `ms q add --on titan -- CMD` runs a job there; `--on auto` runs it here, or there when this machine is busy
+  (offload = busy, after offload_after_min) or too small for it. Flows: `remote: titan | auto`. MCP: `on`.
+- How it runs: the job folder (or only its declared inputs) is packed and copied to the head node, `sbatch` starts
+  it with your account, cores, memory and time limit; on the node it fetches the files (or uses a shared disk), runs
+  (optionally in a docker image), sends its log back every minute and its changed files at the end. Here it is a
+  normal queue job: live log, run log, $MSQ_OUTPUTS, notifications, phone report and app ("on titan (node07)");
+  cancelling it cancels the Slurm job; results land in the job's folder.
+- Safety: jobs with secrets are never sent; no password is stored or used (only your ssh key); folders above
+  max_upload_gb must declare inputs; at most max_jobs at once.
+- App: "Remote servers" card in Settings (check, test, status).
+- Tested end-to-end against a simulated Slurm cluster (shared disk and scp-only nodes, cancel, limits, offload).
+
+Fix
+- Cancelling a running job no longer kills its runner first: the runner finishes the log and cleans up.
+
 ## 1.9.0 — 2026-10-31
 
 App
