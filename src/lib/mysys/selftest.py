@@ -165,10 +165,20 @@ def live_checks():
                 f"{age:.0f} h old" if age is not None else "collector not installed"))
     out.append(("capacity can be computed", bool(capacity.now_text()), ""))
     if shutil.which("claude"):
-        r = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60)
-        out.append(("MCP server registered for Claude Code", "my-system" in r.stdout, ""))
-    lg = subprocess.run(["loginctl", "show-user", os.environ.get("USER", ""), "-p", "Linger", "--value"],
-                        capture_output=True, text=True).stdout.strip()
+        # read Claude Code's own config instead of `claude mcp list` (that one contacts every server and can hang)
+        reg = None
+        try:
+            cfg = json.loads((Path.home() / ".claude.json").read_text())
+            reg = "my-system" in (cfg.get("mcpServers") or {}) or any(
+                "my-system" in (p.get("mcpServers") or {}) for p in (cfg.get("projects") or {}).values())
+        except (OSError, ValueError):
+            reg = None
+        out.append(("MCP server registered for Claude Code", reg, "" if reg is not None else "~/.claude.json not readable"))
+    try:
+        lg = subprocess.run(["loginctl", "show-user", os.environ.get("USER", ""), "-p", "Linger", "--value"],
+                            capture_output=True, text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        lg = ""
     out.append(("queue keeps running after log out (linger)", lg == "yes" if lg else None, lg or "unknown"))
     pol = Path("/etc/claude-code/managed-settings.json")
     out.append(("AI policy installed", pol.exists(), ""))
@@ -183,7 +193,10 @@ def run(args):
     lines = [f"my-system self-test — {time.strftime('%F %T')}", ""]
     results = []
     print("Checking the installation (read-only)…", flush=True)
-    results += live_checks()
+    try:
+        results += live_checks()
+    except Exception as e:          # a broken check must never stop the test
+        results.append(("installation checks", False, f"{type(e).__name__}: {e}"))
     print("Running test jobs in a separate, temporary queue (your real jobs are not touched)…", flush=True)
     root, ms = _isolated()
     try:

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1 — 2026-10-31
+
+- `ms selftest`: read the MCP registration from ~/.claude.json instead of `claude mcp list` (which can hang); a failing installation check no longer stops the test.
+
 ## 1.5.0 — 2026-10-31
 
 Second, documentation-based comparison with GNU Parallel, task-spooler, Slurm, Snakemake, Nextflow, Dagu, evQueue,
