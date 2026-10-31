@@ -55,11 +55,15 @@ def test_guard():
     block = ['echo "x" >> ~/.bashrc', "sed -i s/a/b/ /etc/hosts", "cp x /etc/hosts", "rm -rf $HOME/.venvs/a",
              "sudo apt install x", "pkill vivado", "tee -a ~/.bashrc <<< x", "echo hi > ~/My_System/ai/AI_RULES.md",
              "systemctl stop docker", "pip install numpy --break-system-packages",
-             "python3 -c \"open('/etc/hosts','w').write('x')\""]
+             "python3 -c \"open('/etc/hosts','w').write('x')\"",
+             "bash <<EOF\nkill 1234\nEOF", "cat > ~/.bashrc <<'E'\nalias x=y\nE",
+             "python3 - <<'P'\nopen('/etc/hosts','w').write('x')\nP"]
     allow = ["cat ~/.bashrc 2>/dev/null", "ls /usr/bin > out.txt", "sed s/a/b/ /etc/hosts > /tmp/h", "cp /etc/hosts ./h",
              "make -j8 2>&1 | tee build.log", "git status", "cat ~/My_System/reports/latest/health.txt",
              "grep -r foo /opt/x | head", "python3 -m venv .venv && .venv/bin/pip install numpy",
-             "systemctl --user status my-system-daily", "mv ~/proj/a ~/proj/b"]
+             "systemctl --user status my-system-daily", "mv ~/proj/a ~/proj/b",
+             "cat > make_floor_ucf.py <<'E'\nimport os\nos.system('kill -9 1')  # sudo reboot\nE\npython3 make_floor_ucf.py",
+             "cat <<-X > notes.txt\n\tremember: never kill vivado\n\tX"]
     bad = [c for c in block if not guard(ms, home, "Bash", {"command": c})]
     bad += [c for c in allow if guard(ms, home, "Bash", {"command": c})]
     assert not bad, f"misclassified: {bad}"
@@ -165,6 +169,23 @@ assert "ms capacity" in g and "| vivado | 5 | 6.5 GB | 1.4 |" in g, g
 """
     env = dict(os.environ, MY_SYSTEM=str(ms))
     subprocess.run([sys.executable, "-c", code], env=env, check=True)
+
+
+def test_overload_advice():
+    sys.path.insert(0, str(SRC / "lib"))
+    from mysys import watcher, probes
+    probes_threads, probes_mem = probes.threads, probes.meminfo
+    probes.threads = lambda: 16
+    probes.meminfo = lambda: {"MemTotal": 92 * 2**30}
+    try:
+        cur = [{"cores": 2.2, "rss": 6 * 2**30} for _ in range(7)]     # crowded: each gets ~2 cores, wants ~3.7
+        k, per = watcher.advise_parallel(cur, {}, 26)
+        assert k < 7 and k == 4 and 3.5 < per < 3.9, (k, per)
+        k, _ = watcher.advise_parallel([{"cores": 1, "rss": 1}] * 3, {}, 20)
+        assert 1 <= k <= 2
+        assert watcher.advise_parallel([{"cores": 30, "rss": 0}], {}, 30)[0] == 1
+    finally:
+        probes.threads, probes.meminfo = probes_threads, probes_mem
 
 
 if __name__ == "__main__":

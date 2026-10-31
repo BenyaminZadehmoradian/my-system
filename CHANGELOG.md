@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.3 — 2026-10-31
+
+- Queue: a job killed by the kernel at its memory limit is now reported as "out of memory" (and retried with more RAM
+  when retries are on). Before, the cgroup was already removed when the runner looked, so it showed only "exit code -9".
+- Watcher: the "CPU overloaded" advice now counts how many threads each job really wants (load ÷ jobs) and never
+  suggests more parallel jobs than are running; it also suggests fewer threads per job as an alternative.
+- AI guard: text inside a heredoc that only writes a file (`cat > x.py <<'E' … E`) no longer trips the kill/sudo/reboot
+  rules. Heredocs fed to a shell or interpreter (`bash <<EOF`, `python3 - <<EOF`) are still checked.
+
 ## 1.5.2 — 2026-10-31
 
 - `ms selftest` and the unit tests work from the locked (read-only) installation: temporary copies are made writable and removed afterwards.

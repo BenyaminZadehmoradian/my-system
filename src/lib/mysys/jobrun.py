@@ -87,6 +87,7 @@ class Runner:
         self.hz = os.sysconf("SC_CLK_TCK")
         self.ticks, self.io = {}, {}
         self.peak = 0
+        self.in_scope = False
         self.last_out = time.time()
         self.last_line = ""
         self.errs = 0
@@ -350,7 +351,10 @@ class Runner:
             self.write_out(f"cannot start: {e}\n")
         secs = time.time() - t0
         cur = queue.load(jid) or j
-        oom = rc in (-9, 137) and (self.peak >= 0.9 * float(j["mem_gb"]) * 1.25 * GiB or queue._cgroup_oom(j))
+        # SIGKILL (-9/137) that the runner did not send: in a memory-limited scope that is the kernel's OOM killer
+        # (the scope is gone by now, so memory.events may be unreadable and the last RSS sample may be old)
+        oom = rc in (-9, 137) and not why and (getattr(self, "in_scope", False) or queue._cgroup_oom(j)
+                                               or self.peak >= 0.9 * float(j["mem_gb"]) * 1.25 * GiB)
         codes = {str(k): v for k, v in (j.get("exit_codes") or {}).items()}
         mapped = codes.get(str(rc))
         if why == "cancelled" or cur.get("state") == "cancelled":
@@ -507,6 +511,7 @@ class Runner:
         else:
             jj = j
         argv = queue.build_command(jj)
+        self.in_scope = self.in_scope or argv[:1] == ["systemd-run"]
         reps = max(1, int(j.get("benchmark") or 1))
         rep = j.get("repeat") or {}
         rc, why = 0, None

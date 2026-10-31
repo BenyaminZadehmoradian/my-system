@@ -71,8 +71,41 @@ def hit(text, prot):
     return None
 
 
+# programs that would *execute* a heredoc body; for anything else (cat > f, tee f, ...) the body is only file data
+INTERP = {"bash", "sh", "zsh", "dash", "ksh", "fish", "ssh", "python", "python3", "perl", "ruby", "node", "tclsh",
+          "vivado", "xargs", "env", "nice", "nohup", "time", "eval", "exec", "source", "."}
+HEREDOC = re.compile(r"(?<!<)<<(-?)\s*(['\"]?)([A-Za-z_][\w.-]*)\2")
+
+
+def strip_heredocs(cmd):
+    """Drop heredoc bodies that are just data, so text inside a file being written never trips a check."""
+    lines, out, i = cmd.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in HEREDOC.finditer(line):
+            seg = re.split(r"\|\||&&|[;|&(]", line[:m.start()])[-1].split()
+            seg = [w for w in seg if not re.match(r"^\w+=", w)]
+            prog = os.path.basename(seg[0].strip("'\"")) if seg else ""
+            prog = re.sub(r"[0-9.]+$", "", prog) if prog.startswith("python") else prog
+            body = []
+            while i < len(lines):
+                end = lines[i].lstrip("\t") if m.group(1) else lines[i]
+                if end == m.group(3):
+                    break
+                body.append(lines[i])
+                i += 1
+            if prog in INTERP or prog.startswith("python"):
+                out += body
+            if i < len(lines):
+                out.append(lines[i])
+                i += 1
+    return "\n".join(out)
+
+
 def check_bash(cmd, prot):
-    c = expand(cmd)
+    c = strip_heredocs(expand(cmd))
     for rx, why in HARD:
         if rx.search(c):
             return why

@@ -236,15 +236,19 @@ def record_profile(r, dur):
         pass
 
 
-def advise_parallel(cur, s):
-    """Suggested number of parallel jobs from measured per-job CPU and RAM."""
-    cores = [j.get("cores") for j in cur if j.get("cores")]
-    rss = [j["rss"] for j in cur if j["rss"]]
+def advise_parallel(cur, s, load=None):
+    """Suggested number of parallel jobs. Each job really wants about load/jobs threads (measured CPU use is capped
+    by the overload itself, so it under-counts); RAM per job limits it too. Never more than the jobs running now."""
+    n = max(1, len(cur))
     th = probes.threads()
-    by_cpu = th / max(1.0, sum(cores) / len(cores)) if cores else th
+    want = [float(j["cores"]) for j in cur if j.get("cores")]
+    per_job = max(sum(want) / len(want) if want else 1.0, (load or 0) / n, 1.0)
+    by_cpu = th / per_job
+    rss = [j["rss"] for j in cur if j.get("rss")]
     mem = probes.meminfo().get("MemTotal", 0)
-    by_mem = mem * 0.85 / (sum(rss) / len(rss)) if rss else by_cpu
-    return max(1, int(min(by_cpu, by_mem)))
+    by_mem = mem * 0.85 / (sum(rss) / len(rss)) if rss and mem else by_cpu
+    k = max(1, int(min(by_cpu, by_mem)))
+    return min(k, n - 1) if n > 1 else 1, per_job
 
 
 # ---------------- tick ----------------
@@ -284,10 +288,12 @@ def tick():
     else:
         s["over_min"] = 0
     if s["over_min"] >= conf["OVERLOAD_MINUTES"] and rate_ok(s, "overload", 6 * 3600):
-        k = advise_parallel(cur, s)
-        notify("CPU overloaded", f"load {l1:.0f} on {th} threads with {len(cur)} jobs for {s['over_min']} min. "
-                                 f"Jobs wait for CPU and each one runs slower. About {k} jobs at a time would "
-                                 f"finish the same work sooner (the my-system queue does this automatically: ms q add).", "default", "hourglass")
+        k, per_job = advise_parallel(cur, s, l1)
+        notify("CPU overloaded", f"load {l1:.0f} on {th} threads with {len(cur)} jobs for {s['over_min']} min "
+                                 f"(each job wants about {per_job:.0f} threads). Jobs wait for CPU and each one runs slower. "
+                                 f"Running about {k} at a time, or giving each job fewer threads "
+                                 f"(about {max(1, int(th / len(cur)))} each), would finish the same work sooner. "
+                                 f"The my-system queue does this automatically: ms q add.", "default", "hourglass")
 
     # standard run logs (msrun.jsonl): report failed runs once
     try:
