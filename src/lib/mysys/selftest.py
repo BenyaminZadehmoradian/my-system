@@ -138,11 +138,22 @@ def _scratch():
     return None
 
 
+def _writable(path):
+    """The installed code is read-only (locked); the temporary copy must be writable and removable."""
+    for dp, dns, fns in os.walk(path):
+        for n in [dp] + [os.path.join(dp, f) for f in fns]:
+            try:
+                os.chmod(n, os.stat(n).st_mode | 0o200)
+            except OSError:
+                pass
+
+
 def _isolated():
     root = Path(tempfile.mkdtemp(prefix="ms-selftest-", dir=_scratch()))
     ms = root / "My_System"
     for d in ("bin", "lib", "plugins", "runlog"):
         shutil.copytree(config.MS / d, ms / d, ignore=shutil.ignore_patterns("__pycache__"))
+    _writable(root)
     for d in ("config", "state", "reports"):
         (ms / d).mkdir(parents=True)
     (ms / "config" / "my_system.conf").write_text('MACHINE_LABEL="selftest"\nQUEUE_KEEP_DAYS=999\n')
@@ -219,6 +230,7 @@ def run(args):
         results.append(("test run finished in time", False, "timed out"))
     finally:
         if not keep:
+            _writable(root)
             shutil.rmtree(root, ignore_errors=True)
     passed = sum(1 for _, ok, _ in results if ok is True)
     failed = [(n, d) for n, ok, d in results if ok is False]

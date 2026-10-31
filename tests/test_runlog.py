@@ -10,6 +10,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
+
+
+def _ct(src, dst, **kw):
+    """copytree that leaves the copy writable (the installed source is read-only)."""
+    import shutil as _sh
+    _sh.copytree(src, dst, **kw)
+    for dp, dns, fns in __import__("os").walk(dst):
+        for n in [dp] + [__import__("os").path.join(dp, f) for f in fns]:
+            try:
+                __import__("os").chmod(n, __import__("os").stat(n).st_mode | 0o200)
+            except OSError:
+                pass
+
 sys.path.insert(0, str(SRC / "runlog"))
 sys.path.insert(0, str(SRC / "lib"))
 
@@ -18,7 +31,7 @@ def fake_ms():
     tmp = Path(tempfile.mkdtemp())
     ms = tmp / "My_System"
     for d in ("bin", "lib", "plugins", "runlog"):
-        shutil.copytree(SRC / d, ms / d)
+        _ct(SRC / d, ms / d)
     for d in ("config", "state", "reports"):
         (ms / d).mkdir()
     (ms / "bin/notify.sh").write_text(f'#!/bin/sh\necho "$1|$2" >> {tmp}/notes\n')
@@ -126,7 +139,7 @@ def test_tcl_writer():
     d = tmp / "viv"
     d.mkdir()
     script = f"""
-source {ROOT / 'src/runlog/msrun.tcl'}
+source {SRC / 'runlog/msrun.tcl'}
 msrun::start s18_doe3 {{seed 3 strategy Performance_Explore note "a \\"quoted\\" text"}}
 msrun::stage synth
 msrun::metric lut 41233

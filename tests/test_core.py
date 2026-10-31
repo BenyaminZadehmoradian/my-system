@@ -1,7 +1,6 @@
 """Core tests: guard hook, watcher batching, detection, policy. Run: python3 tests/test_core.py"""
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,12 +11,25 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
 
 
+def _ct(src, dst, **kw):
+    """copytree that leaves the copy writable (the installed source is read-only)."""
+    import shutil as _sh
+    _sh.copytree(src, dst, **kw)
+    for dp, dns, fns in __import__("os").walk(dst):
+        for n in [dp] + [__import__("os").path.join(dp, f) for f in fns]:
+            try:
+                __import__("os").chmod(n, __import__("os").stat(n).st_mode | 0o200)
+            except OSError:
+                pass
+
+
+
 def make_ms():
     """A throw-away my-system folder with the source code and a minimal config."""
     tmp = Path(tempfile.mkdtemp())
     ms = tmp / "My_System"
     for d in ("bin", "lib", "plugins", "ai"):
-        shutil.copytree(SRC / d, ms / d)
+        _ct(SRC / d, ms / d)
     (ms / "config").mkdir()
     (ms / "state").mkdir()
     (ms / "reports").mkdir()

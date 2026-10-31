@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2 — 2026-10-31
+
+- `ms selftest` and the unit tests work from the locked (read-only) installation: temporary copies are made writable and removed afterwards.
+
 ## 1.5.1 — 2026-10-31
 
 - `ms selftest`: read the MCP registration from ~/.claude.json instead of `claude mcp list` (which can hang); a failing installation check no longer stops the test.
