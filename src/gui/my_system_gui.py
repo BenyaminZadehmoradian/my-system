@@ -1275,6 +1275,23 @@ class NotifyPage(Page):
         row.addStretch()
         cl.addLayout(row)
         lay.addWidget(card)
+        card2 = QFrame()
+        card2.setObjectName("card")
+        c2 = QVBoxLayout(card2)
+        c2.setContentsMargins(18, 16, 18, 16)
+        t2 = QLabel("STATUS REPORT TO THE PHONE")
+        t2.setObjectName("cardTitle")
+        c2.addWidget(t2)
+        self.brief_info = QLabel()
+        self.brief_info.setWordWrap(True)
+        self.brief_info.setObjectName("muted")
+        c2.addWidget(self.brief_info)
+        r2 = QHBoxLayout()
+        r2.addWidget(btn("Preview", self.brief_preview))
+        r2.addWidget(btn("Send status report now", self.brief_send, "primary"))
+        r2.addStretch()
+        c2.addLayout(r2)
+        lay.addWidget(card2)
         h = QLabel("Recent notifications")
         h.setObjectName("h2")
         lay.addWidget(h)
@@ -1293,6 +1310,12 @@ class NotifyPage(Page):
             "3. Press <b>Send test notification</b> below.<br>"
             f"<span style='color:{T['muted']}'>The topic name works like a password: anyone who knows it can read these "
             "alerts, so keep it private. Alerts contain only status text, never file contents.</span>")
+        times = " ".join(CFG.words("PHONE_REPORT_TIMES"))
+        self.brief_info.setText(
+            "How the machine is, what is running, what is waiting and the last 3 finished runs. "
+            + (f"Sent automatically at {times}" if times else "Not sent automatically (PHONE_REPORT_TIMES is empty)")
+            + ". Any time: type  status  as a message in your topic in the ntfy app — the report arrives within a minute. "
+              "Change the times in config/my_system.conf (PHONE_REPORT_TIMES).")
         self.enabled.blockSignals(True)
         self.enabled.setChecked(bool(tp) and not (STATE / "ntfy_off").exists())
         self.enabled.blockSignals(False)
@@ -1308,6 +1331,22 @@ class NotifyPage(Page):
             self.log.setItem(i, 1, cell(pr, lv))
             self.log.setItem(i, 2, cell(ti, lv, True))
             self.log.setItem(i, 3, cell(msg))
+
+    def brief_preview(self):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief"], capture_output=True, text=True, timeout=60)
+        d = QDialog(self)
+        d.setWindowTitle("Status report (as it appears on the phone)")
+        d.resize(520, 640)
+        l_ = QVBoxLayout(d)
+        v = mono(QPlainTextEdit())
+        v.setReadOnly(True)
+        v.setPlainText(r.stdout + r.stderr)
+        l_.addWidget(v, 1)
+        l_.addWidget(btn("Close", d.close))
+        d.exec()
+
+    def brief_send(self):
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief", "--send"], None, None, self.refresh)
 
     def copy(self):
         QApplication.clipboard().setText(self.topic())

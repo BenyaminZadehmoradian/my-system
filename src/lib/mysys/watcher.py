@@ -322,6 +322,15 @@ def tick():
     if now - s.get("ping_watch", 0) >= 290:
         s["ping_watch"] = now
         config.ping("watch")
+    # status report to the phone: at PHONE_REPORT_TIMES, or when "status" is typed in the ntfy app
+    try:
+        from . import brief
+        if brief.phone_requests(s):
+            brief.send("default")
+        elif brief.due(s, now):
+            brief.send()
+    except Exception:
+        pass
 
     # overload advice
     l1 = probes.loadavg()[0]

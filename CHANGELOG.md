@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0 — 2026-10-31
+
+- Status report for the phone (`ms brief`, `ms brief --send`): how the machine is (CPU busy %, temperature, free RAM,
+  disk, backup), what needs attention, what is running (queue jobs and Vivado runs started outside the queue, with
+  run time, progress, time left and RAM), what is waiting and why, and the last 3 finished runs with result, duration
+  and WNS. Plain text with short lines, readable in the ntfy app.
+- Sent at PHONE_REPORT_TIMES (default 08:00 13:00 19:00; quiet "low" priority unless something needs attention),
+  and on request: type `status` (or `?`) as a message in your ntfy topic and the report arrives within a minute.
+- Notifications page: "Preview" and "Send status report now".
+
 ## 1.6.0 — 2026-10-31
 
 Third comparison with similar projects (pueue, below/atop, earlyoom/systemd-oomd, healthchecks.io, borgmatic,

@@ -214,6 +214,7 @@ MIN_RUN=60               # ignore jobs shorter than this (seconds)
 BATCH_QUIET=300          # summarise a batch folder after it has been idle this long
 REPORT_KEEP_DAYS=60
 NTFY_SERVER="https://ntfy.sh"
+PHONE_REPORT_TIMES="08:00 13:00 19:00"   # status report to the phone; empty = only when you type "status" in ntfy
 LOW_MEM_PCT=5            # urgent warning when available RAM drops below this (%)
 HISTORY_KEEP_DAYS=14     # per-minute record for "ms replay" (what was running at a given time)
 # Dead-man's switch (optional): a healthchecks.io-style URL per task; you are alerted when pings STOP,
