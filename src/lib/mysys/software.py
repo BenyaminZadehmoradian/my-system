@@ -106,7 +106,13 @@ for d in md.distributions():
                 p = p[:-3]
             if p and not p.endswith((".dist-info", ".egg-info", ".data")) and p not in ("..", "__pycache__", "bin"):
                 top.append(p)
-    out[name] = {"version": d.version, "top": sorted(set(top)), "requires": d.requires or []}
+    local = False
+    try:
+        du = json.loads(d.read_text("direct_url.json") or "{}")
+        local = bool(du) and (du.get("dir_info") is not None or str(du.get("url", "")).startswith("file:"))
+    except Exception:
+        pass
+    out[name] = {"version": d.version, "top": sorted(set(top)), "requires": d.requires or [], "local": local}
 print(json.dumps({"python": sys.version.split()[0], "packages": out}))
 '''
 
@@ -647,11 +653,15 @@ def audit(data=None, post=None, get=None):
     post, get = post or _post, get or _get
     data = data or load() or {}
     pkgs = {}
+    # never send the names of your own code: packages installed from a local folder / editable, or named like
+    # one of your projects
+    own = {re.sub(r"[-_.]+", "-", os.path.basename(p)).lower() for p in (data.get("projects") or {})}
     for vp, v in (data.get("venvs") or {}).items():
         for name, info in (v.get("packages") or {}).items():
             ver = info.get("version") if isinstance(info, dict) else info
-            if ver:
-                pkgs.setdefault((name, ver), []).append(vp)
+            if not ver or (isinstance(info, dict) and info.get("local")) or re.sub(r"[-_.]+", "-", name).lower() in own:
+                continue
+            pkgs.setdefault((name, ver), []).append(vp)
     keys = sorted(pkgs)
     found, errors = [], ""
     details = {}
@@ -711,7 +721,8 @@ HELP = """ms software — updates and who uses what (read-only)
   ms software plan             suggested update order with the commands to run yourself
   ms software uses NAME        who uses a project / environment / package / library / tool / image
   ms software project NAME     what one project uses (environments, packages, tools, images)
-  ms software audit [--weekly] Python packages with known vulnerabilities (osv.dev; sends only names+versions)
+  ms software audit [--weekly] Python packages with known vulnerabilities (osv.dev; sends only names+versions
+                               of packages from PyPI — never local/editable installs or names of your projects)
 """
 
 

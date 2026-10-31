@@ -153,7 +153,8 @@ def check_unclean(notify):
         clean = {}
     # mark as handled first, so a failure below never repeats the report
     LAST.write_text(json.dumps({"boot_id": cur, "sample": smp, "handled_prev": last["boot_id"]}))
-    if clean.get("boot_id") == last["boot_id"]:
+    # clean only if the stop came at the very end (a restart of the service earlier that day does not count)
+    if clean.get("boot_id") == last["boot_id"] and clean.get("t", 0) >= smp.get("t", 0) - 120:
         return {"clean": True}
     try:
         from . import queue

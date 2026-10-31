@@ -263,6 +263,8 @@ KEEP_MONTHLY=6
 # QUEUE_PSI_IO_SOME=80         # no new jobs while disk I/O stalls this % of the time
 # QUEUE_STARVE_MIN=30          # a big job waiting this long gets room kept free (smaller jobs cannot overtake it forever)
 # QUEUE_BACKFILL_MIN=20        # ... except jobs that usually finish within this many minutes
+# QUEUE_CPU_PATIENCE_MIN=60    # waited this long for cores (RAM free): start once half of its cores are free
+# QUEUE_STUCK_NOTIFY_H=2       # tell me when a job has waited this many hours, and what would let it start
 # QUEUE_PIN_CPUS=0             # 1 = each job gets its own physical cores (taskset)
 # QUEUE_OOM_SCORE_ADJ=300      # if RAM runs out, the kernel kills queue jobs before your desktop
 # QUEUE_SLOW_FACTOR=2          # notify when a job runs this many times longer than usual

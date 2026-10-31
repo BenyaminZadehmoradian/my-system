@@ -71,14 +71,28 @@ def hit(text, prot):
     return None
 
 
-# programs that would *execute* a heredoc body; for anything else (cat > f, tee f, ...) the body is only file data
-INTERP = {"bash", "sh", "zsh", "dash", "ksh", "fish", "ssh", "python", "python3", "perl", "ruby", "node", "tclsh",
-          "vivado", "xargs", "env", "nice", "nohup", "time", "eval", "exec", "source", "."}
+# A heredoc body is only skipped when it is plainly written to a file (cat/tee > file) and nothing on that
+# command line could execute it (no pipe, no shell or interpreter anywhere on the line). Everything else is checked.
+DATA_SINKS = {"cat", "tee"}
+INTERP = {"bash", "sh", "zsh", "dash", "ksh", "fish", "ssh", "perl", "ruby", "node", "tclsh", "vivado", "xargs", "env",
+          "nice", "nohup", "time", "timeout", "eval", "exec", "source", ".", "sudo", "su", "doas", "pkexec", "systemd-run",
+          "docker", "podman", "flock", "setsid", "script", "watch", "parallel", "tsp", "ts", "vrun", "ms", "make"}
 HEREDOC = re.compile(r"(?<!<)<<(-?)\s*(['\"]?)([A-Za-z_][\w.-]*)\2")
 
 
+def _executes(line):
+    if "|" in line.replace("||", "") or "`" in line or "$(" in line:
+        return True
+    for w in re.split(r"[\s;&()]+", line):
+        b = os.path.basename(w.strip("'\""))
+        if b in INTERP or b.startswith("python") or b.startswith("pypy"):
+            return True
+    return False
+
+
 def strip_heredocs(cmd):
-    """Drop heredoc bodies that are just data, so text inside a file being written never trips a check."""
+    """Drop heredoc bodies that are only file data (cat > f <<E ... E), so text inside a file being written
+    never trips a check."""
     lines, out, i = cmd.split("\n"), [], 0
     while i < len(lines):
         line = lines[i]
@@ -88,7 +102,6 @@ def strip_heredocs(cmd):
             seg = re.split(r"\|\||&&|[;|&(]", line[:m.start()])[-1].split()
             seg = [w for w in seg if not re.match(r"^\w+=", w)]
             prog = os.path.basename(seg[0].strip("'\"")) if seg else ""
-            prog = re.sub(r"[0-9.]+$", "", prog) if prog.startswith("python") else prog
             body = []
             while i < len(lines):
                 end = lines[i].lstrip("\t") if m.group(1) else lines[i]
@@ -96,11 +109,26 @@ def strip_heredocs(cmd):
                     break
                 body.append(lines[i])
                 i += 1
-            if prog in INTERP or prog.startswith("python"):
-                out += body
             if i < len(lines):
-                out.append(lines[i])
+                term = lines[i]
                 i += 1
+            else:
+                term = None
+            # the rest of the command (after the heredoc line); a body written to a file that is then run, or
+            # followed by anything that executes, is checked like any other command
+            rest = line[m.end():] + "\n" + "\n".join(lines[i:])
+            target = re.search(r">>?\s*['\"]?([^\s'\";|&]+)", line)
+            used_later = False
+            if target:                      # the written file is itself run as a command (./x.sh, /tmp/x.sh)
+                name = os.path.basename(target.group(1))
+                for seg in re.split(r"\|\||&&|[;|&\n]", rest):
+                    w = seg.strip().split()
+                    if w and os.path.basename(w[0].strip("'\"")) == name:
+                        used_later = True
+            if prog not in DATA_SINKS or _executes(line) or _executes(rest) or used_later:
+                out += body
+            if term is not None:
+                out.append(term)
     return "\n".join(out)
 
 

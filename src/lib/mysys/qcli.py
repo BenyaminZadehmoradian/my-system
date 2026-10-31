@@ -306,7 +306,7 @@ def q_cmd(a):
                 continue
             e = queue.efficiency(j)
             for k in ("id", "name", "state", "reason", "cmd", "cwd", "tool", "priority", "attempt", "retries", "depends",
-                      "timeout_s", "resources", "run_id", "outputs", "last_line"):
+                      "timeout_s", "resources", "run_id", "outputs", "last_line", "start_note", "group", "labels"):
                 if j.get(k) not in (None, "", [], {}):
                     print(f"{k:>10}: {j.get(k)}")
             print(f"{'times':>10}: created {_fmt_t(j['created'])} · started {_fmt_t(j.get('started'))} · ended {_fmt_t(j.get('ended'))}")

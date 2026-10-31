@@ -57,12 +57,18 @@ def test_guard():
              "systemctl stop docker", "pip install numpy --break-system-packages",
              "python3 -c \"open('/etc/hosts','w').write('x')\"",
              "bash <<EOF\nkill 1234\nEOF", "cat > ~/.bashrc <<'E'\nalias x=y\nE",
-             "python3 - <<'P'\nopen('/etc/hosts','w').write('x')\nP"]
+             "python3 - <<'P'\nopen('/etc/hosts','w').write('x')\nP",
+             "cat <<EOF | bash\nkill -9 1234\nEOF", "timeout 60 bash <<EOF\npkill vivado\nEOF",
+             "cat <<EOF | sh\nrm -rf /etc/foo\nEOF", "sudo tee x <<EOF\nhi\nEOF",
+             "cat > x.sh <<'E' && bash x.sh\nkill 1\nE",
+             "cat > /tmp/r.sh <<EOF\npkill vivado\nEOF\nbash /tmp/r.sh",
+             "cat <<EOF > /tmp/x.sh && chmod +x /tmp/x.sh && /tmp/x.sh\nkill 1\nEOF",
+             "cat <<EOF > r.tcl\nexec kill 1\nEOF\nvivado -source r.tcl"]
     allow = ["cat ~/.bashrc 2>/dev/null", "ls /usr/bin > out.txt", "sed s/a/b/ /etc/hosts > /tmp/h", "cp /etc/hosts ./h",
              "make -j8 2>&1 | tee build.log", "git status", "cat ~/My_System/reports/latest/health.txt",
              "grep -r foo /opt/x | head", "python3 -m venv .venv && .venv/bin/pip install numpy",
              "systemctl --user status my-system-daily", "mv ~/proj/a ~/proj/b",
-             "cat > make_floor_ucf.py <<'E'\nimport os\nos.system('kill -9 1')  # sudo reboot\nE\npython3 make_floor_ucf.py",
+             "cat > make_floor_ucf.py <<'E'\nimport os\nprint('never kill vivado')\nE\nls -l make_floor_ucf.py",
              "cat <<-X > notes.txt\n\tremember: never kill vivado\n\tX"]
     bad = [c for c in block if not guard(ms, home, "Bash", {"command": c})]
     bad += [c for c in allow if guard(ms, home, "Bash", {"command": c})]

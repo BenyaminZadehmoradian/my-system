@@ -160,6 +160,7 @@ def running():
             bits.append(f"{j['rss'] / GiB:.1f} GB")
         st = " PAUSED" if j["state"] == "suspended" else ""
         rows.append((j.get("started") or 0, f"#{j['id']} {j['name']}{st} — " + ", ".join(bits)))
+    _CACHE.clear()
     try:
         st = json.loads((config.STATE / "watch.json").read_text())
         tracked = st.get("runs", {}).values()
@@ -175,15 +176,45 @@ def running():
             continue
         el = time.time() - r["start"]
         bits = [_dur(el)]
-        mins = (prof.get(r["tool"]) or {}).get("minutes")
-        if mins and (prof.get(r["tool"]) or {}).get("measured"):
-            left = mins * 60 - el
-            bits.append(f"usually {_dur(mins * 60)}" + (", running long" if left < -mins * 60 else ""))
+        usual = _usual_tracked(r, prof)
+        if usual:
+            bits.append(f"usually {_dur(usual)}" + (", running long" if el > 2 * usual else ""))
         if r.get("rss"):
             bits.append(f"{r['rss'] / GiB:.1f} GB")
         rows.append((r["start"], f"{r['tool']} {_place(r['cwd'])} — " + ", ".join(bits)))
     rows.sort()
     return rows
+
+
+_CACHE = {}
+
+
+def _usual_tracked(r, prof, _cache=_CACHE):
+    """Typical duration of runs like this one: earlier runs of the same tool in the same batch folder,
+    else the tool's measured duration when it is consistent; else unknown."""
+    from . import capacity, watcher
+    if "rows" not in _cache:
+        rows = []
+        try:
+            for line in (config.REPORTS / "runs.jsonl").read_text().splitlines()[-3000:]:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    pass
+        except OSError:
+            pass
+        _cache["rows"] = rows
+    if "by" not in _cache:                          # one pass: (tool, batch) -> durations
+        by = {}
+        for x in _cache["rows"]:
+            if x.get("seconds") and x.get("cwd"):
+                by.setdefault((x.get("tool"), watcher.batch_key(x["cwd"])), []).append(x["seconds"])
+        _cache["by"] = by
+    same = sorted(_cache["by"].get((r["tool"], watcher.batch_key(r["cwd"])), []))
+    if len(same) >= 2:
+        return same[len(same) // 2]
+    m = capacity.typical_minutes(prof.get(r["tool"]) or {})
+    return m * 60 if m else None
 
 
 def waiting():

@@ -18,8 +18,8 @@ def test_pressure_groups_room_explain_edit():
     out, notes, tmp = py(r'''
 psi_dir = os.path.join(W, "psi"); os.makedirs(psi_dir)
 def set_psi(mem_full=0.0, io=0.0):
-    open(os.path.join(psi_dir, "memory"), "w").write(f"some avg10=0 avg60=0 avg300=0 total=0\nfull avg10={mem_full} avg60=0 avg300=0 total=0\n")
-    open(os.path.join(psi_dir, "io"), "w").write(f"some avg10={io} avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n")
+    open(os.path.join(psi_dir, "memory"), "w").write(f"some avg10=0 avg60=0 avg300=0 total=0\nfull avg10={mem_full} avg60={mem_full} avg300=0 total=0\n")
+    open(os.path.join(psi_dir, "io"), "w").write(f"some avg10={io} avg60={io} avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n")
     open(os.path.join(psi_dir, "cpu"), "w").write("some avg10=0 avg60=0 avg300=0 total=0\n")
 probes.PSI_DIR = psi_dir
 set_psi(mem_full=50)
@@ -181,6 +181,10 @@ assert "out of memory" in history.CRASHES.read_text()
 history.LAST.write_text(json.dumps({"boot_id": "boot-old2", "sample": old}))
 history.CLEAN.write_text(json.dumps({"boot_id": "boot-old2", "t": time.time()}))
 assert history.check_unclean(lambda *a: told.append(a)) == {"clean": True} and len(told) == 1
+# a service restart hours before the crash is not a clean stop
+history.LAST.write_text(json.dumps({"boot_id": "boot-old3", "sample": old}))
+history.CLEAN.write_text(json.dumps({"boot_id": "boot-old3", "t": old["t"] - 3 * 3600}))
+assert history.check_unclean(lambda *a: told.append(a))["clean"] is False and len(told) == 2
 # housekeeping gzips old days
 d = history.DIR / time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400 * 2))
 open(str(d) + ".jsonl", "w").write(json.dumps(dict(old, t=time.time() - 86400 * 2)) + "\n")
@@ -267,7 +271,8 @@ def test_vulnerability_audit():
 import os, sys
 sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
 from mysys import software
-data = {"venvs": {"/h/.venv": {"packages": {"requests": {"version": "2.19.0"}, "numpy": {"version": "2.1.0"}}}},
+data = {"venvs": {"/h/.venv": {"packages": {"requests": {"version": "2.19.0"}, "numpy": {"version": "2.1.0"},
+                                            "my-secret-tool": {"version": "0.1", "local": True}, "proj": {"version": "1.0"}}}},
         "projects": {"/h/proj": {"packages": {"requests": {"version": "2.19.0", "venv": "/h/.venv"}}}},
         "updates": [], "libs": {}}
 sent = []
@@ -278,6 +283,8 @@ def get(url):
     return {"summary": "Leaks credentials", "affected": [{"package": {"name": "requests"}, "ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.20.0"}]}]}]}
 res = software.audit(data, post, get)
 assert sent[0]["queries"][0]["package"]["ecosystem"] == "PyPI"
+names = {q["package"]["name"] for q in sent[0]["queries"]}
+assert names == {"requests", "numpy"}, names            # own/local packages are never sent
 f = res["findings"]
 assert len(f) == 1 and f[0]["fixed"] == "2.20.0" and f[0]["projects"] == ["/h/proj"], f
 assert "GHSA-x" in software.audit_text(software.load_audit())

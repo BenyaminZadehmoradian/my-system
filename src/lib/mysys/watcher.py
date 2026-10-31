@@ -66,6 +66,53 @@ def short(path, n=3):
     return "/".join(Path(path).parts[-n:])
 
 
+# ---------------- batches ----------------
+_ROOTS = {}
+
+
+def _roots():
+    """Folders that are containers, never a batch themselves: home, data disks, the data folder, mount points.
+    Plain path strings only — resolving links would touch the mounts, which hangs on a dead network share."""
+    if time.time() - _ROOTS.get("t", 0) < 60:
+        return _ROOTS["v"]
+    c = config.load()
+    r = {os.path.normpath(str(config.HOME)), "/", "/home", "/mnt", "/media", "/tmp"}
+    r |= {os.path.normpath(x) for x in (c.get("DATA_DISKS", "") + " " + c.get("NET_SHARES", "")).split() if x}
+    if c.get("BIG_FOLDER_DEST"):
+        r.add(os.path.normpath(c["BIG_FOLDER_DEST"]))
+    _ROOTS.update(t=time.time(), v=r)
+    return r
+
+
+def batch_key(cwd):
+    """Runs in sibling folders form one batch (their parent). A run directly in a project folder whose parent is
+    home or a data disk is its own batch (named after the project, not 'benyamin/')."""
+    cwd = os.path.normpath(cwd or "/")
+    parent = os.path.dirname(cwd)
+    return cwd if parent in _roots() else parent
+
+
+def batch_busy(bkey, cur):
+    """Still running: a tracked job inside the batch, or the program that drives it (running in a folder above it)."""
+    roots = _roots()
+    for j in cur:
+        c = os.path.normpath(j["cwd"])
+        if c == bkey or c.startswith(bkey + "/"):
+            return True
+        if bkey.startswith(c + "/") and c not in roots:
+            return True
+    return False
+
+
+def error_sig(first_error):
+    import re as _re
+    m = _re.search(r"\[([A-Za-z]+ \d+-\d+)\]", first_error or "")
+    if m:
+        rest = first_error.split("]", 1)[-1].strip().split(".")[0][:50]
+        return f"[{m.group(1)}] {rest}"
+    return (first_error or "error").strip()[:60]
+
+
 # ---------------- jobs ----------------
 def jobs():
     """Long-running jobs recognised by a plugin, one entry per job (helpers merged)."""
@@ -164,12 +211,18 @@ def track_jobs(s, now, conf):
                                 "results": res}) + "\n")
         if r["cwd"] in _queue_cwds():
             continue                      # the queue reports its own jobs (results above are still recorded)
-        if errs:
-            notify(f"{r['tool']} failed: {errs} ERROR(s)",
-                   f"{short(r['cwd'])} · {hms(dur)} · {summ.get('first_error', '')}", "high", "x")
-        b = pending.setdefault(str(Path(r["cwd"]).parent),
+        b = pending.setdefault(batch_key(r["cwd"]),
                                {"tool": r["tool"], "n": 0, "err": 0, "crit": 0, "longest": 0, "last_end": now,
-                                "best_wns": None})
+                                "best_wns": None, "first_end": now})
+        if errs:
+            # one alert per batch and kind of error; repeats of the same error go into the batch summary
+            sig = error_sig(summ.get("first_error", ""))
+            byerr = b.setdefault("errors_by", {})
+            byerr[sig] = byerr.get(sig, 0) + 1
+            if byerr[sig] == 1 and len(byerr) <= 3:
+                notify(f"{r['tool']} failed: {errs} ERROR(s)",
+                       f"{short(r['cwd'])} · {hms(dur)} · {summ.get('first_error', '')}"
+                       + (" (more failures of this batch come in its summary)" if b["n"] else ""), "high", "x")
         b["n"] += 1
         b["err"] += 1 if errs else 0
         b["crit"] += (summ or {}).get("critical") or 0
@@ -178,17 +231,22 @@ def track_jobs(s, now, conf):
         if res.get("wns_ns") is not None:
             b["best_wns"] = res["wns_ns"] if b["best_wns"] is None else max(b["best_wns"], res["wns_ns"])
 
-    busy = {str(Path(j["cwd"]).parent) for j in cur}
     for bkey in list(pending):
         b = pending[bkey]
-        if bkey in busy or now - b["last_end"] < quiet:
+        waiting = batch_busy(bkey, cur) or now - b["last_end"] < quiet
+        if waiting and now - b.setdefault("first_end", now) < 6 * 3600:
             continue
         ok_n = b["n"] - b["err"]
         what = f"{b['n']} {b['tool']} run{'s' if b['n'] > 1 else ''}"
         detail = (f"{ok_n} OK" + (f", {b['err']} failed" if b["err"] else "") +
                   (f", {b['crit']} critical warnings" if b["crit"] else "") + f" · longest {hms(b['longest'])}" +
                   (f" · best WNS {b['best_wns']:+.3f} ns" if b.get("best_wns") is not None else ""))
-        notify(f"Finished: {what} in {Path(bkey).name}/", detail,
+        if b.get("errors_by"):
+            top = sorted(b["errors_by"].items(), key=lambda kv: -kv[1])[:2]
+            detail += " · failures: " + "; ".join(f"{k} ×{v}" for k, v in top)
+        if waiting:
+            detail += " · still running, summary of the last 6 h"
+        notify(f"{'Progress' if waiting else 'Finished'}: {what} in {Path(bkey).name}/", detail,
                "high" if b["err"] else "default", "warning" if b["err"] else "white_check_mark")
         del pending[bkey]
 

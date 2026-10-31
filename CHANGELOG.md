@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.8.0 — 2026-10-31
+
+From the real machine's data and an independent code review of 1.5.3–1.7.1.
+
+Safety
+- AI guard: the 1.5.3 heredoc change let `cat <<EOF | bash`, `timeout 60 bash <<EOF`, and "write a script, then run
+  it" through unchecked. A heredoc body is now skipped only when it is plainly written to a file that nothing in the
+  command runs.
+- Watcher could hang on a dead network share (path resolution touched the mount): plain path strings only.
+
+Queue
+- Room kept for a long-waiting job blocked the whole queue when the missing cores were used by programs outside the
+  queue (your own Vivado runs). It now only applies when queue jobs hold what is missing.
+- CPU patience (QUEUE_CPU_PATIENCE_MIN=60): a job waiting for cores while its RAM is free starts once half its cores
+  are free (it runs niced). Before, a 12-core request could wait all day on a busy machine.
+- One combined message for jobs that waited a long time (QUEUE_STUCK_NOTIFY_H=2) with what would let them start
+  (`ms q edit ID --cores N`); jobs that wait on purpose (dependencies, start time, groups, licenses) are left out.
+- Tool durations that vary widely (2-minute Vivado builds and 6-hour simulations) are no longer used for
+  `timeout: auto`, "slower than usual", "may be stuck", deadlines and reserved windows. Before, `timeout: auto` would
+  have killed long simulations after 30 minutes.
+- Pressure: only sustained stalls count (10 s and 1 min averages), 0 disables, cached/no-resource jobs still pass, and
+  after QUEUE_IO_PATIENCE_MIN of disk pressure jobs start again one every 5 minutes. A job paused for thrashing resumes
+  only when the thrashing is over (no pause/resume flip-flop); pause notices at most every 30 min per job.
+- Out of memory is recognised from the kernel's OOM counter (job scope or its parent), so a manual `kill -9` is no
+  longer retried as out of memory. CPU pinning never locks a job onto fewer threads than it needs.
+
+Notifications
+- Batch summaries wait while the program driving the batch still runs (e.g. a launcher in the project folder):
+  one summary instead of "Finished: 2 runs" every 25 minutes; at the latest a progress summary every 6 h.
+- Runs directly in a project folder are named after the project, not after your home folder ("benyamin/").
+- Repeated identical failures in one batch: one alert per kind of error; the summary lists them ("[Place 30-58] … ×4").
+- Phone report: "usually X" comes from earlier runs in the same batch folder.
+
+Other
+- `ms log compare` no longer crashes on metrics that mix numbers and text.
+- Restore test: "unchanged since the backup" uses ctime (mv, cp -p, rsync -t keep old mtimes).
+- Vulnerability audit never sends the names of local/editable packages or of packages named like your projects.
+- Crash detection: a service restart earlier in the day no longer counts as a clean shutdown.
+- Faster: duration index and batch keys are cached (the phone report took ~1 s per tracked run).
+
 ## 1.7.1 — 2026-10-31
 
 - No emoji in phone messages: the status report uses plain headings and dashes, and notifications no longer send

@@ -65,7 +65,7 @@ for f in "${files[@]}"; do
   ok=$((ok + 1))
   if [ ! -f "/$f" ]; then gone=$((gone + 1)); continue; fi
   if cmp -s "$TMP/x/$f" "/$f"; then same=$((same + 1))
-  elif [ -n "$start" ] && [ "$(stat -c %Y "/$f")" -le "$start" ]; then bad+=("/$f")
+  elif [ -n "$start" ] && [ "$(stat -c %Z "/$f")" -le "$start" ]; then bad+=("/$f")   # ctime: also changed by mv/cp -p/rsync -t
   else changed=$((changed + 1)); fi
 done
 [ $ok -eq ${#files[@]} ] || { result failed "only $ok of ${#files[@]} files restored"; exit 2; }

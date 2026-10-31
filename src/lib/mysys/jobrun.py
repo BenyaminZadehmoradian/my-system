@@ -88,6 +88,8 @@ class Runner:
         self.ticks, self.io = {}, {}
         self.peak = 0
         self.in_scope = False
+        self.cg = None
+        self.scope_oom = False
         self.last_out = time.time()
         self.last_line = ""
         self.errs = 0
@@ -194,6 +196,20 @@ class Runner:
     def io_tot(self):
         return sum(v[0] for v in self.io.values()), sum(v[1] for v in self.io.values())
 
+    def watch_cgroup(self):
+        """Remember the job's memory-limited scope and its parent's OOM-kill counter (the scope itself is removed
+        right after the job ends, so the parent's counter is how an out-of-memory kill is recognised)."""
+        try:
+            line = open(f"/proc/{self.p.pid}/cgroup").read().strip().split("\n")[-1]
+            path = line.split("::", 1)[-1]
+        except (OSError, IndexError):
+            return
+        if "msq-" not in path:
+            return
+        scope = "/sys/fs/cgroup" + path
+        parent = os.path.dirname(scope)
+        self.cg = {"scope": scope, "parent": parent, "base": _oom_count(parent)}
+
     def stdin_pump(self):
         """Forward lines written with `ms q send ID TEXT` (a named pipe) to the job's standard input."""
         fifo = queue.LOGS / f"{self.jid}.in"
@@ -217,6 +233,7 @@ class Runner:
     # ---------------------------------------------------------- one execution of the command
     def run_once(self, cmd_argv, env, t_start):
         j = self.j
+        self.cg, self.scope_oom = None, False
         r_fd, w_fd = os.pipe()
 
         adj = int(config.num("QUEUE_OOM_SCORE_ADJ") or 0)
@@ -260,6 +277,10 @@ class Runner:
         slow_f = float(config.num("QUEUE_SLOW_FACTOR") or 0)
         while self.p.poll() is None:
             now = time.time()
+            if self.in_scope and not self.cg:
+                self.watch_cgroup()
+            elif self.cg:
+                self.scope_oom = self.scope_oom or _oom_count(self.cg["scope"]) > 0
             rss = self.sample()
             el = now - t_start
             if now - series_t >= 10:
@@ -393,7 +414,11 @@ class Runner:
         cur = queue.load(jid) or j
         # SIGKILL (-9/137) that the runner did not send: in a memory-limited scope that is the kernel's OOM killer
         # (the scope is gone by now, so memory.events may be unreadable and the last RSS sample may be old)
-        oom = rc in (-9, 137) and not why and (getattr(self, "in_scope", False) or queue._cgroup_oom(j)
+        # SIGKILL (-9/137) that the runner did not send is an out-of-memory kill only with evidence: the kernel's
+        # OOM counter of the job's scope or its parent went up, or the job was at its memory limit. (A manual kill -9
+        # is not retried as "out of memory".)
+        parent_oom = bool(self.cg) and _oom_count(self.cg["parent"]) > self.cg["base"]
+        oom = rc in (-9, 137) and not why and (self.scope_oom or parent_oom or queue._cgroup_oom(j)
                                                or self.peak >= 0.9 * float(j["mem_gb"]) * 1.25 * GiB)
         codes = {str(k): v for k, v in (j.get("exit_codes") or {}).items()}
         mapped = codes.get(str(rc))
@@ -627,6 +652,16 @@ class Runner:
             self.last_out = time.time()
             queue.update(self.jid, last_line=f"waiting ({int(time.time() - t0)} s)")
             time.sleep(float(w.get("interval", 15)))
+
+
+def _oom_count(cg_dir):
+    try:
+        for line in open(os.path.join(cg_dir, "memory.events")):
+            if line.startswith("oom_kill "):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return 0
 
 
 def _numify(d):

@@ -168,11 +168,11 @@ def resolve_timeout(val, prof):
     if val in (None, "", 0):
         return None
     if isinstance(val, str) and val.strip().endswith("%"):
-        m = prof.get("minutes") if prof.get("measured") else None
+        m = capacity.typical_minutes(prof)
         return int(max(600, float(val.strip()[:-1]) / 100 * m * 60)) if m else None
     v = parse_duration(val) if isinstance(val, str) else val
     if v == "auto":
-        m = prof.get("minutes") if prof.get("measured") else None
+        m = capacity.typical_minutes(prof)
         return int(max(1800, 3 * m * 60)) if m else None
     return v
 
@@ -536,14 +536,18 @@ def _launch(j, gpu_ids=None):
 
 
 # ---------------------------------------------------------------- 1.6 helpers: pressure, groups, fairness, pinning
-def pressure_block(cap):
-    """Reason not to start anything now (kernel pressure stall information), or ''."""
-    mf = float(config.num("QUEUE_PSI_MEM_FULL") or 0)
-    io = float(config.num("QUEUE_PSI_IO_SOME") or 0)
-    if mf and cap.get("psi_mem_full", 0) >= mf:
+def pressure_block(cap, io_since=None, now=None):
+    """Reason not to start anything now (kernel pressure stall information), or ''. Only sustained pressure counts
+    (10-second and 1-minute averages). Disk pressure caused by your own runs can last for hours: after
+    QUEUE_IO_PATIENCE_MIN of it, jobs start again (slowly, see QUEUE_START_DELAY)."""
+    mf = float(config.num("QUEUE_PSI_MEM_FULL"))
+    io = float(config.num("QUEUE_PSI_IO_SOME"))
+    if mf > 0 and cap.get("psi_mem_full", 0) >= mf and cap.get("psi_mem_full60", mf) >= mf / 2:
         return f"waiting: the machine is short of memory (stalled {cap['psi_mem_full']:.0f}% of the time)"
-    if io and cap.get("psi_io_some", 0) >= io:
-        return f"waiting: the disks are overloaded (I/O stalls {cap['psi_io_some']:.0f}% of the time)"
+    if io > 0 and cap.get("psi_io_some60", cap.get("psi_io_some", 0)) >= io and cap.get("psi_io_some", 0) >= io / 2:
+        pat = float(config.num("QUEUE_IO_PATIENCE_MIN")) * 60
+        if not (pat and io_since and (now or time.time()) - io_since >= pat):
+            return f"waiting: the disks are overloaded (I/O stalls {cap['psi_io_some60']:.0f}% of the time)"
     return ""
 
 
@@ -564,25 +568,38 @@ def _wait_start(j):
     return max(j.get("created") or 0, j.get("not_before") or 0, j.get("begin") or 0, j.get("released_at") or 0)
 
 
-def usual_seconds(j):
-    """Typical duration of this kind of job: median of earlier successful runs with the same name and folder,
-    else of the same flow step, else the tool's measured profile; 0 when unknown."""
-    same, step = [], []
+_DUR = {}
+
+
+def _durations():
+    """Index of successful run durations by (name, folder) and (flow, step); rebuilt at most once a minute."""
+    if time.time() - _DUR.get("t", 0) < 60:
+        return _DUR
+    by_name, by_step = {}, {}
     for x in all_jobs():
-        if x["id"] == j.get("id") or x["state"] not in ("done", "warning") or not x.get("started") or not x.get("ended"):
+        if x["state"] not in ("done", "warning") or not x.get("started") or not x.get("ended"):
             continue
         d = x["ended"] - x["started"]
-        if x.get("name") == j.get("name") and x.get("cwd") == j.get("cwd"):
-            same.append(d)
-        fx, fj = x.get("flow") or {}, j.get("flow") or {}
-        if fj and fx.get("name") == fj.get("name") and fx.get("step") == fj.get("step"):
-            step.append(d)
-    for lst_ in (same, step):
-        if len(lst_) >= 2:
-            lst_.sort()
-            return lst_[len(lst_) // 2]
-    m = capacity.profiles().get(j.get("tool") or "", {})
-    return float(m["minutes"]) * 60 if m.get("measured") and m.get("minutes") else 0
+        by_name.setdefault((x.get("name"), x.get("cwd")), []).append((x["id"], d))
+        fx = x.get("flow") or {}
+        if fx:
+            by_step.setdefault((fx.get("name"), fx.get("step")), []).append((x["id"], d))
+    _DUR.update(t=time.time(), name=by_name, step=by_step)
+    return _DUR
+
+
+def usual_seconds(j):
+    """Typical duration of this kind of job: median of earlier successful runs with the same name and folder,
+    else of the same flow step, else the tool's measured profile (when consistent); 0 when unknown."""
+    idx = _durations()
+    fj = j.get("flow") or {}
+    for lst_ in (idx["name"].get((j.get("name"), j.get("cwd")), []),
+                 idx["step"].get((fj.get("name"), fj.get("step")), []) if fj else []):
+        ds = sorted(d for i, d in lst_ if i != j.get("id"))
+        if len(ds) >= 2:
+            return ds[len(ds) // 2]
+    m = capacity.typical_minutes(capacity.profiles().get(j.get("tool") or "", {}))
+    return float(m) * 60 if m else 0
 
 
 def pick_cpus(need_t, running):
@@ -598,7 +615,9 @@ def pick_cpus(need_t, running):
             break
     if len(got) < want:                                # not enough whole cores: take single free threads
         got += [c for core in probes.cpu_siblings() for c in core if c not in used and c not in got][:want - len(got)]
-    return sorted(got[:max(want, 1)]) or None
+    if len(got) < want:
+        return None                                    # never lock a job onto fewer threads than it needs
+    return sorted(got[:want])
 
 
 def explain(jid):
@@ -634,6 +653,8 @@ def explain(jid):
     ok, why = resources.fits(j, jobs, resources.load())
     out.append((ok, "resources / licenses / tool caps", why or "available"))
     pb = pressure_block(cap)
+    if pb and "disks" in pb and float(config.num("QUEUE_IO_PATIENCE_MIN")):
+        pb += f" (after {config.num('QUEUE_IO_PATIENCE_MIN'):.0f} min of this, jobs start one every 5 minutes)"
     out.append((not pb, "system pressure", pb or f"memory stalls {cap['psi_mem_full']:.0f}%, I/O stalls {cap['psi_io_some']:.0f}%"))
     out.append((not resources.swapping(), "swapping", "swapping heavily" if resources.swapping() else "no"))
     out.append((not cap["no_new"], "reserved time window", "a reservation blocks new jobs" if cap["no_new"] else "none active"))
@@ -641,7 +662,13 @@ def explain(jid):
     out.append((running < cap["max_slots"], "job slots", f"{running} of {int(cap['max_slots'])} used"))
     need_t = min(max(1.0, float(j["cores"])), cap["threads"] * 0.75)
     need_m = float(j["mem_gb"]) * GiB
-    out.append((cap["free_threads"] >= need_t, "CPU", f"needs {need_t:.1f} threads, {max(0, cap['free_threads']):.1f} free"))
+    out.append((cap["free_threads"] >= need_t, "CPU", f"needs {need_t:.1f} threads, {max(0, cap['free_threads']):.1f} free"
+                + (f" (at most {j['max_free_t']:.0f} free while it waited)" if j.get("max_free_t") is not None else "")))
+    pat = float(config.num("QUEUE_CPU_PATIENCE_MIN") or 0)
+    if pat and cap["free_threads"] < need_t:
+        w = (now - _wait_start(j)) / 60
+        out.append((True, "CPU patience", f"after {pat:.0f} min of waiting it starts once {max(1.0, need_t * 0.5):.0f} threads "
+                                          f"are free and its RAM fits (waited {w:.0f} min)"))
     out.append((cap["free_mem"] >= need_m, "RAM", f"needs {need_m / GiB:.1f} GB, {max(0, cap['free_mem']) / GiB:.1f} GB free "
                                                  f"(after the {cap['reserve'] / GiB:.0f} GB safety reserve and what running jobs may still grow)"))
     if need_m > cap["total"] - cap["reserve"]:
@@ -753,9 +780,43 @@ class Scheduler:
         max_slots = config.num("QUEUE_MAX_JOBS") or th
         ps = probes.psi()
         return {"psi_mem_full": ps.get("memory", {}).get("full", 0), "psi_io_some": ps.get("io", {}).get("some", 0),
+                "psi_mem_full60": ps.get("memory", {}).get("full60", 0), "psi_io_some60": ps.get("io", {}).get("some60", 0),
                 "threads": th, "free_threads": th - keep - l1 - recent_cores, "free_mem": avail - res - grow,
                 "avail": avail, "reserve": res, "max_slots": max_slots, "total": total,
                 "no_new": bool(r and r.get("no_new_jobs")), "reservation": r}
+
+    def waiting_advice(self, jobs):
+        """Tell once when ready jobs have waited long (QUEUE_STUCK_NOTIFY_H) for CPU/RAM, and what would let them
+        start. Jobs that wait on purpose (dependencies, start time, groups, licenses, idle machine) are left out.
+        All of them in one message."""
+        hours = float(config.num("QUEUE_STUCK_NOTIFY_H") or 0)
+        if not hours:
+            return
+        now = time.time()
+        byid = {j["id"]: j for j in jobs}
+        tips = []
+        for j in jobs:
+            r = j.get("reason") or ""
+            if (j["state"] != "queued" or j.get("waiting_told") or now - _wait_start(j) < hours * 3600
+                    or (j.get("not_before") or 0) > now or (j.get("begin") or 0) > now or not self.deps_ready(j, byid)
+                    or not (r.startswith("waiting for RAM") or r.startswith("waiting for CPU")
+                            or "short of memory" in r or "disks are overloaded" in r or "keeping room" in r)):
+                continue
+            h = int((now - _wait_start(j)) / 3600)
+            if "CPU" in r and j.get("max_free_t") is not None:
+                tip = (f"#{j['id']} {j['name']} ({h} h): needs {r.split('GB, ')[-1].split(' cores')[0]} free cores, at most "
+                       f"{j['max_free_t']:.0f} were free. Sooner: ms q edit {j['id']} --cores {max(1, int(j['max_free_t']))}")
+            elif "RAM" in r and j.get("max_free_gb") is not None:
+                tip = (f"#{j['id']} {j['name']} ({h} h): needs {j['mem_gb']} GB, at most {j['max_free_gb']:.0f} GB were free. "
+                       f"If it needs less: ms q edit {j['id']} --mem N")
+            else:
+                tip = f"#{j['id']} {j['name']} ({h} h): {r} — ms q explain {j['id']}"
+            update(j["id"], waiting_told=True)
+            tips.append(tip)
+        if tips:
+            more = f"\n+ {len(tips) - 3} more (ms q)" if len(tips) > 3 else ""
+            self.notify(f"{len(tips)} job{'s' if len(tips) > 1 else ''} waiting a long time",
+                        "\n".join(tips[:3]) + more + "\nThey start by themselves when CPU/RAM frees up.", "default", "hourglass")
 
     def idle(self):
         from . import watcher
@@ -787,7 +848,7 @@ class Scheduler:
                                 float(parse_duration(j.get("retry_max_delay") or 3600)))
                 update(j["id"], state="queued", attempt=j["attempt"] + 1, mem_gb=round(mem, 1), timeout_s=to,
                        started=None, ended=None, rc=None, not_before=now + delay, oom=False, prev_fail=why,
-                       cpus=None,
+                       cpus=None, waiting_told=False, max_free_t=None, max_free_gb=None, start_note=None,
                        reason=f"retry {j['attempt']}/{j['retries']} in {int(delay)} s after {why}"
                               + (f", memory {mem:.1f} GB" if why == "oom" else ""))
                 if self.delay is not None and now - (j.get("started") or now) < 120:
@@ -813,7 +874,7 @@ class Scheduler:
                 update(j["id"], state="skipped", reason="deadline passed before it could start", ended=now)
                 continue
             if j.get("deadline"):
-                m = capacity.profiles().get(j.get("tool") or "", {}).get("minutes")
+                m = capacity.typical_minutes(capacity.profiles().get(j.get("tool") or "", {}))
                 if m and now + m * 60 > j["deadline"]:
                     update(j["id"], state="skipped", reason=f"cannot finish before the deadline (usually {m} min)", ended=now)
                     continue
@@ -849,7 +910,8 @@ class Scheduler:
     def pressure(self, jobs, cap, now):
         running = [j for j in jobs if j["state"] == "running"]
         exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
-        thrash = cap.get("psi_mem_full", 0) >= 2 * float(config.num("QUEUE_PSI_MEM_FULL") or 10)
+        lim = float(config.num("QUEUE_PSI_MEM_FULL"))
+        thrash = lim > 0 and cap.get("psi_mem_full", 0) >= 2 * lim and cap.get("psi_mem_full60", 0) >= lim
         if (cap["avail"] < cap["reserve"] * 0.6 or thrash) and running and now - self.last_action > 30:
             cands = [j for j in running if now - (j.get("started") or now) >= exempt] or running
             victim = sorted(cands, key=lambda j: (int(j.get("priority") or 0), -(j.get("started") or 0)))[0]
@@ -857,8 +919,11 @@ class Scheduler:
                 signal_job(victim, signal.SIGSTOP)
                 update(victim["id"], state="suspended", suspended_at=now,
                        reason="paused: RAM almost full" + (" (the machine was thrashing)" if thrash else ""))
-                self.notify("Job paused (RAM low)", f"#{victim['id']} {victim['name']} paused to protect the machine; "
-                                                    "it continues when memory frees up.", "default", "pause_button")
+                told = self.__dict__.setdefault("_paused_told", {})
+                if now - told.get(victim["id"], 0) > 1800:
+                    told[victim["id"]] = now
+                    self.notify("Job paused (RAM low)", f"#{victim['id']} {victim['name']} paused to protect the machine; "
+                                                        "it continues when memory frees up.", "default", "pause_button")
                 self.last_action = now
                 return True
         susp = sorted([j for j in jobs if j["state"] == "suspended" and j.get("reason", "").startswith("paused: ")
@@ -868,6 +933,9 @@ class Scheduler:
             s = susp[0]
             if s.get("reason", "").startswith("paused: RAM"):
                 ok = cap["avail"] - cap["reserve"] > (s.get("rss") or 0) * 0.2 + cap["reserve"] * 0.5
+                lim = float(config.num("QUEUE_PSI_MEM_FULL"))
+                if "thrashing" in s.get("reason", "") and lim > 0:
+                    ok = ok and cap.get("psi_mem_full60", 0) < lim / 2 and cap.get("psi_mem_full", 0) < lim / 2
             else:
                 ok = cap["free_threads"] >= float(s["cores"]) and not any(
                     x["state"] == "queued" and x.get("preempt") and int(x.get("priority") or 0) > int(s.get("priority") or 0)
@@ -894,12 +962,9 @@ class Scheduler:
             b = resources.disk_busy(config.get("BIG_FOLDER_DEST") or "/")
             if b is not None and b > config.num("QUEUE_DISK_BUSY_PCT"):
                 return
-        why_p = pressure_block(cap)
-        if why_p:
-            for j in jobs:
-                if j["state"] == "queued" and j.get("reason") != why_p:
-                    update(j["id"], reason=why_p)
-            return
+        io_hi = cap.get("psi_io_some60", 0) >= float(config.num("QUEUE_PSI_IO_SOME") or 101)
+        self.io_since = (getattr(self, "io_since", None) or now) if io_hi else None
+        why_p = pressure_block(cap, self.io_since, now)
         base_delay = float(config.num("QUEUE_START_DELAY") or 0)
         if self.delay is None:
             self.delay = base_delay
@@ -942,6 +1007,12 @@ class Scheduler:
             if (j.get("inputs") or j.get("outputs")) and j.get("incremental", True) and not j.get("force") and up_to_date(j):
                 update(j["id"], state="cached", reason="up to date (same command, parameters and inputs)", ended=now)
                 continue
+            if not why_p and self.io_since and now - self.last_start < 300:
+                why_p = "waiting: the disks are still overloaded — starting one job every 5 minutes"
+            if why_p:                      # under pressure: only work that needs no CPU/RAM gets through (above)
+                if j.get("reason") != why_p:
+                    update(j["id"], reason=why_p)
+                continue
             ok, why = check_require(j.get("require"), j["cwd"])
             if not ok:
                 if j.get("reason") != f"waiting: {why}":
@@ -957,7 +1028,7 @@ class Scheduler:
                     update(j["id"], reason=why)
                 continue
             if next_res is not None and j.get("respect_reservations", True):
-                m = capacity.profiles().get(j.get("tool") or "", {}).get("minutes")
+                m = capacity.typical_minutes(capacity.profiles().get(j.get("tool") or "", {}))
                 if m and m > next_res:
                     msg = f"waiting: would run into a reserved window in {int(next_res)} min"
                     if j.get("reason") != msg:
@@ -978,7 +1049,13 @@ class Scheduler:
                     update(j["id"], reason="waiting for a free GPU" if shutil.which("nvidia-smi") else "no usable GPU on this machine")
                     continue
                 gpu_ids, gpus = gpus[:int(j["gpus"])], gpus[int(j["gpus"]):]
-            if protect and free_t >= need_t and free_m >= need_m:
+            # CPU is shared gracefully (jobs run niced, just slower); RAM is not. A job that has waited long enough
+            # for cores while its memory is free starts once half of its cores are free.
+            patience = float(config.num("QUEUE_CPU_PATIENCE_MIN") or 0) * 60
+            waited = now - _wait_start(j)
+            patient = (patience and free_m >= need_m and free_t < need_t and waited >= patience
+                       and free_t >= max(1.0, need_t * 0.5))
+            if protect and (free_t >= need_t or patient) and free_m >= need_m:
                 pj, pt, pm = protect
                 fits_beside = free_t - need_t >= pt and free_m - need_m >= pm
                 if not fits_beside and not (short and 0 < usual_seconds(j) <= short):
@@ -986,8 +1063,11 @@ class Scheduler:
                     if j.get("reason") != msg:
                         update(j["id"], reason=msg)
                     continue
-            if free_t >= need_t and free_m >= need_m:
+            if (free_t >= need_t or patient) and free_m >= need_m:
                 upd = {"slot": resources.free_slot(all_jobs())}
+                if patient:
+                    upd["start_note"] = (f"started with {free_t:.0f} of {need_t:.0f} cores free after waiting "
+                                         f"{waited / 60:.0f} min (its RAM was free; it runs niced, only slower)")
                 if config.num("QUEUE_PIN_CPUS"):
                     upd["cpus"] = pick_cpus(need_t, running)
                 update(j["id"], **upd)
@@ -1008,7 +1088,16 @@ class Scheduler:
             msg = f"waiting for {why} ({need_m / GiB:.1f} GB, {need_t:.1f} cores needed)"
             if j.get("reason") != msg:
                 update(j["id"], reason=msg)
-            if protect is None and starve and now - _wait_start(j) >= starve:
+            key, val = ("max_free_t", free_t) if why == "CPU" else ("max_free_gb", free_m / GiB)
+            if val > float(j.get(key) if j.get(key) is not None else -1) + 0.5:
+                update(j["id"], **{key: round(max(0.0, val), 1)})
+            # keep room only where it helps: when the missing CPU/RAM is held by other queue jobs that will finish.
+            # Missing cores used by programs outside the queue would block the whole queue for nothing.
+            q_run = [r for r in running if r["state"] == "running"]
+            q_t = sum(float(r.get("cores") or 0) for r in q_run)
+            q_m = sum(float(r.get("mem_gb") or 0) * GiB for r in q_run)
+            helps = (q_m >= need_m - free_m) if why == "RAM" else (q_t >= need_t - free_t)
+            if protect is None and starve and waited >= starve and helps:
                 protect = (j, need_t, need_m)
             if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
                 exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
@@ -1056,15 +1145,20 @@ class Scheduler:
         cap = self.capacity(jobs)
         if not self.pressure(jobs, cap, now):
             self.start_jobs(jobs, byid, cap, now)
+        check_stuck = time.time() - getattr(self, "_stuck_t", 0) >= 60
+        if check_stuck:
+            self._stuck_t = time.time()
+            self.waiting_advice(jobs)
         for j in jobs:                    # stuck detection when no explicit timeout
-            if j["state"] != "running":
+            if j["state"] != "running" or not check_stuck:
                 continue
-            prof = capacity.profiles().get(j.get("tool") or "", {})
-            m = prof.get("minutes") if prof.get("measured") else None
-            if m and not j.get("timeout_s") and runtime(j) > max(1800, 3 * m * 60) and f"stuck{j['id']}" not in self.told:
+            if f"stuck{j['id']}" in self.told or j.get("timeout_s"):
+                continue
+            u = usual_seconds(j)
+            if u and runtime(j) > max(1800, 3 * u):
                 self.told.add(f"stuck{j['id']}")
                 self.notify(f"Job may be stuck: {j['name']}", f"#{j['id']} has run {runtime(j) / 3600:.1f} h; "
-                                                               f"{j['tool']} usually takes {m} min.", "default", "hourglass")
+                                                               f"jobs like it usually take {u / 60:.0f} min.", "default", "hourglass")
         flow.finish_flows(self)
         if now - self.last_retention > 3600:
             self.last_retention = now

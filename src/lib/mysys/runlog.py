@@ -365,7 +365,9 @@ def compare_table(runs, sort=None, desc=False, only_changed=True, max_cols=14):
     if sort:
         def key(r):
             v = r["metrics"].get(sort, r["params"].get(sort))
-            return (v is None, -v if desc and isinstance(v, (int, float)) else v if isinstance(v, (int, float)) else str(v))
+            num = isinstance(v, (int, float)) and not isinstance(v, bool)
+            # numbers first (sorted), then text, then missing — never compare a number with text
+            return (v is None, not num, (-v if desc else v) if num else 0, "" if num or v is None else str(v))
         runs = sorted(runs, key=key)
     pk, mk = pk[:max_cols // 2 + max(0, max_cols // 2 - len(mk))], mk[:max_cols]
     header = ["run", "status", "time"] + [f"p:{k}" for k in pk] + mk

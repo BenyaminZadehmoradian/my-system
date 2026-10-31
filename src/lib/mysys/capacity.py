@@ -124,9 +124,22 @@ def profiles():
         out[tool] = {"runs": len(runs), "complete": bool(full), "peak_gb": round(p90, 1), "max_gb": round(peaks[-1], 1),
                      "cores": round(max(1.0, c), 1) if c else None,
                      "minutes": round(statistics.median(mins)) if mins else None, "measured": True}
+        if mins:
+            ms_ = sorted(mins)
+            p90m = ms_[min(len(ms_) - 1, int(math.ceil(0.9 * len(ms_))) - 1)]
+            out[tool]["minutes_p90"] = round(p90m)
+            # one tool, very different jobs (2-minute builds and 6-hour simulations): the median says nothing
+            out[tool]["duration_varies"] = len(ms_) >= 5 and p90m > 4 * max(1.0, statistics.median(ms_))
     for tool, d in DEFAULT_PROFILES.items():
         out.setdefault(tool, dict(d, runs=0, measured=False))
     return out
+
+
+def typical_minutes(prof):
+    """Usual duration of a tool's jobs in minutes, or None when unknown or too varied to plan with."""
+    if not prof or not prof.get("measured") or not prof.get("minutes") or prof.get("duration_varies"):
+        return None
+    return prof["minutes"]
 
 
 def live_samples(jobs):

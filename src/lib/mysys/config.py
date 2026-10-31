@@ -35,8 +35,11 @@ DEFAULTS = {
     # 1.6: pressure, fairness, safety
     "QUEUE_PSI_MEM_FULL": "10",     # % of time all tasks stalled on memory (avg 10 s) — no new jobs above this
     "QUEUE_PSI_IO_SOME": "80",      # % of time some task stalled on disk I/O — no new jobs above this
+    "QUEUE_IO_PATIENCE_MIN": "60",  # after this long of disk pressure, jobs start again (slowly)
     "QUEUE_STARVE_MIN": "30",       # a job waiting this long for RAM/CPU gets room kept free for it
     "QUEUE_BACKFILL_MIN": "20",     # ... but jobs expected to finish within this many minutes may still use the room
+    "QUEUE_CPU_PATIENCE_MIN": "60", # a job waiting this long for cores (with its RAM free) starts with half its cores free
+    "QUEUE_STUCK_NOTIFY_H": "2",    # tell me when a job has waited this many hours, with what would let it start
     "QUEUE_PIN_CPUS": "0",          # 1 = give each job its own CPU cores (taskset)
     "QUEUE_OOM_SCORE_ADJ": "300",   # queue jobs are killed before your desktop / interactive tools if RAM runs out
     "QUEUE_SLOW_FACTOR": "2",       # tell me when a job runs this many times longer than usual
