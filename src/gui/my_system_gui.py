@@ -401,136 +401,156 @@ class Page(QWidget):
 
 
 # ======================= pages =======================
+class Bar(QWidget):
+    """Thin rounded fill bar (0-100 %)."""
+    def __init__(self, h=6):
+        super().__init__()
+        self.pct, self.level = 0, "ok"
+        self.setFixedHeight(h)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set(self, pct, level):
+        self.pct, self.level = max(0, min(100, pct or 0)), level
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(T["grid"]))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setBrush(QColor(tone(self.level) if self.level != "ok" else T["accent_bg"]))
+        p.drawRoundedRect(QRectF(r.x(), r.y(), r.width() * self.pct / 100, r.height()), r.height() / 2, r.height() / 2)
+
+
+def _lab(text, obj=None, style=None, wrap=False):
+    l_ = QLabel(text)
+    if obj:
+        l_.setObjectName(obj)
+    if style:
+        l_.setStyleSheet(style)
+    l_.setWordWrap(wrap)
+    return l_
+
+
+def _card():
+    f = QFrame()
+    f.setObjectName("card")
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(16, 14, 16, 14)
+    lay.setSpacing(6)
+    return f, lay
+
+
+def _clear(lay):
+    while lay.count():
+        it = lay.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
+        elif it.layout():
+            _clear(it.layout())
+
+
+def spec_grid(rows, cols=1):
+    w = QWidget()
+    gl = QGridLayout(w)
+    gl.setContentsMargins(0, 0, 0, 0)
+    gl.setHorizontalSpacing(14)
+    gl.setVerticalSpacing(7)
+    per = max(1, (len(rows) + cols - 1) // cols)
+    for i, (k, v) in enumerate(rows):
+        c, r = divmod(i, per)
+        gl.addWidget(_lab(k, style=f"color:{T['muted']}; font-size:12px;"), r, c * 2, Qt.AlignmentFlag.AlignTop)
+        vl = _lab(v, style="font-size:13px;", wrap=True)
+        vl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        gl.addWidget(vl, r, c * 2 + 1)
+    for c in range(cols):
+        gl.setColumnStretch(c * 2 + 1, 1)
+    return w
+
+
 class OverviewPage(Page):
-    title, icon, fallback = "Overview", "utilities-system-monitor", "computer"
+    """One honest sentence, health tiles, all activity in one table, and this computer's specification."""
+    title, icon, fallback = "Overview", "computer", "computer"
 
     def __init__(self, win):
         super().__init__(win)
-        lay = QVBoxLayout(self)
-        lay.setSpacing(14)
+        self.lay = QVBoxLayout(self)
+        self.lay.setSpacing(12)
         top = QHBoxLayout()
-        self.status = QLabel()
-        self.status.setObjectName("h1")
-        self.sub = QLabel()
-        self.sub.setObjectName("muted")
-        tl = QVBoxLayout()
-        tl.addWidget(self.status)
-        tl.addWidget(self.sub)
-        top.addLayout(tl, 1)
-        top.addWidget(btn("Open folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(BASE)))))
-        top.addWidget(btn("Run health check", win.run_check, "primary"))
-        lay.addLayout(top)
-
-        g = QGridLayout()
-        g.setSpacing(12)
-        self.c = {
-            "ssd": Card("Root disk  /", True, threshold=CFG.num("SSD_WARN_PCT")),
-            "mem": Card("Memory available", True),
-            "temp": Card("CPU temperature", True, threshold=80),
-            "load": Card("CPU load", True),
-            "data": Card("Data disk"),
-            "share": Card("Network share"),
-            "backup": Card("Backup"),
-            "jobs": Card("EDA jobs running"),
-        }
-        for i, k in enumerate(self.c):
-            g.addWidget(self.c[k], i // 4, i % 4)
-        lay.addLayout(g)
-
-        h = QLabel("Needs attention")
-        h.setObjectName("h2")
-        lay.addWidget(h)
-        self.att = QVBoxLayout()
-        self.att.setSpacing(6)
-        lay.addLayout(self.att)
-        lay.addStretch()
+        self.ban = _lab("", "banner", wrap=True)
+        self.ban.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(self.ban, 1)
+        col_ = QVBoxLayout()
+        col_.addWidget(btn("Run health check", win.run_check, "primary"))
+        col_.addWidget(btn("Open folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(BASE)))))
+        col_.addStretch()
+        top.addLayout(col_)
+        self.lay.addLayout(top)
+        self.tiles = QHBoxLayout()
+        self.tiles.setSpacing(10)
+        self.lay.addLayout(self.tiles)
+        self.lay.addWidget(_lab("ACTIVITY", "cardTitle"))
+        self.tab = table(["State", "Job", "Where", "Time", "Details"], 2)
+        self.tab.setMinimumHeight(260)
+        self.lay.addWidget(self.tab, 1)
+        self.spec_box, self.spec_lay = _card()
+        self.lay.addWidget(self.spec_box)
+        self._level = None
 
     def refresh(self):
-        m = metrics(7)
-        d = disk("/")
-        if d:
-            pct = d[0] / d[2] * 100
-            lv = "ok" if pct < 90 else "warn" if pct < 93 else "bad"
-            fc = W.forecast_text()
-            self.c["ssd"].set(f"{pct:.0f}%", f"{human(d[1])} free of {human(d[2])}\n{fc}", lv, col(m, "ssd_used_pct"))
-        mi = PR.meminfo()
-        if mi:
-            av = mi.get("MemAvailable", 0)
-            sw = mi.get("SwapTotal", 0) - mi.get("SwapFree", 0)
-            self.c["mem"].set(human(av), f"of {human(mi['MemTotal'])} · swap used {human(sw)}",
-                              "ok" if av > 8 * 2**30 else "warn", col(m, "mem_avail_gb"))
-        t = PR.cpu_temp()
-        self.c["temp"].set(f"{t} °C" if t is not None else "n/a", "fans handle up to ~85 °C",
-                           None if t is None else "ok" if t < 82 else "warn" if t < 90 else "bad", col(m, "cpu_temp"))
+        from mysys import brief as BR, overview as OV
+        h = OV.health()
+        act = OV.activity(3)
+        att = BR.attention()
+        for w in act["waiting"]:
+            if w["long"]:
+                att = att + [f"{w['name']} has waited {w['waited']} — {w['why']}"]
+        head, sentence, level = OV.overall(h, act, att)
+        self._level = (head, level)
+        txt = f"<span style='font-size:20px; font-weight:700'>{html.escape(head)}</span><br>{html.escape(sentence)}"
+        if att:
+            txt += "<br>" + "<br>".join("–  " + html.escape(a) for a in att[:4])
+        banner(self.ban, txt, level)
+        _clear(self.tiles)
+        for x in h:
+            f, l2 = _card()
+            l2.setContentsMargins(12, 10, 12, 10)
+            l2.addWidget(_lab(x["label"].upper(), "cardTitle", wrap=True))
+            l2.addWidget(_lab(x["value"], style=f"font-size:18px; font-weight:700; color:{tone(x['level'])};"))
+            b = Bar(5)
+            b.set(x["pct"] if x["pct"] is not None else (100 if x["level"] == "ok" else 0), x["level"])
+            l2.addWidget(b)
+            l2.addWidget(_lab(x["detail"], "cardDetail", wrap=True))
+            l2.addStretch()
+            self.tiles.addWidget(f, 1)
+        rows = [("RUNNING", "info", x["name"] + (" (paused)" if x["paused"] else ""), x["where"], x["elapsed"],
+                 ", ".join(b for b in [x["source"], f"{x['ram']:.1f} GB" if x["ram"] else "",
+                                       (f"{x['progress']:.0f}%" if x.get("progress") is not None else ""),
+                                       (("~" + x["left"] + " left") if x.get("left") and x["left"][0].isdigit() else x.get("left") or "")] if b))
+                for x in act["running"]]
+        rows += [("WAITING", "warn" if x["long"] else None, x["name"], x["where"], x["waited"], x["why"]) for x in act["waiting"]]
+        rows += [(x["result"], {"OK": "ok", "WARN": "warn", "FAIL": "bad"}.get(x["result"]), x["name"], "", x["when"], x["detail"])
+                 for x in act["finished"]]
+        if not rows:
+            rows = [("", None, "Nothing running, nothing waiting.", "", "", "")]
+        self.tab.setRowCount(len(rows))
+        for i, (st, lv, n, wh, t, d) in enumerate(rows):
+            for j, v in enumerate((cell(st, lv, True), cell(n, bold=True), cell(wh), cell(t), cell(d))):
+                self.tab.setItem(i, j, v)
+        _clear(self.spec_lay)
+        self.spec_lay.addWidget(_lab("THIS COMPUTER", "cardTitle"))
         try:
-            l1, l5, _ = os.getloadavg()
-        except OSError:
-            l1 = l5 = 0
-        cpus = os.cpu_count() or 1
-        self.c["load"].set(f"{l1 / cpus * 100:.0f}%", f"load {l1:.1f} / {cpus} threads (5-min {l5:.1f})",
-                           "ok", col(m, "load1"))
-        for key, lst in (("data", CFG.words("DATA_DISKS")), ("share", CFG.words("NET_SHARES"))):
-            path = lst[0] if lst else ""
-            if not path:
-                self.c[key].set("none", "not configured")
-                continue
-            dd = disk(path)
-            if dd:
-                self.c[key].set(f"{human(dd[1])} free", f"{dd[0] / dd[2] * 100:.0f}% of {human(dd[2])} used · {path}", "ok")
-            else:
-                self.c[key].set("not mounted", path, "bad")
-        b = kv(STATE / "backup_status")
-        ls = float(b.get("last_success", 0) or 0)
-        st, txt = CFG.backup_state()
-        b_lv = {"ok": "ok", "running": "info", "first": "info", "off": "warn"}.get(st, "bad")
-        self.c["backup"].set("running…" if st == "running" else ago(ls) if ls else txt.split(" (")[0], txt, b_lv)
-        jobs = W.jobs()
-        self.c["jobs"].set(str(len(jobs)), ", ".join(sorted({j["tool"] for j in jobs})) or "idle", "info" if jobs else None)
-        self.c["jobs"].t.setText("TRACKED JOBS RUNNING")
-
-        # attention list
-        while self.att.count():
-            w = self.att.takeAt(0).widget()
-            if w:
-                w.deleteLater()
-        items = []
-        days = report_days()
-        if days:
-            items += [(w_[6:], "warn") for w_ in warnings_of(days[0])]
-        if Path("/var/run/reboot-required").exists() and not any("reboot" in i[0] for i in items):
-            items.append(("Reboot required to finish installing updates", "warn"))
-        blocked = [r for r in audit_rows(300) if r.get("decision") == "blocked"
-                   and time.time() - time.mktime(time.strptime(r["t"], "%Y-%m-%d %H:%M:%S")) < 86400]
-        if blocked:
-            items.append((f"{len(blocked)} AI command(s) blocked in the last 24 h — see AI guard", "bad"))
-        try:
-            for line in (REPORTS / "crashes.log").read_text().splitlines()[-3:]:
-                t_, cause = line.split("\t")[:2]
-                if time.time() - time.mktime(time.strptime(t_, "%Y-%m-%d %H:%M")) < 7 * 86400:
-                    items.append((f"Unexpected stop at {t_}: {cause} — see History", "bad"))
-        except (OSError, ValueError):
-            pass
-        try:
-            vul = json.loads((STATE / "vulns.json").read_text()).get("findings") or []
-            if vul:
-                items.append((f"{len(vul)} Python package version(s) with known vulnerabilities — see Software", "warn"))
-        except (OSError, ValueError):
-            pass
-        if not items:
-            items = [("Nothing — everything looks fine.", "ok")]
-        for text, lv in items:
-            lb = QLabel(("●  " if lv != "ok" else "✓  ") + text)
-            lb.setObjectName("banner")
-            lb.setWordWrap(True)
-            banner(lb, lb.text(), lv)
-            self.att.addWidget(lb)
-        bad = [i for i in items if i[1] != "ok"]
-        self.status.setText("All good" if not bad else f"{len(bad)} thing{'s' if len(bad) > 1 else ''} need{'' if len(bad) > 1 else 's'} attention")
-        self.status.setStyleSheet(f"color:{tone('ok' if not bad else 'warn')};")
-        last = (days[0] / "summary.txt").stat().st_mtime if days and (days[0] / "summary.txt").exists() else 0
-        self.sub.setText(f"{CFG.get('MACHINE_LABEL')} · {PR.os_name()} · kernel {os.uname().release} · last full check {ago(last)}")
+            rows_s = OV.specs() + [("Running for", OV.uptime_text())]
+        except Exception as e:      # the page must never break because one probe fails
+            rows_s = [("Specification", f"not available ({e})")]
+        self.spec_lay.addWidget(spec_grid(rows_s, cols=2))
 
     def nav_status(self):
+        if self._level:
+            head, level = self._level
+            return head.lower(), level
         days = report_days()
         n = len(warnings_of(days[0])) if days else 0
         return (f"{n} warning{'s' if n != 1 else ''}" if n else "all good"), ("warn" if n else "ok")
@@ -2339,7 +2359,7 @@ class NavItem(QWidget):
     def __init__(self, page):
         super().__init__()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 7, 10, 7)
+        lay.setContentsMargins(14, 4, 10, 4)
         lay.setSpacing(10)
         col_ = QVBoxLayout()
         col_.setSpacing(0)
@@ -2356,14 +2376,18 @@ class NavItem(QWidget):
 
     def set(self, text, level):
         self.sub.setText(text)
+        self.sub.setVisible(bool(text))
         self.dot.setVisible(level in ("warn", "bad", "info"))
         self.dot.setStyleSheet(f"color:{tone(level)}; background:transparent; font-size:10px;")
 
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    PAGES = [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, StoragePage, SystemPage, HistoryPage, ProjectsPage,
-             BackupPage, GuardPage, ReportsPage, SoftwarePage, InventoryPage, NotifyPage, SettingsPage]
+    GROUPS = [("WORK", [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, HistoryPage]),
+              ("THIS COMPUTER", [SystemPage, StoragePage, SoftwarePage, InventoryPage, ProjectsPage]),
+              ("PROTECTION", [BackupPage, GuardPage]),
+              ("MESSAGES & SETTINGS", [ReportsPage, NotifyPage, SettingsPage])]
+    PAGES = [c for _, cs in GROUPS for c in cs]
 
     def __init__(self):
         super().__init__()
@@ -2390,15 +2414,29 @@ class Main(QMainWindow):
         sl.addWidget(host)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sl.addWidget(self.nav, 1)
         self.theme_btn = btn("☾  Dark" if not DARK else "☀  Light", self.toggle_theme)
         self.theme_btn.setStyleSheet("margin:0 12px;")
         sl.addWidget(self.theme_btn)
 
         self.stack = QStackedWidget()
-        self.pages, self.navitems = [], []
+        self.pages, self.navitems, self.row_page = [], [], {}
+        group_of = {c: g for g, cs in self.GROUPS for c in cs}
+        last_group = None
         for cls in self.PAGES:
+            if group_of.get(cls) != last_group:
+                last_group = group_of.get(cls)
+                hd = QListWidgetItem(last_group)
+                hd.setFlags(Qt.ItemFlag.NoItemFlags)
+                f = hd.font()
+                f.setPointSizeF(max(7.0, f.pointSizeF() * 0.78))
+                f.setBold(True)
+                hd.setFont(f)
+                hd.setForeground(QColor(T["muted"]))
+                hd.setSizeHint(QSize(200, 30 if self.nav.count() else 22))
+                hd.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+                self.nav.addItem(hd)
             page = cls(self)
             wrap = QScrollArea()
             wrap.setWidgetResizable(True)
@@ -2413,7 +2451,8 @@ class Main(QMainWindow):
             self.pages.append(page)
             it = QListWidgetItem()
             ni = NavItem(page)
-            it.setSizeHint(QSize(200, 46))
+            it.setSizeHint(QSize(200, 40))
+            self.row_page[self.nav.count()] = len(self.pages) - 1
             self.nav.addItem(it)
             self.nav.setItemWidget(it, ni)
             self.navitems.append(ni)
@@ -2432,14 +2471,16 @@ class Main(QMainWindow):
         h.addWidget(side)
         h.addWidget(bw, 1)
         self.setCentralWidget(central)
-        self.nav.setCurrentRow(0)
+        self.nav.setCurrentRow(min(self.row_page))
         self.refresh_nav()
         t = QTimer(self)
         t.timeout.connect(self.tick)
         t.start(15000)
 
     def switch(self, row):
-        self.stack.setCurrentIndex(row)
+        if row not in self.row_page:
+            return
+        self.stack.setCurrentIndex(self.row_page[row])
         self.refresh()
 
     def refresh(self):
@@ -2448,7 +2489,7 @@ class Main(QMainWindow):
         except Exception as e:  # never let one bad file kill the app
             self.foot.setText(f"refresh error: {e}")
             return
-        self.foot.setText(f"{BASE}  ·  updated {time.strftime('%H:%M:%S')}  ·  refreshes every 15 s")
+        self.foot.setText(f"Updated {time.strftime('%H:%M:%S')}  ·  refreshes every 15 s")
 
     def refresh_nav(self):
         for p, ni in zip(self.pages, self.navitems):

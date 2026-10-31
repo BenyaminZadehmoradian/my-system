@@ -45,6 +45,20 @@ def _place(cwd, n=2):
     return "/".join(parts[-n:]) if parts else "?"
 
 
+# folder names that tools create inside a run folder; they say nothing about which design ran
+GENERIC = {"sim", "verilog", "vhdl", "prj", "sol", "solution", "solution1", "wrapc", "wrapc_pc", "impl_1", "synth_1",
+           "runs", "work", "build", "out", "output", "hls", "csim", "syn", "report", "reports", "tmp", "xsim",
+           "xsim.dir", "project", "local_run", "vivado", "src", "logs", "log"}
+
+
+def design_dir(cwd):
+    """The folder that names the run: '.../V1009/prj/sol/sim/verilog' -> '.../V1009'."""
+    p = Path(cwd or "/")
+    while p.name and (p.name.lower() in GENERIC or p.name.startswith(".")) and p.parent != p:
+        p = p.parent
+    return str(p)
+
+
 def _queue():
     try:
         from . import queue
@@ -255,6 +269,7 @@ def finished(n=LAST_N):
     except OSError:
         lines = []
     qends = [(i[0], i[1]) for i in items]
+    groups = []                                        # helper tools of one design finishing together = one entry
     for line in lines:
         try:
             r = json.loads(line)
@@ -264,14 +279,27 @@ def finished(n=LAST_N):
         if any(c == r.get("cwd") and abs(t - e) < 300 for e, c in qends):
             continue                                   # same run already listed from the queue
         res = r.get("results") or {}
-        bad = (r.get("errors") or 0) > 0
-        extra = []
+        dd = design_dir(r.get("cwd"))
+        g = next((g for g in groups if g["dir"] == dd and abs(g["t"] - t) < 900), None)
+        if not g:
+            g = {"dir": dd, "t": t, "tools": [], "secs": 0, "errors": 0, "wns": None}
+            groups.append(g)
+        g["t"] = max(g["t"], t)
+        if r.get("tool") not in g["tools"]:
+            g["tools"].append(r.get("tool"))
+        g["secs"] = max(g["secs"], r.get("seconds") or 0)
+        g["errors"] += r.get("errors") or 0
         if res.get("wns_ns") is not None:
-            extra.append(f"WNS {res['wns_ns']:+.3f} ns")
-        if bad:
-            extra.append(f"{r['errors']} ERROR(s)")
-        items.append((t, r.get("cwd"), f"{'FAIL' if bad else 'OK'}  {r.get('tool')} {_place(r.get('cwd'))} — {_dur(r.get('seconds'))}"
-                      + (", " + ", ".join(extra) if extra else "") + f" · {_ago(t)}"))
+            g["wns"] = res["wns_ns"]
+    for g in groups:
+        extra = []
+        if g["wns"] is not None:
+            extra.append(f"WNS {g['wns']:+.3f} ns")
+        if g["errors"]:
+            extra.append(f"{g['errors']} ERROR(s)")
+        name = _place(g["dir"])
+        items.append((g["t"], g["dir"], f"{'FAIL' if g['errors'] else 'OK'}  {name} ({', '.join(g['tools'])}) — {_dur(g['secs'])}"
+                      + (", " + ", ".join(extra) if extra else "") + f" · {_ago(g['t'])}"))
     items.sort(key=lambda x: -x[0])
     return [i[2] for i in items[:n]]
 

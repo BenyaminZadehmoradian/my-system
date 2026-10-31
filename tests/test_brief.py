@@ -52,7 +52,7 @@ print(title); print(text)
 assert title == "Status: 3 running, 2 waiting, 1 problem", title
 for want in ("CPU 85% busy (load 13.6 of 16) · 72°C", "RAM 61 GB free of 92", "/mnt/ea06csl not answering",
              "S22/doe_3 — 1h11m", "9.8 GB", f"#{r['id']} impl_s7 — 15m, 40%", f"#{w1['id']} impl_s8 — needs RAM",
-             "held by you", "OK  vivado S17/doe_2 — 21m, WNS +1.354 ns", f"FAIL  #{f2['id']} synth_s2 — 6m, exit code 1",
+             "held by you", "OK  S17/doe_2 (vivado) — 21m, WNS +1.354 ns", f"FAIL  #{f2['id']} synth_s2 — 6m, exit code 1",
              f"OK  #{f1['id']} synth_s1", "WNS 0.120"):
     assert want in text, (want, text)
 assert "/old" not in text and text.count("synth_s1") == 1, "only the last 3, without duplicates"
@@ -120,6 +120,43 @@ print("ok")
     assert not re.search("[\u2190-\u2BFF\U0001F000-\U0001FFFF\u2022]", out), "no emoji or symbols"
 
 
+
+def test_overview_data():
+    tmp, ms = fake_ms()
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    code = r'''
+import json, os, sys, time
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
+from mysys import overview, probes, config
+G = 2**30
+probes.threads = lambda: 16
+probes.loadavg = lambda: (20.5, 19.0, 18.0)
+probes.meminfo = lambda: {"MemTotal": 92 * G, "MemAvailable": 38 * G, "SwapTotal": 0, "SwapFree": 0}
+probes.cpu_temp = lambda: 79
+now = time.time()
+d = "/mnt/data/benyamin/dse/extra_int32_guided"
+runs = {}
+for v in ("V1009", "V1010"):
+    for i, (tool, sub) in enumerate((("vitis-run", ""), ("vitis_hls", "/prj/sol/sim/verilog"), ("xelab", "/prj/sol/sim/verilog"))):
+        runs[f"{tool}{v}"] = {"tool": tool, "cwd": f"{d}/{v}{sub}", "start": now - 300 + i, "rss": G}
+(config.STATE / "watch.json").write_text(json.dumps({"runs": runs}))
+a = overview.activity()
+names = sorted(x["name"] for x in a["running"])
+assert names == ["V1009", "V1010"], names
+assert "vitis-run → vitis_hls → xelab" in a["running"][0]["where"] and abs(a["running"][0]["ram"] - 3) < 0.01
+h = overview.health()
+cpu = next(x for x in h if x["key"] == "cpu")
+assert cpu["level"] == "warn" and cpu["value"] == "128%", cpu
+head, sentence, level = overview.overall(h, a, [])
+assert head == "Needs a look" and level == "warn" and "2 runs going" in sentence, (head, sentence)
+rows = dict(overview.specs())
+assert "Processor" in rows and "Memory" in rows and "System" in rows, rows
+print("ok")
+'''
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):
@@ -127,3 +164,4 @@ if __name__ == "__main__":
             fn()
             print("ok", k)
     print(f"all passed in {time.time() - t0:.1f}s")
+

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.0 — 2026-10-31
+
+App
+- New Overview: one honest sentence about the machine (All good / Needs a look / Problem) with what needs attention;
+  tiles for CPU, memory, temperature, disks, network share and backup with levels that match reality (128% CPU or a
+  root disk heading for full are no longer green); one activity table with what runs (time, RAM, time left), what
+  waits and why, and the last finished runs; and the specification of this computer (processor, memory and modules,
+  graphics, disks, system, swap, uptime).
+- Helper tools of one design (vitis-run, vitis_hls, xelab in its subfolders) are one row, named after the design.
+- Sidebar grouped (Work, This computer, Protection, Messages & settings), compact, scrolls when the window is small.
+- Footer without the folder path.
+
+Phone report
+- Finished runs are named after the design folder ("extra_int32_guided/V1011 (vitis_hls)", not "sim/wrapc_pc");
+  helper tools of one design finishing together are one entry.
+
 ## 1.8.0 — 2026-10-31
 
 From the real machine's data and an independent code review of 1.5.3–1.7.1.
