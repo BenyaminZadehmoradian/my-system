@@ -69,7 +69,7 @@ def _register(path, run_id):
 
 
 class Run:
-    def __init__(self, name, params=None, folder=None, project=None, cmd=None, echo=False):
+    def __init__(self, name, params=None, folder=None, project=None, cmd=None, echo=False, extra=None):
         if not re.match(r"^[A-Za-z0-9_.+-]+$", name or ""):
             raise ValueError("run name: letters, digits and _ . + - only")
         self.name = name
@@ -81,6 +81,7 @@ class Run:
         self.project = project
         self.cmd = cmd or " ".join(sys.argv)
         self.echo = echo
+        self.extra = {("x_" + k if not k.startswith("x_") else k): v for k, v in (extra or {}).items()}
         self._t0 = None
         self._stage = None
         self._ended = False
@@ -102,7 +103,8 @@ class Run:
         self._f = open(self.path, "a", buffering=1, encoding="utf-8")
         self._t0 = time.time()
         self._w("start", name=self.name, project=self.project or _project(self.folder), cmd=self.cmd[:500],
-                cwd=self.folder, host=socket.gethostname(), pid=os.getpid(), params=self.params, git=_git(self.folder))
+                cwd=self.folder, host=socket.gethostname(), pid=os.getpid(), params=self.params, git=_git(self.folder),
+                **self.extra)
         _register(self.path, self.run)
         return self
 

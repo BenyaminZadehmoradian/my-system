@@ -17,7 +17,7 @@ from PyQt6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSize, 
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter,
                          QPainterPath, QPalette, QPen)
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -240,8 +240,9 @@ class Chart(QWidget):
                 p.setPen(QPen(QColor(T["grid"]), 1))
                 p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
                 p.setPen(QColor(T["muted"]))
-                p.drawText(QRectF(0, y - 8, 30, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                           f"{hi - (hi - lo) * k / 4:.0f}")
+                v_ = hi - (hi - lo) * k / 4
+                lab = f"{v_:.0f}" if hi - lo >= 20 else f"{v_:.2f}" if hi - lo >= 0.2 else f"{v_:.3f}"
+                p.drawText(QRectF(0, y - 8, 30, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lab)
         path = QPainterPath(pt(0, self.values[0]))
         for i in range(1, n):
             a, b = pt(i - 1, self.values[i - 1]), pt(i, self.values[i])
@@ -1213,6 +1214,252 @@ class NumItem(QTableWidgetItem):
         return self.v < getattr(other, "v", float("inf"))
 
 
+class Gantt(QWidget):
+    """Timeline of jobs: one bar per job from start to end, coloured by state."""
+    COLORS = {"done": "ok", "cached": None, "running": "info", "suspended": "warn", "failed": "bad", "timeout": "bad",
+              "cancelled": None, "skipped": None}
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.setMinimumHeight(160)
+
+    def set(self, rows):
+        self.rows = rows[-60:]
+        self.setMinimumHeight(max(160, 22 + 16 * len(self.rows)))
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.rows:
+            p.setPen(QColor(T["muted"]))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "no started jobs yet")
+            return
+        t0 = min(r[1] for r in self.rows)
+        t1 = max(r[2] for r in self.rows)
+        span = max(1.0, t1 - t0)
+        lw = min(260, self.width() * 0.32)
+        W = self.width() - lw - 10
+        p.setFont(QFont(p.font().family(), 8))
+        for i, (lab, a, b, st) in enumerate(self.rows):
+            y = 4 + i * 16
+            p.setPen(QColor(T["text"]))
+            p.drawText(QRectF(4, y, lw - 8, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, lab[:40])
+            x = lw + (a - t0) / span * W
+            w = max(3.0, (b - a) / span * W)
+            c = QColor(tone(self.COLORS.get(st)) if self.COLORS.get(st) else T["muted"])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(c)
+            p.drawRoundedRect(QRectF(x, y + 2, w, 11), 3, 3)
+        p.setPen(QColor(T["muted"]))
+        yb = 6 + len(self.rows) * 16
+        p.drawText(QRectF(lw, yb, 200, 14), Qt.AlignmentFlag.AlignLeft, time.strftime("%m-%d %H:%M", time.localtime(t0)))
+        p.drawText(QRectF(self.width() - 210, yb, 200, 14), Qt.AlignmentFlag.AlignRight,
+                   time.strftime("%m-%d %H:%M", time.localtime(t1)))
+
+
+class QueuePage(Page):
+    title, icon, fallback = "Queue", "view-list", "view-list"
+    COLS = ["ID", "State", "Prio", "Name", "Flow / step", "Mem GB", "Peak GB", "Cores", "CPU used", "Started", "Time", "Note"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("Queue", "Jobs start only when the CPU threads and RAM they need are free. When RAM runs low the "
+                                      "newest low-priority job is paused and continues later. Add jobs with  ms q add -- CMD  "
+                                      "or a flow file (steps, sweeps, dependencies)."))
+        top = QHBoxLayout()
+        self.status = QLabel()
+        self.status.setObjectName("pill")
+        top.addWidget(self.status)
+        self.show_all = QCheckBox("show finished")
+        self.show_all.toggled.connect(lambda _: self.refresh())
+        top.addWidget(self.show_all)
+        top.addStretch()
+        top.addWidget(btn("Run flow file…", self.add_flow, "primary"))
+        top.addWidget(btn("Check flow…", self.check_flow))
+        top.addWidget(btn("Schedules", self.show_schedules))
+        lay.addLayout(top)
+        row = QHBoxLayout()
+        for label, fn in (("Hold", "hold"), ("Release", "release"), ("Pause", "suspend"), ("Continue", "resume"),
+                          ("Retry", "retry"), ("Cancel", "cancel")):
+            row.addWidget(btn(label, lambda _=False, f=fn: self.act(f)))
+        row.addWidget(btn("Priority +", lambda: self.prio(+1)))
+        row.addWidget(btn("Priority −", lambda: self.prio(-1)))
+        row.addWidget(btn("Output", self.output))
+        row.addWidget(btn("Clear finished", self.clear))
+        row.addStretch()
+        lay.addLayout(row)
+        split = QSplitter(Qt.Orientation.Vertical)
+        self.tab = table(self.COLS, 11)
+        self.tab.setSortingEnabled(True)
+        split.addWidget(self.tab)
+        bottom = QWidget()
+        bl = QVBoxLayout(bottom)
+        bl.setContentsMargins(0, 6, 0, 0)
+        hl = QLabel("TIMELINE (last 7 days, or the selected job's flow)")
+        hl.setObjectName("cardTitle")
+        bl.addWidget(hl)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        self.gantt = Gantt()
+        sc.setWidget(self.gantt)
+        bl.addWidget(sc, 1)
+        split.addWidget(bottom)
+        split.setSizes([380, 260])
+        lay.addWidget(split, 1)
+        self.tab.itemSelectionChanged.connect(self.timeline)
+        self.setMinimumHeight(700)
+        self._jobs = []
+
+    def refresh(self):
+        from mysys import queue as Qm
+        st, d = Qm.daemon_state()
+        set_pill(self.status, f"scheduler {st}" + (f": {d['error'][:60]}" if d and d.get("error") else ""),
+                 "ok" if st == "running" else "bad")
+        sel = self.selected()
+        jobs = Qm.all_jobs()
+        if not self.show_all.isChecked():
+            jobs = [j for j in jobs if j["state"] not in Qm.TERMINAL or time.time() - (j.get("ended") or 0) < 6 * 3600]
+        self._jobs = jobs
+        self.tab.setSortingEnabled(False)
+        self.tab.setRowCount(len(jobs))
+        lv = {"running": "info", "done": "ok", "cached": None, "failed": "bad", "timeout": "bad", "suspended": "warn",
+              "queued": None, "held": "warn", "skipped": None, "cancelled": None}
+        for i, j in enumerate(reversed(jobs)):
+            e = Qm.efficiency(j)
+            fl = j.get("flow") or {}
+            vals = [NumItem(j["id"], "{:.0f}"), cell(j["state"], lv.get(j["state"]), j["state"] in ("failed", "timeout")),
+                    NumItem(j.get("priority") or 0, "{:.0f}"), cell(j["name"], bold=True),
+                    cell(f"{fl.get('name', '')} / {fl.get('step', '')}" if fl else ""),
+                    NumItem(e["mem_req_gb"], "{:.1f}"), NumItem(e["mem_peak_gb"] or "", "{:.1f}"),
+                    NumItem(e["cores_req"], "{:.1f}"), NumItem(e["cores_used"] if e["cores_used"] is not None else "", "{:.1f}"),
+                    cell(time.strftime("%m-%d %H:%M", time.localtime(j["started"])) if j.get("started") else ""),
+                    cell(self.hms(Qm.runtime(j)) if j.get("started") else ""), cell(j.get("reason", ""))]
+            for k, it in enumerate(vals):
+                it.setData(Qt.ItemDataRole.UserRole, j["id"])
+                self.tab.setItem(i, k, it)
+        self.tab.setSortingEnabled(True)
+        if sel:
+            for r in range(self.tab.rowCount()):
+                if self.tab.item(r, 0) and self.tab.item(r, 0).data(Qt.ItemDataRole.UserRole) == sel[0]:
+                    self.tab.selectRow(r)
+                    break
+        self.timeline()
+
+    @staticmethod
+    def hms(s):
+        s = int(s)
+        return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+    def selected(self):
+        rows = {i.row() for i in self.tab.selectedItems()}
+        return [self.tab.item(r, 0).data(Qt.ItemDataRole.UserRole) for r in sorted(rows) if self.tab.item(r, 0)]
+
+    def timeline(self):
+        from mysys import flow as F, queue as Qm
+        sel = self.selected()
+        jobs = self._jobs or Qm.all_jobs()
+        if sel:
+            j = Qm.load(sel[0])
+            fid = (j or {}).get("flow", {}) and j["flow"].get("id")
+            if fid:
+                jobs = [x for x in Qm.all_jobs() if (x.get("flow") or {}).get("id") == fid]
+        jobs = [j for j in jobs if time.time() - (j.get("started") or 0) < 7 * 86400]
+        self.gantt.set(F.timeline_rows(jobs))
+
+    def act(self, fn):
+        from mysys import queue as Qm
+        ids = self.selected()
+        if fn == "cancel" and ids and QMessageBox.question(self, "Cancel jobs", f"Cancel {len(ids)} job(s)?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        for i in ids:
+            getattr(Qm, fn)(i)
+        self.refresh()
+
+    def prio(self, d):
+        from mysys import queue as Qm
+        for i in self.selected():
+            j = Qm.load(i)
+            if j:
+                Qm.set_priority(i, int(j.get("priority") or 0) + d)
+        self.refresh()
+
+    def output(self):
+        from mysys import queue as Qm
+        ids = self.selected()
+        if not ids:
+            return
+        d = QDialog(self)
+        d.setWindowTitle(f"Output of job {ids[0]}")
+        d.resize(900, 600)
+        l_ = QVBoxLayout(d)
+        v = mono(QPlainTextEdit())
+        v.setReadOnly(True)
+        v.setPlainText(read(Qm.LOGS / f"{ids[0]}.log", "(no output yet)")[-200000:])
+        v.verticalScrollBar().setValue(v.verticalScrollBar().maximum())
+        l_.addWidget(v)
+        d.exec()
+
+    def clear(self):
+        from mysys import queue as Qm
+        Qm.clear(0)
+        self.refresh()
+
+    def _pick(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Flow file", str(HOME), "Flow (*.yaml *.yml *.toml *.json)")
+        return f
+
+    def check_flow(self, path=None):
+        f = path or self._pick()
+        if not f:
+            return None
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "check", f], capture_output=True, text=True)
+        d = QDialog(self)
+        d.setWindowTitle("Flow plan")
+        d.resize(1000, 600)
+        l_ = QVBoxLayout(d)
+        v = mono(QPlainTextEdit())
+        v.setReadOnly(True)
+        v.setPlainText(r.stdout + r.stderr)
+        l_.addWidget(v)
+        ok = r.returncode == 0
+        if path:
+            row = QHBoxLayout()
+            row.addStretch()
+            row.addWidget(btn("Cancel", d.reject))
+            if ok:
+                row.addWidget(btn("Queue all jobs", d.accept, "primary"))
+            l_.addLayout(row)
+        return d.exec() == QDialog.DialogCode.Accepted and ok
+
+    def add_flow(self):
+        f = self._pick()
+        if f and self.check_flow(f):
+            self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "run", f, "--resume"], None, None, self.refresh)
+
+    def show_schedules(self):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "schedules"], capture_output=True, text=True)
+        QMessageBox.information(self, "Scheduled flows", (r.stdout.strip() or "No schedules.") +
+                                "\n\nAdd one in a terminal:\n  ms flow schedule FILE --cron \"17 2 * * *\"\n"
+                                "  ms flow schedule FILE --idle\n  ms flow schedule FILE --on-commit ~/project")
+
+    def nav_status(self):
+        from mysys import queue as Qm
+        js = Qm.all_jobs()
+        run = sum(1 for j in js if j["state"] == "running")
+        wait = sum(1 for j in js if j["state"] == "queued")
+        st, _ = Qm.daemon_state()
+        if st != "running" and (run or wait):
+            return "scheduler stopped", "bad"
+        if not run and not wait:
+            return "empty", None
+        return f"{run} running · {wait} waiting", "info"
+
+
 class RunLogsPage(Page):
     title, icon, fallback = "Run logs", "text-x-script", "text-x-generic"
     COLS = ["Started", "Project", "Run", "Status", "Time", "Errors", "Warnings", "Key metrics"]
@@ -1241,11 +1488,33 @@ class RunLogsPage(Page):
         self.tab.setSortingEnabled(True)
         self.tab.itemSelectionChanged.connect(self.detail)
         self.view = QTextBrowser()
+        self.view.setOpenLinks(False)
+        self.view.anchorClicked.connect(self.open_artifact)
         split.addWidget(self.tab)
-        split.addWidget(self.view)
-        split.setSizes([420, 300])
+        bottom = QSplitter(Qt.Orientation.Horizontal)
+        bottom.addWidget(self.view)
+        trend = QWidget()
+        tl = QVBoxLayout(trend)
+        tl.setContentsMargins(6, 0, 0, 0)
+        tr = QHBoxLayout()
+        lab = QLabel("TREND")
+        lab.setObjectName("cardTitle")
+        tr.addWidget(lab)
+        self.metric = QComboBox()
+        self.metric.currentTextChanged.connect(lambda _: self.draw_trend())
+        tr.addWidget(self.metric, 1)
+        tl.addLayout(tr)
+        self.trend_info = QLabel("")
+        self.trend_info.setObjectName("muted")
+        tl.addWidget(self.trend_info)
+        self.chart = Chart(height=180, axis=True)
+        tl.addWidget(self.chart, 1)
+        bottom.addWidget(trend)
+        bottom.setSizes([620, 420])
+        split.addWidget(bottom)
+        split.setSizes([400, 320])
         lay.addWidget(split, 1)
-        self.setMinimumHeight(660)
+        self.setMinimumHeight(720)
 
     def refresh(self):
         from mysys import runlog as RL
@@ -1279,6 +1548,29 @@ class RunLogsPage(Page):
                 self.tab.setItem(i, j, it)
         self.tab.setSortingEnabled(True)
         self._shown = runs
+        names = sorted({k for r in runs for k, v in r["metrics"].items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        cur = self.metric.currentText()
+        self.metric.blockSignals(True)
+        self.metric.clear()
+        self.metric.addItems(names)
+        if cur in names:
+            self.metric.setCurrentText(cur)
+        elif "wns_ns" in names:
+            self.metric.setCurrentText("wns_ns")
+        self.metric.blockSignals(False)
+        self.draw_trend()
+
+    def draw_trend(self):
+        m = self.metric.currentText()
+        pts = [(r["start_ts"] or 0, r["metrics"][m]) for r in getattr(self, "_shown", [])
+               if isinstance(r["metrics"].get(m), (int, float)) and not isinstance(r["metrics"].get(m), bool)]
+        pts.sort(key=lambda x: x[0])
+        vals = [float(v) for _, v in pts]
+        if vals:
+            self.trend_info.setText(f"{len(vals)} runs (filter above) · last {vals[-1]:g} · best {max(vals):g} · worst {min(vals):g}")
+        else:
+            self.trend_info.setText("no numeric metric in these runs")
+        self.chart.set(vals, T["accent_bg"])
 
     @staticmethod
     def dur_item(sec, text):
@@ -1315,9 +1607,45 @@ class RunLogsPage(Page):
                      + "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)} {esc(r['units'].get(k, ''))}</td></tr>" for k, v in r["metrics"].items())
                      + "</table>")
         if r["artifacts"]:
-            h.append("<p><b>Files:</b> " + ", ".join(f"{esc(p)} ({esc(k)})" for p, k in r["artifacts"]) + "</p>")
+            h.append("<p><b>Files</b> (click to view): " + ", ".join(
+                f"<a href='{QUrl.fromLocalFile(os.path.join(r['folder'], p)).toString()}'>{esc(p)}</a> ({esc(k)})"
+                for p, k in r["artifacts"]) + "</p>")
         h.append(f"<pre style='font-family:monospace; font-size:12px'>{esc(RL.timeline(r['file'], r['run']))}</pre>")
         self.view.setHtml("".join(h))
+
+    def open_artifact(self, url):
+        f = url.toLocalFile()
+        if not os.path.exists(f):
+            QMessageBox.information(self, "File", f"{f}\n\ndoes not exist (any more).")
+            return
+        d = QDialog(self)
+        d.setWindowTitle(f)
+        d.resize(1000, 700)
+        l_ = QVBoxLayout(d)
+        ext = os.path.splitext(f)[1].lower()
+        if ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".webp"):
+            v = QTextBrowser()
+            v.setHtml(f"<img src='{QUrl.fromLocalFile(f).toString()}' style='max-width:100%'>")
+        elif os.path.isdir(f):
+            v = mono(QPlainTextEdit())
+            v.setPlainText("\n".join(sorted(os.listdir(f))))
+        else:
+            with open(f, "rb") as fh:
+                head = fh.read(400000)
+            if b"\0" in head[:4000]:
+                d.close()
+                QDesktopServices.openUrl(QUrl.fromLocalFile(f))
+                return
+            v = mono(QPlainTextEdit())
+            v.setPlainText(head.decode(errors="replace") + ("\n… (first 400 kB)" if len(head) == 400000 else ""))
+        if isinstance(v, QPlainTextEdit):
+            v.setReadOnly(True)
+        l_.addWidget(v)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(btn("Open with system app", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(f))))
+        l_.addLayout(row)
+        d.exec()
 
     def rescan(self):
         self.view.setPlainText("Searching project folders for run logs…")
@@ -1339,6 +1667,8 @@ class RunLogsPage(Page):
             QDesktopServices.openUrl(QUrl.fromLocalFile(r["folder"]))
 
     def nav_status(self):
+        if self._sig is None:
+            self.refresh()
         bad = sum(1 for r in self._runs[:200] if r["status"] in ("failed", "died") and r["end_ts"]
                   and time.time() - r["end_ts"] < 86400)
         run = sum(1 for r in self._runs[:200] if r["status"] == "running")
@@ -1552,15 +1882,8 @@ class NavItem(QWidget):
     def __init__(self, page):
         super().__init__()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 7, 10, 7)
+        lay.setContentsMargins(14, 7, 10, 7)
         lay.setSpacing(10)
-        ic = QIcon.fromTheme(page.icon, QIcon.fromTheme(page.fallback))
-        self.icon = QLabel()
-        if not ic.isNull():
-            self.icon.setPixmap(ic.pixmap(QSize(20, 20)))
-        else:
-            self.icon.setText("•")
-        self.icon.setFixedWidth(22)
         col_ = QVBoxLayout()
         col_.setSpacing(0)
         self.name = QLabel(page.title)
@@ -1571,7 +1894,6 @@ class NavItem(QWidget):
         col_.addWidget(self.sub)
         self.dot = QLabel("●")
         self.dot.setStyleSheet("background:transparent;")
-        lay.addWidget(self.icon)
         lay.addLayout(col_, 1)
         lay.addWidget(self.dot)
 
@@ -1583,7 +1905,7 @@ class NavItem(QWidget):
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    PAGES = [OverviewPage, RunsPage, RunLogsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
+    PAGES = [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
              ReportsPage, InventoryPage, NotifyPage, SettingsPage]
 
     def __init__(self):

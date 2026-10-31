@@ -21,10 +21,11 @@ These rules are installed by **my-system** and are read-only. The machine-specif
 7. **Before any heavy work, run `ms capacity`** and start no more jobs than it allows. It knows the
    live load, free RAM and the measured cost of each tool on this machine. Cap thread counts
    explicitly (`make -j N`, `OMP_NUM_THREADS`, `set_param general.maxThreads`), never "all cores".
-8. **Long jobs:** start them with `vrun <command>` so the user is notified when they finish;
-   queue many of them with `tsp nice -n 10 vrun <command>` (slots: `tsp -S N`) instead of
-   starting them all at once. The section *How to run heavy work* in the system map has the details.
-
+8. **Long or heavy jobs go through the my-system queue**, never straight into the shell:
+   `ms q add --name NAME [--mem GB] [--cores N] -- <command>` (or the `queue_submit` MCP tool).
+   Sweeps and multi-step work are a flow file: `ms flow example` shows the format,
+   `ms flow check FILE` must pass, then `ms flow run FILE`. Watch progress with `ms q`.
+   The queue decides when each job may start; do not try to work around it.
 9. **Every program, script or flow you write that runs a job or produces results must write a
    standard run log** (`msrun.jsonl`, format in `~/My_System/runlog/RUNLOG_SPEC.md`) in its run
    folder — start, stages, errors, metrics, artifacts, end. Use the helpers, never hand-written JSON:

@@ -160,6 +160,8 @@ def track_jobs(s, now, conf):
                                 "seconds": int(dur), "errors": summ.get("errors") if summ else None,
                                 "log": summ.get("log", "") if summ else "", "via": "watch",
                                 "results": res}) + "\n")
+        if r["cwd"] in _queue_cwds():
+            continue                      # the queue reports its own jobs (results above are still recorded)
         if errs:
             notify(f"{r['tool']} failed: {errs} ERROR(s)",
                    f"{short(r['cwd'])} · {hms(dur)} · {summ.get('first_error', '')}", "high", "x")
@@ -204,6 +206,14 @@ def track_jobs(s, now, conf):
 
 
 PROFILES = config.STATE / "job_profiles.json"
+
+
+def _queue_cwds():
+    try:
+        from . import queue
+        return {j["cwd"] for j in queue.all_jobs() if time.time() - (j.get("ended") or time.time()) < 86400}
+    except Exception:
+        return set()
 
 
 def record_profile(r, dur):
@@ -277,7 +287,7 @@ def tick():
         k = advise_parallel(cur, s)
         notify("CPU overloaded", f"load {l1:.0f} on {th} threads with {len(cur)} jobs for {s['over_min']} min. "
                                  f"Jobs wait for CPU and each one runs slower. About {k} jobs at a time would "
-                                 f"finish the same work sooner (e.g. tsp -S {k}).", "default", "hourglass")
+                                 f"finish the same work sooner (the my-system queue does this automatically: ms q add).", "default", "hourglass")
 
     # standard run logs (msrun.jsonl): report failed runs once
     try:

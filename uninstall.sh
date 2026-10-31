@@ -7,6 +7,9 @@ for t in watch daily backup verify digest report; do
   systemctl --user disable --now "my-system-$t.timer" 2>/dev/null
   rm -f "$HOME/.config/systemd/user/my-system-$t".{service,timer}
 done
+systemctl --user disable --now my-system-queue.service 2>/dev/null
+rm -f "$HOME/.config/systemd/user/my-system-queue.service"
+command -v claude >/dev/null && claude mcp remove --scope user my-system >/dev/null 2>&1
 systemctl --user daemon-reload
 rm -f "$HOME/.local/share/applications/my-system.desktop" "$HOME/.local/bin/ms" "$HOME/.local/bin/vrun"
 [ -L "$HOME/AGENTS.md" ] && rm -f "$HOME/AGENTS.md"

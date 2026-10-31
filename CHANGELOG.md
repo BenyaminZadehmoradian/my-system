@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0 — 2026-10-31
+
+Ideas taken from GNU Parallel, task-spooler, Slurm, Snakemake, Nextflow, Dagu, evQueue, Jenkins and Buildbot.
+
+- **Job queue** (`ms q`, user service `my-system-queue`): starts jobs only when the threads and RAM they need are free
+  (live load + RAM still to be taken by just-started jobs), priorities with backfill, optional preemption,
+  pause/resume of the newest low-priority job when RAM runs low, retries (out-of-memory → 1.5× memory),
+  timeouts and stuck-job alerts, hard memory limits via systemd scopes, dependencies (after ok / after any),
+  preconditions, idle-only jobs, GPUs (when nvidia-smi works), containers and SSH hosts.
+- Every queued job writes the standard run log with provenance (tool path and version, input fingerprints, environment).
+- **Flows** (`ms flow`): YAML steps with parameter matrices, per-item dependencies, `{{placeholders}}`, validation,
+  dry-run time estimate, resume, incremental re-runs, temp-file cleanup, on_success/on_failure hooks,
+  schedules (cron, when idle, on new commit) and one summary notification per flow.
+- Reports: `ms q report` (memory/CPU reserved vs used), `ms q timeline [--html]`, `reports/metrics.prom` for Prometheus.
+- App: new **Queue** page (control buttons, Gantt timeline, flow plan dialog), **Run logs** gets a metric trend chart
+  and an artifact viewer; sidebar without icons.
+- **MCP server** `ms mcp` (registered for Claude Code): capacity, queue, flows and run logs for AI assistants.
+- AI rules and capacity guide now point to the queue instead of tsp.
+
 ## 1.3.0 — 2026-10-31
 
 - **Standard run log** (`msrun.jsonl`, format v1, `runlog/RUNLOG_SPEC.md`): one JSON event per line —

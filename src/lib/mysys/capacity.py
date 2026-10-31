@@ -198,7 +198,7 @@ def now_text(tool=None):
         for t, _ in n["jobs"]:
             cnt[t] = cnt.get(t, 0) + 1
         lines.append("Running: " + ", ".join(f"{v}× {k}" for k, v in cnt.items()))
-    lines.append(("BUSY — do not start heavy work now; queue it with tsp and let it wait."
+    lines.append(("BUSY — do not start heavy work now; queue it with  ms q add -- <command>  and it starts when there is room."
                   if n["busy"] else f"Headroom: ~{n['free_threads']:.0f} free threads, {n['free_mem'] / GiB:.0f} GB usable RAM."))
     lines.append(f"Generic parallel builds right now: make -j{n['make_j']} (OMP_NUM_THREADS={n['make_j']}).")
     lines.append("")
@@ -209,7 +209,7 @@ def now_text(tool=None):
         lines.append(f"{t:<11} {r['more_now'] if not n['busy'] else 0:>8} {r['idle_max']:>8}  "
                      f"{r['peak_gb']:>5.1f} GB, {r['cores']:.1f} cores  {r['source']}; limited by {r['limited_by']}")
     lines.append("")
-    lines.append("Start at most 'more now' jobs; queue the rest: tsp -S <slots>; tsp nice -n 10 vrun <command>")
+    lines.append("Start at most 'more now' jobs; better: queue them all with  ms q add -- <command>  (starts each when it fits)")
     return "\n".join(lines)
 
 
@@ -263,15 +263,17 @@ def guide_md():
           "1. **Check before you start anything heavy** (builds, synthesis, simulations, sweeps, training):",
           "   run `ms capacity` (or `ms capacity vivado`). It prints the live load, free RAM and how many more",
           "   jobs of each kind fit *right now*. Never start more than it says. If it says BUSY, queue and wait.",
-          "2. **Queue, don't flood.** For several jobs use task-spooler: `tsp -S <N>` (N = the number it gave),",
-          "   then `tsp nice -n 10 vrun <command>` per job. `vrun` notifies the user when each job ends.",
+          "2. **Queue, don't flood.** Put heavy jobs in the my-system queue: `ms q add --name N -- <command>`",
+          "   (or the `queue_submit` MCP tool). It starts each job only when its CPU and RAM are free, pauses jobs",
+          "   when RAM runs low, retries out-of-memory runs and writes the run log. Sweeps and multi-step work:",
+          "   a flow file (`ms flow example`), checked with `ms flow check FILE`, started with `ms flow run FILE`.",
           "3. **Cap threads explicitly** — never rely on 'use all cores': `make -j<N>` / `cmake --build -j <N>`,",
           "   `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_MAX_THREADS`, Python `Pool(processes=N)`, `pytest -n N`.",
           f"   On an idle machine N ≤ {max(1, th - 2)} for one job; with other jobs running use the number from `ms capacity`.",
           "4. **Vivado / Vitis**: run in batch mode (`vivado -mode batch -source x.tcl -nojournal`), put",
           "   `set_param general.maxThreads <k>` in the Tcl (default 8; with several parallel runs use 2),",
           "   and give every run its own folder on the data disk. Parallel runs are limited by CPU or RAM — see the table.",
-          "5. **Long jobs survive the terminal**: start them through `tsp` or inside `tmux`, never as a plain",
+          "5. **Long jobs survive the terminal**: start them through `ms q add` (or `tmux`), never as a plain",
           "   background `&` from your shell session.",
           "6. **Be nice to the desktop**: prefix CPU-heavy commands with `nice -n 10`, disk-heavy ones with `ionice -c3`.",
           "7. **Outputs and scratch go to the data disk** (see above), not to `/` or the network share.",

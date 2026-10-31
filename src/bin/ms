@@ -18,6 +18,9 @@
   ms backup-setup | backup | backup-verify
   ms move FOLDER         move a folder to the data disk and leave a link
   ms report [--open]     full system report (HTML + Markdown) in reports/system/
+  ms q ...               job queue: starts jobs only when CPU and RAM are free (ms q help)
+  ms flow ...            steps, sweeps and dependencies from a YAML file (ms flow help)
+  ms mcp                 MCP server for AI assistants (stdio)
   ms log ...             standard run logs (msrun.jsonl): run, check, show, list, index, template
   ms capacity [TOOL]     how many more jobs fit right now (for you and AI assistants)
   ms hw                  hardware health (disks, memory modules, fans, firmware)
@@ -292,7 +295,7 @@ def log_cmd(rest):
 
 def doctor():
     ok = True
-    units = ["my-system-watch.timer", "my-system-daily.timer", "my-system-report.timer"]
+    units = ["my-system-watch.timer", "my-system-daily.timer", "my-system-report.timer", "my-system-queue.service"]
     if config.backup_repo():
         units += ["my-system-backup.timer", "my-system-verify.timer"]
     sysu = ["my-system-hwinfo.timer"] if Path("/etc/systemd/system/my-system-hwinfo.timer").exists() else []
@@ -388,6 +391,19 @@ def main(argv):
             subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif cmd == "log":
         return log_cmd(rest)
+    elif cmd in ("q", "queue"):
+        from mysys import qcli
+        return qcli.q_cmd(rest)
+    elif cmd == "flow":
+        from mysys import flow as _flow, qcli
+        try:
+            return qcli.flow_cmd(rest)
+        except _flow.FlowError as e:
+            print(f"Problems:\n{e}")
+            return 1
+    elif cmd == "mcp":
+        from mysys import mcp
+        mcp.serve()
     elif cmd == "capacity":
         if "--json" in rest:
             import json

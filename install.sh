@@ -21,6 +21,7 @@ say "Installing my-system $(cat "$SRC/lib/mysys/__init__.py" | sed -n 's/__versi
 # ---- 1. dependencies -------------------------------------------------------
 need=()
 "$PY" -c 'import PyQt6.QtWidgets' 2>/dev/null || need+=(python3-pyqt6)
+"$PY" -c 'import yaml' 2>/dev/null || need+=(python3-yaml)
 for c in curl:curl git:git secret-tool:libsecret-tools borg:borgbackup tsp:task-spooler notify-send:libnotify-bin; do
   command -v "${c%%:*}" >/dev/null || need+=("${c##*:}")
 done
@@ -84,6 +85,12 @@ ln -sfn "$MS/bin/ms" "$HOME/.local/bin/ms"
 ln -sfn "$MS/bin/vrun.sh" "$HOME/.local/bin/vrun"
 systemctl --user daemon-reload
 systemctl --user enable --now my-system-watch.timer my-system-daily.timer my-system-digest.timer my-system-report.timer >/dev/null
+systemctl --user enable my-system-queue.service >/dev/null 2>&1
+if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ] \
+   && ask "Keep the job queue (and its jobs) running when you log out? (sudo loginctl enable-linger)"; then
+  sudo loginctl enable-linger "$USER" || true
+fi
+systemctl --user restart my-system-queue.service      # running jobs are not affected (each has its own runner)
 repo=$("$PY" -c "import sys; sys.path.insert(0,'$MS/lib'); from mysys import config; print(config.backup_repo())")
 if [ -n "$repo" ] && [ -d "$repo" ]; then
   systemctl --user enable --now my-system-backup.timer my-system-verify.timer >/dev/null
@@ -104,6 +111,12 @@ text = text.rstrip() + ("\n\n" if text.strip() else "") + "<!-- my-system:begin 
 open(path, "w").write(text)
 EOF
 ln -sfn "$MS/state/AGENTS.md" "$HOME/AGENTS.md"
+# MCP server for Claude Code (ask my-system for capacity, queue jobs, read run logs)
+if command -v claude >/dev/null; then
+  claude mcp remove --scope user my-system >/dev/null 2>&1 || true
+  claude mcp add --scope user my-system -- /usr/bin/python3 "$MS/bin/ms" mcp >/dev/null 2>&1 \
+    && echo "MCP server 'my-system' registered for Claude Code" || echo "note: could not register the MCP server (claude mcp add)"
+fi
 
 # ---- 7. lock + baseline + first run ------------------------------------------
 say "Locking code, rules and config (sudo)"
@@ -132,6 +145,7 @@ echo
 say "Done."
 echo "  App:       'My System' in the app menu   (or: ms gui)"
 echo "  Terminal:  ms            (status)   ms help   (all commands)"
+echo "  Queue:     ms q add -- CMD     ms flow run sweep.yaml     (ms flow example)"
 echo "  Report:    ms report --open   (full system report; also on the 1st of every month)"
 echo "  Phone:     install the ntfy app, subscribe to the topic shown in Notifications, then: ms notify-test"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  Note: add ~/.local/bin to PATH to use 'ms' and 'vrun' (log out and in on Ubuntu)";; esac
