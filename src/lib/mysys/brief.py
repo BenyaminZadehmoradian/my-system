@@ -4,7 +4,7 @@
   ms brief --send     send it to the phone (and desktop) now
 Sent automatically at PHONE_REPORT_TIMES (my_system.conf, e.g. "08:00 13:00 19:00"; empty = off), and on request:
 type  status  (or ?) as a message in your ntfy topic in the phone app — the answer arrives within a minute.
-Plain text with a few symbols, short lines: readable on a phone without any formatting support.
+Plain text without emoji or symbols, short lines: readable on a phone without any formatting support.
 """
 import json
 import os
@@ -254,19 +254,19 @@ def build():
     last = finished()
     state = "needs attention" if att else ("busy" if run else "idle")
     title = f"Status: {len(run)} running, {len(wait)} waiting" + (f", {len(att)} problem{'s' if len(att) > 1 else ''}" if att else ", all OK")
-    out = ["■ SYSTEM"] + sysl
+    out = ["SYSTEM"] + sysl
     if att:
-        out += ["", f"⚠ NEEDS ATTENTION ({len(att)})"] + [f"• {a[:110]}" for a in att[:5]]
-    out += ["", f"▶ RUNNING ({len(run)})"]
-    out += [f"• {l}" for _, l in run[:MAX_RUNNING]] or ["• nothing"]
+        out += ["", f"NEEDS ATTENTION ({len(att)})"] + [f"- {a[:110]}" for a in att[:5]]
+    out += ["", f"RUNNING ({len(run)})"]
+    out += [f"- {l}" for _, l in run[:MAX_RUNNING]] or ["- nothing"]
     if len(run) > MAX_RUNNING:
         out.append(f"  + {len(run) - MAX_RUNNING} more")
-    out += ["", f"⏳ WAITING ({len(wait)})"]
-    out += [f"• {l}" for l in wait[:MAX_WAITING]] or ["• queue is empty"]
+    out += ["", f"WAITING ({len(wait)})"]
+    out += [f"- {l}" for l in wait[:MAX_WAITING]] or ["- queue is empty"]
     if len(wait) > MAX_WAITING:
         out.append(f"  + {len(wait) - MAX_WAITING} more")
-    out += ["", f"✓ LAST {LAST_N} FINISHED"]
-    out += [f"• {l}" for l in last] or ["• none yet"]
+    out += ["", f"LAST {LAST_N} FINISHED"]
+    out += [f"- {l}" for l in last] or ["- none yet"]
     out += ["", f"{time.strftime('%a %H:%M')} · reply 'status' for a new report"]
     text = "\n".join(out)
     if len(text.encode()) > 3900:                     # ntfy limit is 4096 bytes

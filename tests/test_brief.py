@@ -115,7 +115,9 @@ print("ok")
     notes = (tmp / "notes").read_text()
     assert notes.startswith("Status: 0 running, 0 waiting") and "LAST 3 FINISHED" in notes, notes
     out = subprocess.run([sys.executable, str(ms / "bin/ms"), "brief"], env=env, capture_output=True, text=True).stdout
-    assert "■ SYSTEM" in out and "▶ RUNNING" in out
+    assert "SYSTEM" in out and "RUNNING (" in out
+    import re
+    assert not re.search("[\u2190-\u2BFF\U0001F000-\U0001FFFF\u2022]", out), "no emoji or symbols"
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# notify.sh "Title" "Message" [min|low|default|high|urgent] [tag]
+# notify.sh "Title" "Message" [min|low|default|high|urgent] [tag]   (tag: kept for compatibility, not sent)
 # Desktop notification always; phone notification via ntfy when state/ntfy_topic exists
 # and state/ntfy_off does not. Messages carry status text only, never file contents.
 # shellcheck source=common.sh
@@ -9,7 +9,8 @@ case "$prio" in high|urgent) urg=critical;; min|low) urg=low;; *) urg=normal;; e
 command -v notify-send >/dev/null && notify-send -u "$urg" -a "My System" "$title" "$msg" 2>/dev/null
 topic=$(cat "$MS/state/ntfy_topic" 2>/dev/null)
 if [ -n "$topic" ] && [ ! -f "$MS/state/ntfy_off" ]; then
-  curl -s -m 10 -o /dev/null -H "Title: [$MACHINE_LABEL] $title" -H "Priority: $prio" -H "Tags: $tag" \
+  # no "Tags" header: ntfy would show each tag as an emoji
+  curl -s -m 10 -o /dev/null -H "Title: [$MACHINE_LABEL] $title" -H "Priority: $prio" \
     -d "$msg" "$NTFY_SERVER/$topic" || true
 fi
 mkdir -p "$MS/reports"

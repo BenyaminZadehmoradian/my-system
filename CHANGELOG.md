@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1 — 2026-10-31
+
+- No emoji in phone messages: the status report uses plain headings and dashes, and notifications no longer send
+  ntfy tags (the ntfy app showed each tag as an emoji).
+
 ## 1.7.0 — 2026-10-31
 
 - Status report for the phone (`ms brief`, `ms brief --send`): how the machine is (CPU busy %, temperature, free RAM,
