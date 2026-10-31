@@ -1213,6 +1213,140 @@ class NumItem(QTableWidgetItem):
         return self.v < getattr(other, "v", float("inf"))
 
 
+class RunLogsPage(Page):
+    title, icon, fallback = "Run logs", "text-x-script", "text-x-generic"
+    COLS = ["Started", "Project", "Run", "Status", "Time", "Errors", "Warnings", "Key metrics"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._runs, self._sig = [], None
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("Run logs", "Every run that writes the standard run log (msrun.jsonl) — from your scripts, "
+                                         "Vivado/Tcl flows or `ms log run`. Select a run to see its timeline. "
+                                         "Format: ~/My_System/runlog/RUNLOG_SPEC.md"))
+        row = QHBoxLayout()
+        self.q = QLineEdit()
+        self.q.setPlaceholderText("Filter (project, run, status, metric)…")
+        self.q.textChanged.connect(lambda _: self.fill())
+        self.count = QLabel()
+        self.count.setObjectName("muted")
+        row.addWidget(self.q, 1)
+        row.addWidget(self.count)
+        row.addWidget(btn("Search folders again", self.rescan))
+        row.addWidget(btn("Check format", self.check))
+        row.addWidget(btn("Open folder", self.open_folder))
+        lay.addLayout(row)
+        split = QSplitter(Qt.Orientation.Vertical)
+        self.tab = table(self.COLS, 7)
+        self.tab.setSortingEnabled(True)
+        self.tab.itemSelectionChanged.connect(self.detail)
+        self.view = QTextBrowser()
+        split.addWidget(self.tab)
+        split.addWidget(self.view)
+        split.setSizes([420, 300])
+        lay.addWidget(split, 1)
+        self.setMinimumHeight(660)
+
+    def refresh(self):
+        from mysys import runlog as RL
+        paths = RL.known_paths()
+        sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p))
+        if sig == self._sig and not any(r["status"] == "running" for r in self._runs):
+            return
+        self._sig = sig
+        self._runs = RL.all_runs(2000)
+        self.fill()
+
+    def fill(self):
+        from mysys import runlog as RL
+        q = self.q.text().strip().lower()
+        runs = [r for r in self._runs if not q or q in " ".join(
+            [r["project"], r["name"], r["status"], r["folder"], " ".join(map(str, r["metrics"]))]).lower()]
+        self.count.setText(f"{len(runs)} runs")
+        self.tab.setSortingEnabled(False)
+        self.tab.setRowCount(len(runs))
+        for i, r in enumerate(runs):
+            st = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["start_ts"])) if r["start_ts"] else "?"
+            lv = {"ok": "ok", "failed": "bad", "died": "bad", "cancelled": "warn", "running": "info"}.get(r["status"])
+            status = r["status"] + (f" {r['progress']:.0f}%" if r["status"] == "running" and r["progress"] is not None else "")
+            mets = ", ".join(f"{k}={v}{r['units'].get(k, '')}" for k, v in list(r["metrics"].items())[:5])
+            vals = [cell(st), cell(r["project"]), cell(r["name"], bold=True), cell(status, lv, lv == "bad"),
+                    self.dur_item(r["seconds"], RL.fmt_seconds(r["seconds"])),
+                    cell(r["errors"] or "", "bad" if r["errors"] else None), cell(r["warnings"] or "", "warn" if r["warnings"] else None),
+                    cell(mets)]
+            for j, it in enumerate(vals):
+                it.setData(Qt.ItemDataRole.UserRole, i)
+                self.tab.setItem(i, j, it)
+        self.tab.setSortingEnabled(True)
+        self._shown = runs
+
+    @staticmethod
+    def dur_item(sec, text):
+        it = NumItem(sec or 0)
+        it.setText(text)
+        return it
+
+    def current(self):
+        rows = self.tab.selectionModel().selectedRows() if self.tab.selectionModel() else []
+        if not rows:
+            return None
+        it = self.tab.item(rows[0].row(), 0)
+        idx = it.data(Qt.ItemDataRole.UserRole) if it else None
+        return self._shown[idx] if idx is not None and idx < len(self._shown) else None
+
+    def detail(self):
+        from mysys import runlog as RL
+        r = self.current()
+        if not r:
+            return
+        def esc(x):
+            return html.escape(str(x))
+        lv = {"ok": "ok", "failed": "bad", "died": "bad", "cancelled": "warn", "running": "info"}.get(r["status"])
+        h = [f"<h3>{esc(r['name'])} <span style='color:{tone(lv)}'>· {esc(r['status'])}</span></h3>",
+             f"<p style='color:{T['muted']}'>{esc(r['folder'])} · {esc(r['cmd'])[:200]}"
+             + (f" · git {esc(r['git'].get('commit'))}{' (dirty)' if r['git'].get('dirty') else ''}" if r.get("git") else "") + "</p>"]
+        if r["first_error"]:
+            h.append(f"<p style='color:{T['bad']}'><b>Error:</b> {esc(r['first_error'])}</p>")
+        if r["params"]:
+            h.append("<p><b>Parameters:</b> " + ", ".join(f"{esc(k)}={esc(v)}" for k, v in r["params"].items()) + "</p>")
+        if r["metrics"]:
+            h.append("<table cellspacing='0' cellpadding='4' border='1' style='border-collapse:collapse; "
+                     f"border-color:{T['border']}'><tr><th align='left'>Metric</th><th align='left'>Value</th></tr>"
+                     + "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)} {esc(r['units'].get(k, ''))}</td></tr>" for k, v in r["metrics"].items())
+                     + "</table>")
+        if r["artifacts"]:
+            h.append("<p><b>Files:</b> " + ", ".join(f"{esc(p)} ({esc(k)})" for p, k in r["artifacts"]) + "</p>")
+        h.append(f"<pre style='font-family:monospace; font-size:12px'>{esc(RL.timeline(r['file'], r['run']))}</pre>")
+        self.view.setHtml("".join(h))
+
+    def rescan(self):
+        self.view.setPlainText("Searching project folders for run logs…")
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "index"], None, None,
+                             lambda: (setattr(self, "_sig", None), self.refresh(), self.view.setPlainText("Search finished.")))
+
+    def check(self):
+        r = self.current()
+        target = r["folder"] if r else None
+        if not target:
+            self.view.setPlainText("Select a run first.")
+            return
+        out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "check", target], capture_output=True, text=True).stdout
+        self.view.setPlainText(out or "(no output)")
+
+    def open_folder(self):
+        r = self.current()
+        if r:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(r["folder"]))
+
+    def nav_status(self):
+        bad = sum(1 for r in self._runs[:200] if r["status"] in ("failed", "died") and r["end_ts"]
+                  and time.time() - r["end_ts"] < 86400)
+        run = sum(1 for r in self._runs[:200] if r["status"] == "running")
+        if bad:
+            return f"{bad} failed today", "bad"
+        return (f"{run} running" if run else f"{len(self._runs)} runs"), ("info" if run else None)
+
+
 class ResultsPage(Page):
     title, icon, fallback = "Results", "x-office-spreadsheet", "accessories-calculator"
     COLS = [("time", "When"), ("tool", "Tool"), ("batch", "Batch"), ("run", "Run"), ("status", "Status"),
@@ -1449,7 +1583,7 @@ class NavItem(QWidget):
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    PAGES = [OverviewPage, RunsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
+    PAGES = [OverviewPage, RunsPage, RunLogsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
              ReportsPage, InventoryPage, NotifyPage, SettingsPage]
 
     def __init__(self):

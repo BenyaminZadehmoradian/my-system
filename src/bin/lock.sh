@@ -6,7 +6,7 @@
 . "$(dirname "$(readlink -f "$0")")/common.sh"
 set -e
 DIRS=()
-for d in bin lib plugins gui ai config systemd README.md; do [ -e "$MS/$d" ] && DIRS+=("$MS/$d"); done
+for d in bin lib plugins gui ai runlog config systemd README.md; do [ -e "$MS/$d" ] && DIRS+=("$MS/$d"); done
 "$PY" -c "import sys; sys.path.insert(0, '$MS/lib'); from mysys import policy; policy.write('$MS/state/managed-settings.json')"
 sudo install -d -m 755 /etc/claude-code
 sudo install -m 644 -o root -g root "$MS/state/managed-settings.json" /etc/claude-code/managed-settings.json

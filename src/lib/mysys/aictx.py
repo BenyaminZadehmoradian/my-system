@@ -89,7 +89,9 @@ def build():
               f"- Latest health report: `{_home(config.REPORTS / 'latest' / 'health.txt')}`",
               f"- Full tool/library inventory: `{_home(config.REPORTS / 'latest' / 'inventory')}/`",
               f"- Full system report (hardware, disks, memory, OS, software): `{_home(config.REPORTS / 'system' / 'latest.md')}`",
-              f"- Past run results: `{_home(config.REPORTS / 'results.csv')}`"]
+              f"- Past run results: `{_home(config.REPORTS / 'results.csv')}`",
+              f"- Run-log format every new program must write: `{_home(config.MS / 'runlog' / 'RUNLOG_SPEC.md')}` "
+              "(check with `ms log check <folder>`; list all runs with `ms log list`)"]
     return "\n".join(lines) + "\n"
 
 

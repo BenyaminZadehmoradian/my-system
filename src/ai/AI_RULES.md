@@ -25,6 +25,13 @@ These rules are installed by **my-system** and are read-only. The machine-specif
    queue many of them with `tsp nice -n 10 vrun <command>` (slots: `tsp -S N`) instead of
    starting them all at once. The section *How to run heavy work* in the system map has the details.
 
+9. **Every program, script or flow you write that runs a job or produces results must write a
+   standard run log** (`msrun.jsonl`, format in `~/My_System/runlog/RUNLOG_SPEC.md`) in its run
+   folder — start, stages, errors, metrics, artifacts, end. Use the helpers, never hand-written JSON:
+   Python `ms log template python > msrun.py`, Tcl/Vivado `ms log template tcl > msrun.tcl`,
+   any other command `ms log run --name NAME -- CMD`. Keep the tool's own log as well.
+   Before you say you are done, run `ms log check <run folder>` and fix every problem it reports.
+
 ## Transparency
 Every tool call is logged and visible to the user in the my-system app (AI guard tab).
 If a command is blocked, explain what you wanted to do and why, and let the user decide.

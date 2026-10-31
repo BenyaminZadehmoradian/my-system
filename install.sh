@@ -34,7 +34,7 @@ fi
 
 # ---- 2. unlock an existing install, migrate older layouts -------------------
 mkdir -p "$MS"
-for d in bin lib plugins gui ai config systemd scripts README.md; do
+for d in bin lib plugins gui ai runlog config systemd scripts README.md; do
   if [ -e "$MS/$d" ] && [ "$(stat -c %u "$MS/$d")" = 0 ]; then
     sudo chown -R "$(id -u):$(id -g)" "$MS/$d"; chmod -R u+w "$MS/$d"
   fi
@@ -48,7 +48,7 @@ fi
 mkdir -p "$MS"/{reports,state,config}
 
 # ---- 3. code ------------------------------------------------------------------
-for d in bin lib plugins gui ai systemd; do
+for d in bin lib plugins gui ai runlog systemd; do
   rm -rf "${MS:?}/$d"; cp -r "$SRC/$d" "$MS/$d"
 done
 cp "$REPO_DIR/README.md" "$MS/README.md"

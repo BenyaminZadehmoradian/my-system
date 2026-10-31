@@ -17,6 +17,7 @@ machine-specific code: everything specific lives in a few config files.
 |---|---|
 | **Health** | Daily check (disks, mounts, memory, CPU heat, failed services, toolchains, Python environments, watched config files, backups, updates) with a dated report and a short summary. |
 | **Long runs** | A one-minute watcher recognises jobs through plugins, reports **failures at once** (with the first `ERROR:` line) and sends **one summary per finished batch** (e.g. a whole DOE sweep). `vrun <cmd>` wraps any command; `tsp vrun <cmd>` queues them. |
+| **Run logs** | One standard log format for every project (`msrun.jsonl`, [spec](src/runlog/RUNLOG_SPEC.md)): start, stages, errors, metrics, files, end. Helpers for Python, Tcl/Vivado and any command (`ms log run -- CMD`), a validator (`ms log check`), and a *Run logs* page that lists every run found in your project folders. AI assistants must use it. |
 | **Results** | Timing, resources and power are extracted from every finished run into `reports/results.csv` (Vivado timing/utilization/power reports, Vitis HLS `csynth.xml`, nextpnr/VPR logs). Older runs: `ms results <folder>`. |
 | **Capacity advice** | Warns when the CPU is oversubscribed and suggests how many jobs to run in parallel, from measured per-job CPU and RAM. Tells you when a pending reboot can be done because nothing is running. |
 | **Storage** | Hourly samples, a 30-day chart, a root-disk **forecast** ("reaches 93% in 12 days"), fast-fill alerts, daily folder sizes, and *Move to data disk* (copy → verify → symlink, refused while in use). |
@@ -55,6 +56,9 @@ ms gui             the desktop app (also in the app menu as "My System")
 ms check           full health check now
 ms report --open   full system report (HTML + Markdown)
 ms capacity        how many more jobs fit right now
+ms log run -- CMD  run anything and record it in the standard run log
+ms log check DIR   validate run logs against the format
+ms log list        all runs, newest first
 ms hw              disk health, memory modules, fans, firmware
 ms results DIR     extract results from existing run folders
 ms git             project status

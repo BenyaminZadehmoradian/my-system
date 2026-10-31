@@ -279,6 +279,19 @@ def tick():
                                  f"Jobs wait for CPU and each one runs slower. About {k} jobs at a time would "
                                  f"finish the same work sooner (e.g. tsp -S {k}).", "default", "hourglass")
 
+    # standard run logs (msrun.jsonl): report failed runs once
+    try:
+        from . import runlog
+        since = s.get("runlog_since") or now - 120
+        for r in runlog.new_endings(since):
+            if r["status"] == "failed" and r["run"] not in s.setdefault("runlog_told", []):
+                notify(f"Run failed: {r['name']}", f"{short(r['folder'])} · {runlog.fmt_seconds(r['seconds'])} · "
+                                                   f"{r['first_error'] or 'see msrun.jsonl'}", "high", "x")
+                s["runlog_told"] = (s["runlog_told"] + [r["run"]])[-200:]
+        s["runlog_since"] = now
+    except Exception:
+        pass
+
     # reboot hint
     if cur:
         s["idle_since"] = None

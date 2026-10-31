@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 — 2026-10-31
+
+- **Standard run log** (`msrun.jsonl`, format v1, `runlog/RUNLOG_SPEC.md`): one JSON event per line —
+  start, stages, log (DEBUG/INFO/WARN/ERROR), metrics, artifacts, progress, end.
+- Writers: `msrun.py` (Python, stdlib only), `msrun.tcl` (Vivado/Vitis/Tcl), `ms log run -- CMD` (wraps any command,
+  turns ERROR / CRITICAL WARNING lines into events), and `ms log start/stage/metric/msg/end` for shell scripts.
+- `ms log check` validates files against the spec (exit 1 on any violation); `ms log show`, `ms log list`, `ms log index`.
+- New **Run logs** page in the app: all runs with status, duration, errors, metrics; timeline of the selected run.
+- Watcher alerts once for every failed run; the daily job searches project folders for run logs.
+- AI rules: every program an assistant writes must produce this log and pass `ms log check`.
+
 ## 1.2.2 — 2026-10-28
 
 - Capacity: runs first seen mid-way (e.g. already running at install) are marked *partial* and never lower the

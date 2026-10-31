@@ -27,7 +27,7 @@ if [ -f /etc/systemd/system/my-system-hwinfo.timer ]; then
   sudo systemctl daemon-reload
   echo "hardware collector removed (its data stays in /var/lib/my-system)"
 fi
-for d in bin lib plugins gui ai config systemd README.md; do
+for d in bin lib plugins gui ai runlog config systemd README.md; do
   [ -e "$MS/$d" ] && sudo chown -R "$(id -u):$(id -g)" "$MS/$d"
 done
 echo "my-system removed. Data kept in $MS (rm -rf \"$MS\" to delete it)."

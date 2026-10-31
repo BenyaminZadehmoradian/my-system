@@ -18,6 +18,7 @@
   ms backup-setup | backup | backup-verify
   ms move FOLDER         move a folder to the data disk and leave a link
   ms report [--open]     full system report (HTML + Markdown) in reports/system/
+  ms log ...             standard run logs (msrun.jsonl): run, check, show, list, index, template
   ms capacity [TOOL]     how many more jobs fit right now (for you and AI assistants)
   ms hw                  hardware health (disks, memory modules, fans, firmware)
   ms doctor              self-check of my-system itself
@@ -25,13 +26,15 @@
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 MS = Path(os.environ.get("MY_SYSTEM", Path.home() / "My_System"))
 sys.path.insert(0, str(MS / "lib"))
 sys.path.insert(0, str(MS / "plugins"))
+sys.path.insert(0, str(MS / "runlog"))
 
-from mysys import __version__, aictx, capacity, config, detect, digest, gitstat, hw, plugins, probes, sysreport, watcher  # noqa: E402
+from mysys import __version__, aictx, capacity, config, runlog, detect, digest, gitstat, hw, plugins, probes, sysreport, watcher  # noqa: E402
 
 BIN = MS / "bin"
 
@@ -95,6 +98,196 @@ def results_backfill(root, write):
                         watcher.record_result(r, 0, summ, "failed" if errs else "ok")
                     break
     print(f"{n} run folder(s) found" + (" and added to reports/results.csv" if write and n else ""))
+
+
+LOG_HELP = """ms log — standard run logs (format: ~/My_System/runlog/RUNLOG_SPEC.md)
+
+  ms log run [--name N] [--folder DIR] -- CMD ...   run CMD and record it (output kept in msrun.out)
+  ms log start NAME [key=value ...]                 shell scripts: begin a run in the current folder
+  ms log stage NAME | msg LEVEL TEXT | metric NAME VALUE [UNIT] | artifact PATH KIND | progress PCT [TEXT]
+  ms log end ok|failed|cancelled [RC] [ERROR TEXT]
+  ms log check PATH        validate files against the spec (exit 1 on any problem)
+  ms log show PATH [N]     readable timeline of the last N runs in PATH (file or folder)
+  ms log list [N]          all known runs, newest first
+  ms log index             search project folders for run logs
+  ms log template python|tcl|spec   print a writer to copy into a project
+"""
+
+
+def _log_state_path(folder=None):
+    return Path(folder or os.getcwd()) / ".msrun_current"
+
+
+def _shell_run(state=None, folder=None):
+    import msrun
+    import json as _json
+    sp = _log_state_path(folder)
+    st = state or _json.loads(sp.read_text())
+    r = msrun.Run(st["name"], folder=st["folder"])
+    r.run, r._t0, r._stage = st["run"], st["t0"], st.get("stage")
+    r._f = open(r.path, "a", buffering=1, encoding="utf-8")
+    return r, st
+
+
+def _save_shell(r, st):
+    import json as _json
+    st["stage"] = r._stage
+    _log_state_path(st["folder"]).write_text(_json.dumps(st))
+
+
+def log_cmd(rest):
+    import json as _json
+    import msrun
+    if not rest or rest[0] in ("-h", "--help", "help"):
+        print(LOG_HELP)
+        return 0
+    sub, a = rest[0], rest[1:]
+    if sub == "template":
+        f = {"python": "msrun.py", "tcl": "msrun.tcl", "spec": "RUNLOG_SPEC.md"}.get(a[0] if a else "", None)
+        if not f:
+            print("usage: ms log template python|tcl|spec")
+            return 2
+        sys.stdout.write((MS / "runlog" / f).read_text())
+        return 0
+    if sub == "check":
+        target = Path(a[0] if a else ".")
+        files = [target] if target.is_file() else sorted(target.rglob(runlog.FILENAME))
+        if not files:
+            print(f"no {runlog.FILENAME} found in {target}")
+            return 1
+        bad = 0
+        for f in files:
+            probs = runlog.validate(f)
+            n = len(runlog.read(f))
+            if probs:
+                bad += 1
+                print(f"FAIL {f}  ({n} run(s), {len(probs)} problem(s))")
+                for ln, msg in probs[:40]:
+                    print(f"     line {ln}: {msg}")
+            else:
+                print(f"ok   {f}  ({n} run(s))")
+        return 1 if bad else 0
+    if sub == "show":
+        target = Path(a[0] if a else ".")
+        n = int(a[1]) if len(a) > 1 else 5
+        files = [target] if target.is_file() else sorted(target.rglob(runlog.FILENAME))
+        runs = sorted((r for f in files for r in runlog.read(f).values()), key=lambda r: r["start_ts"] or 0)[-n:]
+        for r in runs:
+            print(f"── {r['name']}  [{r['status']}]  {r['folder']}")
+            print(runlog.timeline(r["file"], r["run"]))
+            print()
+        return 0
+    if sub == "list":
+        n = int(a[0]) if a else 40
+        for r in runlog.all_runs(n):
+            st = time.strftime("%m-%d %H:%M", time.localtime(r["start_ts"])) if r["start_ts"] else "?"
+            mets = ", ".join(f"{k}={v}" for k, v in list(r["metrics"].items())[:3])
+            print(f"{st}  {r['status']:<9} {runlog.fmt_seconds(r['seconds']):>7}  {r['project'][:18]:<18} {r['name'][:28]:<28} {mets}")
+        return 0
+    if sub == "index":
+        paths = runlog.scan()
+        print(f"{len(paths)} run log file(s) known")
+        return 0
+    if sub == "run":
+        name, folder = None, None
+        while a and a[0] != "--":
+            if a[0] == "--name" and len(a) > 1:
+                name, a = a[1], a[2:]
+            elif a[0] == "--folder" and len(a) > 1:
+                folder, a = a[1], a[2:]
+            else:
+                print(LOG_HELP)
+                return 2
+        cmd = a[1:] if a and a[0] == "--" else []
+        if not cmd:
+            print("usage: ms log run [--name N] [--folder DIR] -- CMD ...")
+            return 2
+        import re as _re
+        name = _re.sub(r"[^A-Za-z0-9_.+-]", "_", name or (Path(cmd[0]).name + "_" + Path(folder or os.getcwd()).name))
+        r = msrun.Run(name, folder=folder, cmd=" ".join(cmd)).start()
+        out_path = Path(r.folder) / "msrun.out"
+        errs = warns = 0
+        rc = 1
+        try:
+            with open(out_path, "a") as out:
+                p = subprocess.Popen(cmd, cwd=r.folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     errors="replace", bufsize=1)
+                for line in p.stdout:
+                    sys.stdout.write(line)
+                    out.write(line)
+                    s_ = line.strip()
+                    if _re.match(r"^(ERROR|FATAL|Error|Fatal)\b", s_) and errs < 100:
+                        errs += 1
+                        r.log("ERROR", s_[:1000], src=Path(cmd[0]).name)
+                    elif _re.match(r"^(CRITICAL WARNING)\b", s_) and warns < 100:
+                        warns += 1
+                        r.log("WARN", s_[:1000], src=Path(cmd[0]).name)
+                rc = p.wait()
+        except KeyboardInterrupt:
+            r.end("cancelled", rc=130, error="interrupted")
+            return 130
+        except OSError as e:
+            r.log("ERROR", f"cannot start {cmd[0]}: {e}")
+            r.end("failed", rc=127, error=str(e))
+            return 127
+        r.artifact("msrun.out", "log")
+        if rc == 0 and not errs:
+            r.end("ok", rc=0)
+        else:
+            r.end("failed", rc=rc or 1, error=f"exit code {rc}" + (f", {errs} ERROR line(s)" if errs else ""))
+        return rc
+    # ---- shell-script writer
+    try:
+        if sub == "start":
+            if not a:
+                print("usage: ms log start NAME [key=value ...]")
+                return 2
+            params = {}
+            for kv in a[1:]:
+                k, _, v = kv.partition("=")
+                try:
+                    v = _json.loads(v)
+                except ValueError:
+                    pass
+                params[k] = v
+            r = msrun.Run(a[0], params=params, cmd=os.environ.get("MSRUN_CMD", "shell")).start()
+            st = {"name": a[0], "run": r.run, "t0": r._t0, "folder": r.folder, "stage": None}
+            _save_shell(r, st)
+            print(r.run)
+            return 0
+        r, st = _shell_run()
+        if sub == "stage":
+            r.stage(a[0])
+        elif sub == "msg":
+            r.log(a[0], " ".join(a[1:]))
+        elif sub == "metric":
+            v = a[1]
+            try:
+                v = _json.loads(v)
+            except ValueError:
+                pass
+            r.metric(a[0], v, a[2] if len(a) > 2 else None)
+        elif sub == "artifact":
+            r.artifact(a[0], a[1] if len(a) > 1 else "other")
+        elif sub == "progress":
+            r.progress(float(a[0]), " ".join(a[1:]) or None)
+        elif sub == "end":
+            status = a[0] if a else "ok"
+            rc = int(a[1]) if len(a) > 1 else None
+            r.end(status, rc=rc, error=" ".join(a[2:]) or None)
+            _log_state_path(st["folder"]).unlink(missing_ok=True)
+            return 0
+        else:
+            print(LOG_HELP)
+            return 2
+        _save_shell(r, st)
+        return 0
+    except FileNotFoundError:
+        print("no run started in this folder (ms log start NAME)")
+        return 2
+    except (ValueError, IndexError) as e:
+        print(f"ms log: {e}")
+        return 2
 
 
 def doctor():
@@ -193,6 +386,8 @@ def main(argv):
             print(f"  [{p}] {t}")
         if "--open" in rest:
             subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif cmd == "log":
+        return log_cmd(rest)
     elif cmd == "capacity":
         if "--json" in rest:
             import json

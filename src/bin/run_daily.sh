@@ -12,6 +12,7 @@ low "$MS/bin/inventory.sh" "$DAY/inventory" > /dev/null 2>&1
 ln -sfn "$DAY" "$MS/reports/latest"
 low "$PY" "$MS/bin/ms" sizes > "$DAY/sizes.txt" 2>/dev/null
 low "$PY" "$MS/bin/ms" git > "$DAY/git.txt" 2>/dev/null
+low "$PY" "$MS/bin/ms" log index > /dev/null 2>&1
 nice -n 19 "$MS/bin/health_check.sh" "$DAY/health.txt" > "$DAY/summary.txt"
 status=$?
 "$PY" "$MS/bin/ms" ai-context > /dev/null 2>&1
