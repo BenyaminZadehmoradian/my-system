@@ -41,11 +41,12 @@ def _expand(v):
 
 def load():
     conf = dict(DEFAULTS)
-    f = CONF / "my_system.conf"
-    try:
-        lines = f.read_text().splitlines()
-    except OSError:
-        lines = []
+    lines = []
+    for f in (CONF / "my_system.conf", CONF / "queue.conf"):
+        try:
+            lines += f.read_text().splitlines()
+        except OSError:
+            pass
     for line in lines:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:

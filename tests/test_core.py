@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "src"
+SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
 
 
 def make_ms():

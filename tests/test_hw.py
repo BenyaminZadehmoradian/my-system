@@ -12,11 +12,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
 FIX = ROOT / "tests" / "fixtures" / "hw"
 
 
 def collector():
-    loader = importlib.machinery.SourceFileLoader("ms_hwinfo", str(ROOT / "src/root/ms-hwinfo"))
+    loader = importlib.machinery.SourceFileLoader("ms_hwinfo", str(SRC / "root/ms-hwinfo"))
     spec = importlib.util.spec_from_loader("ms_hwinfo", loader)
     m = importlib.util.module_from_spec(spec)
     loader.exec_module(m)
@@ -52,7 +53,7 @@ def test_parse():
 
 
 def test_findings():
-    sys.path.insert(0, str(ROOT / "src/lib"))
+    sys.path.insert(0, str(SRC / "lib"))
     from mysys import hw
     good = fake_hw()["storage"]["disks"]
     assert all(lvl == "ok" for d in good for lvl, _ in hw.disk_findings(d))
@@ -69,7 +70,7 @@ def test_report():
     tmp = Path(tempfile.mkdtemp())
     ms = tmp / "My_System"
     for d in ("bin", "lib", "plugins"):
-        shutil.copytree(ROOT / "src" / d, ms / d)
+        shutil.copytree(SRC / d, ms / d)
     for d in ("config", "state", "reports"):
         (ms / d).mkdir()
     (ms / "config/my_system.conf").write_text('MACHINE_LABEL="testbox"\nDATA_DISKS=""\n')

@@ -153,6 +153,27 @@ fi
 echo; echo "## Notifications"
 [ -s "$MS/state/ntfy_topic" ] && [ ! -f "$MS/state/ntfy_off" ] && ok "phone notifications on" || info "phone notifications off"
 
+echo; echo "## Software (ms software)"
+sw_out=$(pyq "
+from mysys import software as S
+d = S.load()
+if not d:
+    print('  -- not scanned yet')
+else:
+    rows = S.advise(d)
+    sec = [u for u in d['updates'] if u.get('security')]
+    print(f'  -- {len(d[\"updates\"])} package update(s), {len(sec)} security; ' + str(sum(len(v.get('outdated') or []) for v in d['venvs'].values())) + ' Python package update(s)')
+    for v, i in d['venvs'].items():
+        if i.get('broken'):
+            print(f'  !! Python environment broken (interpreter missing): {v}')
+        elif i.get('eol'):
+            print(f'  -- Python {i[\"python\"]} in {v} no longer gets security fixes')
+    if d.get('restart_needed'):
+        print(f'  -- {len(d[\"restart_needed\"])} program(s) still use replaced libraries (restart them)')
+")
+echo "${sw_out:-  -- no data}"
+while IFS= read -r l; do WARN+=("${l#  !! }"); done < <(grep '^  !! ' <<< "$sw_out")
+
 echo; echo "## Updates"
 command -v apt >/dev/null && echo "apt upgradable: $(apt list --upgradable 2>/dev/null | grep -c upgradable)"
 

@@ -1,7 +1,7 @@
 import sys, importlib.util
 from pathlib import Path
 HERE = Path(__file__).parent
-SRC = HERE.parent / "src"
+SRC = HERE.parent / "src" if (HERE.parent / "src").is_dir() else HERE.parent
 sys.path.insert(0, str(SRC / "lib"))
 
 def load(name):

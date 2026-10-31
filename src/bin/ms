@@ -21,6 +21,11 @@
   ms q ...               job queue: starts jobs only when CPU and RAM are free (ms q help)
   ms flow ...            steps, sweeps and dependencies from a YAML file (ms flow help)
   ms mcp                 MCP server for AI assistants (stdio)
+  ms sem NAME[:N] -- CMD run CMD holding a named semaphore slot
+  ms lineage FILE        which job produced / used this exact file
+  ms secret list|set|rm  secrets for jobs (masked in logs)
+  ms software ...        updates, who uses which program/library (ms software help)
+  ms selftest [--quick]  safe end-to-end test of my-system on this machine
   ms log ...             standard run logs (msrun.jsonl): run, check, show, list, index, template
   ms capacity [TOOL]     how many more jobs fit right now (for you and AI assistants)
   ms hw                  hardware health (disks, memory modules, fans, firmware)
@@ -393,6 +398,8 @@ def main(argv):
         return log_cmd(rest)
     elif cmd in ("q", "queue"):
         from mysys import qcli
+        if rest[:1] == ["serve"]:
+            return qcli.webhook_cmd(rest[1:])
         return qcli.q_cmd(rest)
     elif cmd == "flow":
         from mysys import flow as _flow, qcli
@@ -401,6 +408,21 @@ def main(argv):
         except _flow.FlowError as e:
             print(f"Problems:\n{e}")
             return 1
+    elif cmd == "sem":
+        from mysys import qcli
+        return qcli.sem_cmd(rest)
+    elif cmd == "lineage":
+        from mysys import qcli
+        return qcli.lineage_cmd(rest)
+    elif cmd == "secret":
+        from mysys import qcli
+        return qcli.secret_cmd(rest)
+    elif cmd == "software":
+        from mysys import software
+        return software.cli(rest)
+    elif cmd == "selftest":
+        from mysys import selftest
+        return selftest.run(rest)
     elif cmd == "mcp":
         from mysys import mcp
         mcp.serve()

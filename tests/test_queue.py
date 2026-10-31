@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
 
 HARNESS = r'''
 import json, os, sys, time
@@ -38,7 +39,7 @@ def fake_ms():
     tmp = Path(tempfile.mkdtemp())
     ms = tmp / "My_System"
     for d in ("bin", "lib", "plugins", "runlog"):
-        shutil.copytree(ROOT / "src" / d, ms / d)
+        shutil.copytree(SRC / d, ms / d)
     for d in ("config", "state", "reports"):
         (ms / d).mkdir()
     (ms / "config/protected_paths.txt").write_text("/etc\n")
@@ -185,7 +186,7 @@ print("ok")
 
 
 def test_flow_validation_and_cron():
-    sys.path.insert(0, str(ROOT / "src/lib"))
+    sys.path.insert(0, str(SRC / "lib"))
     from mysys import flow
     bad = {"name": "x", "cwd": "/tmp", "bogus": 1, "steps": [
         {"name": "a", "cmd": "echo {{nope}}", "depends": ["b"]},

@@ -101,6 +101,21 @@ def t_flow_run(file, resume=True):
     return f"flow {rec['id']} queued with {len(rec['jobs'])} jobs"
 
 
+def t_software_uses(name):
+    from . import software
+    d = software.load()
+    if not d:
+        return "software not scanned yet (ms software scan)"
+    r = software.uses(d, name)
+    return "\n".join(r) if r else f"nothing found that uses {name}"
+
+
+def t_software_updates():
+    from . import software
+    d = software.load()
+    return software.summary_text(d) if d else "software not scanned yet (ms software scan)"
+
+
 def t_system_map():
     try:
         return (config.STATE / "SYSTEM_MAP.md").read_text()
@@ -128,6 +143,9 @@ TOOLS = {
     "flow_check": (t_flow_check, "Validate a flow YAML file and show the plan and time estimate.", {"file": S}, ["file"]),
     "flow_run": (t_flow_run, "Queue all jobs of a flow YAML file (steps already done are skipped).",
                  {"file": S, "resume": B}, ["file"]),
+    "software_uses": (t_software_uses, "Who uses a project, Python package, system library, tool or environment — "
+                                       "check this before changing or updating anything.", {"name": S}, ["name"]),
+    "software_updates": (t_software_updates, "Available updates grouped by advice (safe / test / wait / reboot).", {}, []),
     "system_map": (t_system_map, "This machine: hardware, capacity rules, toolchains, environments, projects, protected paths.",
                    {}, []),
 }

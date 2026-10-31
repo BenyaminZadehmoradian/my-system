@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.5.0 — 2026-10-31
+
+Second, documentation-based comparison with GNU Parallel, task-spooler, Slurm, Snakemake, Nextflow, Dagu, evQueue,
+Jenkins and Buildbot — everything that makes sense on one workstation is now in.
+
+**Resources and scheduling** — named resources and license seats (`config/resources.conf`, optional lmstat check),
+exclusive locks for boards/cables, per-tool caps (`tool:vivado N`), `ms sem` semaphores, `$MSQ_SLOT`, disk
+reservations, reservation shrinking after a job settles, requests clamped to the machine, threads kept for the
+desktop, reserved time windows (`config/reservations.conf`), start delay with automatic backoff, no starts while
+swapping or while the disk is saturated, begin/deadline times, collapse of duplicate requests, move to front, ETA.
+
+**Failures** — retry delays/backoff/schedules, retry only on chosen exit codes, retry with more memory (from the
+measured peak) or more time, inactivity timeout, timeout as % of the usual duration, signal before the time limit,
+configurable kill sequence, time-limit alerts, *warning* state (exit-code mapping, warn patterns, failed tests),
+after-failure dependencies, approvals, requeue, wait, clone/run again, preemption exempt time.
+
+**Flows** — outputs passed between steps (`$MSQ_OUTPUTS`, `{{steps.X.outputs.K}}`, metrics), `when` conditions,
+`assert`, runtime fan-out (`foreach`), sub-flows, wait and repeat-until steps, matrix exclude/filter/zip/CSV,
+`--sample`, `--until/--from/--only/--force`, `touch`, `summary`/`why` (what changed), rerun triggers and cache modes,
+shared cache between flows, on_error terminate/finish/ignore, halt on failure count/percentage, max_parallel per
+step, hooks on_fixed/on_regression/on_change/on_cancel/on_exit, notify modes, typed params, profiles, base file,
+dotenv, secrets, stub runs, lint.
+
+**Files** — scratch/shadow folders (only declared outputs come back), private `$TMPDIR`, protected outputs,
+output checks (non-empty, sha256), incomplete outputs removed, temp files deleted when no longer needed, publish
+by parameters, lineage (`ms lineage FILE`).
+
+**Reports** — warning tracking new/fixed/outstanding vs. the previous run with quality gates and an ignore list,
+failure knowledge base (built-in Vivado/HLS/system causes + your own), JUnit results, I/O and per-job time series,
+benchmarks, queue wait times, flow HTML report with step graph, history search, retention.
+
+**Schedules** — catch-up of missed runs, skip if already successful today, only if something changed, after another
+flow, commit triggers with debounce, important paths and remote polling, pause; localhost webhook (`ms q serve`).
+
+**Software management** — `ms software`: apt/snap/flatpak/pip updates, each with who uses it (projects, Python
+environments, packages linked against system libraries, processes using it now) and advice: safe now / test after /
+after runs / needs reboot; `ms software uses NAME`, `ms software project NAME`, `ms software plan`; Python EOL and
+broken environments; programs to restart after updates; new **Software** page; daily scan; MCP tools.
+
+**Self-test** — `ms selftest` runs end-to-end checks in a separate temporary queue (never touches real jobs) plus
+all unit tests; results in reports/selftest-*.txt.
+
 ## 1.4.0 — 2026-10-31
 
 Ideas taken from GNU Parallel, task-spooler, Slurm, Snakemake, Nextflow, Dagu, evQueue, Jenkins and Buildbot.

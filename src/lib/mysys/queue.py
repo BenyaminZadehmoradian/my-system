@@ -23,7 +23,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -35,9 +34,10 @@ JOBS = Q / "jobs"
 LOGS = Q / "logs"
 DAEMON = Q / "daemon.json"
 LOCK = Q / "lock"
-TERMINAL = {"done", "failed", "timeout", "cancelled", "skipped", "cached"}
+TERMINAL = {"done", "warning", "failed", "timeout", "cancelled", "skipped", "cached"}
+SUCCESS = {"done", "warning", "cached"}
 ACTIVE = {"running", "suspended"}
-STATES = TERMINAL | ACTIVE | {"queued", "held"}
+STATES = TERMINAL | ACTIVE | {"queued", "held", "approval"}
 
 DEFAULTS = {"mem_gb": None, "cores": None, "priority": 0, "retries": 0, "retry_on": ["oom"], "timeout_s": None,
             "nice": 10, "limit_memory": True, "gpus": 0, "preempt": False, "when_idle": False, "dep_mode": "ok"}
@@ -140,6 +140,43 @@ def guess_tool(cmd):
     return None
 
 
+def parse_when(s, now=None):
+    """'16:00', '+2h', '2026-11-01 08:00', epoch -> epoch seconds."""
+    if s in (None, ""):
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+    now = now or time.time()
+    s = str(s).strip()
+    if s.startswith("+"):
+        return now + parse_duration(s[1:])
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s)
+    if m:
+        lt = time.localtime(now)
+        t = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, int(m.group(1)), int(m.group(2)), 0, 0, 0, -1))
+        return t if t > now else t + 86400
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            return time.mktime(time.strptime(s, fmt))
+        except ValueError:
+            pass
+    raise ValueError(f"bad time {s!r} (use 16:00, +2h or 2026-11-01 08:00)")
+
+
+def resolve_timeout(val, prof):
+    """seconds | 'auto' (3x usual) | 'N%' of the tool's usual duration -> seconds or None."""
+    if val in (None, "", 0):
+        return None
+    if isinstance(val, str) and val.strip().endswith("%"):
+        m = prof.get("minutes") if prof.get("measured") else None
+        return int(max(600, float(val.strip()[:-1]) / 100 * m * 60)) if m else None
+    v = parse_duration(val) if isinstance(val, str) else val
+    if v == "auto":
+        m = prof.get("minutes") if prof.get("measured") else None
+        return int(max(1800, 3 * m * 60)) if m else None
+    return v
+
+
 def submit(cmd, cwd=None, name=None, **opt):
     """Add a job; returns it. `cmd` is a shell command line."""
     cwd = os.path.abspath(os.path.expanduser(cwd or os.getcwd()))
@@ -151,19 +188,43 @@ def submit(cmd, cwd=None, name=None, **opt):
         j["mem_gb"] = prof.get("peak_gb", 2.0)
     if j.get("cores") is None:
         j["cores"] = prof.get("cores") or 1.0
-    if isinstance(j.get("timeout_s"), str):
-        j["timeout_s"] = parse_duration(j["timeout_s"])
-    if j.get("timeout_s") == "auto":
-        m = prof.get("minutes")
-        j["timeout_s"] = int(max(1800, 3 * m * 60)) if m else None
+    # never ask for more than the machine has (Nextflow resourceLimits)
+    total = probes.meminfo().get("MemTotal", 0)
+    if total:
+        cap_gb = (total - capacity.reserve_bytes(total)) / GiB
+        if float(j["mem_gb"]) > cap_gb:
+            j["mem_gb"], j["clamped"] = round(cap_gb, 1), True
+    j["cores"] = min(float(j["cores"]), float(probes.threads()))
+    j["timeout_s"] = resolve_timeout(j.get("timeout_s"), prof)
+    if isinstance(j.get("idle_timeout_s"), str):
+        j["idle_timeout_s"] = parse_duration(j["idle_timeout_s"])
+    for k in ("begin", "deadline"):
+        if j.get(k) is not None:
+            j[k] = parse_when(j[k])
     nm = re.sub(r"[^A-Za-z0-9_.+-]", "_", name or (Path(shlex.split(cmd)[0]).name if cmd.strip() else "job"))[:60]
     with _Lock():
+        # collapse: a newer request with the same key replaces older ones that have not started
+        if j.get("collapse_key"):
+            for old in all_jobs():
+                if old.get("collapse_key") == j["collapse_key"] and old["state"] in ("queued", "held"):
+                    old.update(state="cancelled", reason="replaced by a newer request", ended=time.time())
+                    save(old)
         jid = _next_id()
-        j.update({"id": jid, "name": nm, "cmd": cmd, "cwd": cwd, "tool": tool, "state": opt.get("state") or "queued",
+        state = opt.get("state") or ("approval" if j.get("approval") else "queued")
+        j.update({"id": jid, "name": nm, "cmd": cmd, "cwd": cwd, "tool": tool, "state": state,
                   "created": time.time(), "attempt": 1, "started": None, "ended": None, "rc": None, "reason": "",
                   "pid": None, "peak_rss": 0, "cpu_s": 0.0, "env": opt.get("env") or {},
                   "depends": [int(x) for x in (opt.get("depends") or [])], "user": os.environ.get("USER", "")})
+        if state == "approval":
+            j["reason"] = f"waiting for your approval: {j['approval']}"
         save(j)
+    if state == "approval":
+        try:
+            subprocess.Popen([str(config.MS / "bin" / "notify.sh"), f"Approval needed: {nm}",
+                              f"#{jid} {j['approval']} — approve with: ms q approve {jid}", "high", "raising_hand"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
     return j
 
 
@@ -351,109 +412,8 @@ def provenance(j):
 
 
 def execute(jid):
-    """Run one job (called as `ms q _exec ID` in its own session). Updates the job file when done."""
-    sys.path.insert(0, str(config.MS / "runlog"))
-    import msrun
-    j = load(jid)
-    if not j:
-        return 2
-    os.makedirs(j["cwd"], exist_ok=True)
-    logf = LOGS / f"{jid}.log"
-    env = dict(os.environ)
-    env.update({k: str(v) for k, v in (j.get("env") or {}).items()})
-    n = max(1, int(round(float(j.get("cores") or 1))))
-    env.setdefault("OMP_NUM_THREADS", str(n))
-    env["MSQ_JOB_ID"] = str(jid)
-    if j.get("gpu_ids") is not None:
-        env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, j["gpu_ids"]))
-    run = msrun.Run(j["name"], params=dict(j.get("params") or {}), folder=j["cwd"], cmd=j["cmd"],
-                    project=(j.get("flow") or {}).get("name"), extra={"provenance": provenance(j)})
-    run.start()
-    t0 = time.time()
-    update(jid, run_id=run.run, started=t0, sid=os.getsid(0), pid=os.getpid())
-    with open(logf, "a") as lf:
-        lf.write(f"=== attempt {j['attempt']} · {time.strftime('%F %T')} · {j['cmd']}\n")
-        lf.flush()
-        try:
-            p = subprocess.Popen(build_command(j), cwd=j["cwd"], env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
-        except OSError as e:
-            run.error(f"cannot start: {e}")
-            run.end("failed", rc=127, error=str(e))
-            update(jid, state="failed", rc=127, ended=time.time(), reason=f"cannot start: {e}")
-            return 127
-        errs = [0]
-
-        def pump():
-            for line in p.stdout:
-                lf.write(line)
-                s = line.strip()
-                if errs[0] < 100 and re.match(r"^(ERROR|FATAL|Error|Fatal)\b", s):
-                    errs[0] += 1
-                    run.log("ERROR", s[:1000])
-                elif errs[0] < 200 and s.startswith("CRITICAL WARNING"):
-                    run.log("WARN", s[:1000])
-            lf.flush()
-        th = threading.Thread(target=pump, daemon=True)
-        th.start()
-        peak, timed_out = 0, False
-        hz = os.sysconf("SC_CLK_TCK")
-        last_save = 0
-        seen_ticks = {}
-        while p.poll() is None:
-            procs = [x for x in _session_procs(os.getsid(0)) if x[0] != os.getpid()]
-            rss = sum(r for _, r, _ in procs)
-            for pid_, _, t_ in procs:
-                seen_ticks[pid_] = max(t_, seen_ticks.get(pid_, 0))
-            peak = max(peak, rss)
-            if time.time() - last_save > 20:
-                update(jid, peak_rss=peak, rss=rss, cpu_s=round(sum(seen_ticks.values()) / hz, 1))
-                last_save = time.time()
-            to = j.get("timeout_s")
-            if isinstance(to, (int, float)) and to and time.time() - t0 > to and not timed_out:
-                timed_out = True
-                run.log("ERROR", f"timeout after {int(to)} s — stopping")
-                for pid, _, _ in procs:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except OSError:
-                        pass
-                for _ in range(30):
-                    if p.poll() is not None:
-                        break
-                    time.sleep(1)
-                for pid, _, _ in _session_procs(os.getsid(0)):
-                    if pid != os.getpid():
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except OSError:
-                            pass
-            time.sleep(3)
-        rc = p.wait()
-        th.join(timeout=10)
-    secs = time.time() - t0
-    update(jid, cpu_s=round(sum(seen_ticks.values()) / hz, 1))
-    cur = load(jid) or j
-    oom = rc in (-9, 137) and (peak >= 0.9 * float(j["mem_gb"]) * 1.25 * GiB or _cgroup_oom(j))
-    if cur.get("state") == "cancelled":
-        status, state, reason = "cancelled", "cancelled", "cancelled by user"
-    elif timed_out:
-        status, state, reason = "failed", "timeout", f"timeout after {int(j['timeout_s'])} s"
-    elif rc == 0 and not errs[0]:
-        status, state, reason = "ok", "done", ""
-    else:
-        status, state = "failed", "failed"
-        reason = "out of memory (killed at the job's memory limit)" if oom else f"exit code {rc}" + (
-            f", {errs[0]} ERROR line(s)" if errs[0] else "")
-    cores_used = (cur.get("cpu_s") or 0) / secs if secs > 0 else 0
-    run.metric("runtime_s", round(secs, 1), "s")
-    run.metric("peak_rss_gb", round(peak / GiB, 2), "GB")
-    if status == "ok":
-        mark_done(cur)
-    run.end(status, rc=rc if rc is not None else 1, error=None if status == "ok" else reason)
-    update(jid, state=state, rc=rc, ended=time.time(), reason=reason, peak_rss=peak, oom=bool(oom),
-           cores_used=round(cores_used, 2))
-    return 0
+    from . import jobrun
+    return jobrun.execute(jid)
 
 
 def _cgroup_oom(j):
@@ -468,19 +428,64 @@ def _cgroup_oom(j):
 
 
 # ---------------------------------------------------------------- incremental / resume markers
-def job_key(j):
+def key_parts(j):
+    """Hashes of what makes a job "the same": command, parameters, inputs (by mode), software."""
     import hashlib
-    h = hashlib.sha256()
-    h.update(j["cmd"].encode())
-    h.update(json.dumps(j.get("params") or {}, sort_keys=True).encode())
+
+    def h(x):
+        return hashlib.sha256(x.encode()).hexdigest()[:16]
+    mode = j.get("cache_mode", "standard")          # standard: size+mtime, lenient: size, deep: content
+    inp = []
     for pat in sorted(j.get("inputs") or []):
         for f in sorted(glob.glob(os.path.join(j["cwd"], pat), recursive=True)):
             try:
                 st = os.stat(f)
-                h.update(f"{os.path.relpath(f, j['cwd'])}:{st.st_size}:{st.st_mtime_ns}".encode())
+                rel = os.path.relpath(f, j["cwd"])
+                if mode == "deep" and os.path.isfile(f):
+                    from . import lineage
+                    inp.append(f"{rel}:{lineage.fingerprint(f)}")
+                elif mode == "lenient":
+                    inp.append(f"{rel}:{st.st_size}")
+                else:
+                    inp.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
             except OSError:
                 pass
-    return h.hexdigest()[:20]
+    tool = ""
+    try:
+        exe = shutil.which(shlex.split(j["cmd"])[0])
+        tool = os.path.realpath(exe) if exe else ""
+    except (ValueError, IndexError):
+        pass
+    return {"cmd": h(j["cmd"]), "params": h(json.dumps(j.get("params") or {}, sort_keys=True, default=str)),
+            "inputs": h("\n".join(inp)), "software": h(tool), "inputs_list": inp[:200]}
+
+
+def job_key(j, parts=None):
+    import hashlib
+    parts = parts or key_parts(j)
+    use = j.get("rerun_on") or ["cmd", "params", "inputs"]
+    return hashlib.sha256("|".join(parts[k] for k in sorted(use) if k in parts).encode()).hexdigest()[:20]
+
+
+def why_rerun(j):
+    """Explain whether a job is up to date, and if not, what changed (Snakemake --list-changes / Nextflow -dump-hashes)."""
+    try:
+        e = json.loads(_marker(j).read_text()).get(j.get("step_key") or j["name"])
+    except (OSError, ValueError):
+        e = None
+    if not e:
+        return ["never finished successfully here"]
+    cur = key_parts(j)
+    old = e.get("parts") or {}
+    out = [f"{k} changed" for k in ("cmd", "params", "inputs", "software")
+           if k in (j.get("rerun_on") or ["cmd", "params", "inputs"]) and old.get(k) and old.get(k) != cur[k]]
+    if "inputs" in [x.split()[0] for x in out]:
+        before = set(old.get("inputs_list") or [])
+        after = set(cur["inputs_list"])
+        out += [f"  input changed: {x.split(':')[0]}" for x in sorted(after - before)][:20]
+    missing = [p for p in j.get("outputs") or [] if not glob.glob(os.path.join(j["cwd"], p))]
+    out += [f"output missing: {p}" for p in missing]
+    return out
 
 
 def _marker(j):
@@ -492,7 +497,9 @@ def mark_done(j):
         m = json.loads(_marker(j).read_text())
     except (OSError, ValueError):
         m = {}
-    m[j.get("step_key") or j["name"]] = {"key": job_key(j), "t": int(time.time())}
+    parts = key_parts(j)
+    m[j.get("step_key") or j["name"]] = {"key": job_key(j, parts), "t": int(time.time()), "parts": parts,
+                                         "job": j.get("id")}
     try:
         _marker(j).write_text(json.dumps(m, indent=1))
     except OSError:
@@ -529,9 +536,10 @@ def _launch(j, gpu_ids=None):
 class Scheduler:
     def __init__(self):
         self.last_action = 0
+        self.last_start = 0
+        self.delay = None
         self.told = set()
-        self.procs = {}
-        self.flow_told = set()
+        self.last_retention = 0
 
     def notify(self, title, msg, prio="default", tag="computer"):
         try:
@@ -541,6 +549,7 @@ class Scheduler:
             pass
 
     def capacity(self, jobs):
+        from . import resources
         th = probes.threads()
         m = probes.meminfo()
         total, avail = m.get("MemTotal", 0), m.get("MemAvailable", 0)
@@ -549,114 +558,188 @@ class Scheduler:
         now = time.time()
         grow = 0
         recent_cores = 0.0
+        settle = float(config.num("QUEUE_MEM_SETTLE_MIN") or 20) * 60
         for j in jobs:
             if j["state"] == "running":
                 rss = j.get("rss") or 0
-                grow += max(0, float(j["mem_gb"]) * GiB - rss)
+                want = float(j["mem_gb"]) * GiB
+                # after the job has settled, expect it to grow only a little above its peak so far (Slurm --mem-update)
+                if now - (j.get("started") or now) > settle and j.get("peak_rss"):
+                    want = min(want, j["peak_rss"] * 1.15)
+                grow += max(0, want - rss)
                 if now - (j.get("started") or now) < 90:
                     recent_cores += float(j["cores"])
+        keep = float(config.num("QUEUE_KEEP_THREADS") or 0)
+        r = resources.active_reservation()
+        if r and r.get("keep_threads") is not None:
+            keep = max(keep, r["keep_threads"])
         max_slots = config.num("QUEUE_MAX_JOBS") or th
-        free_threads = th - l1 - recent_cores
-        free_mem = avail - res - grow
-        return {"threads": th, "free_threads": free_threads, "free_mem": free_mem, "avail": avail, "reserve": res,
-                "max_slots": max_slots, "total": total}
+        return {"threads": th, "free_threads": th - keep - l1 - recent_cores, "free_mem": avail - res - grow,
+                "avail": avail, "reserve": res, "max_slots": max_slots, "total": total,
+                "no_new": bool(r and r.get("no_new_jobs")), "reservation": r}
 
     def idle(self):
         from . import watcher
-        others = [x for x in watcher.jobs() if not os.environ.get("MSQ_JOB_ID")]
-        return probes.loadavg()[0] < probes.threads() * 0.2 and not others
+        return probes.loadavg()[0] < probes.threads() * 0.2 and not watcher.jobs()
 
-    def tick(self):
-        while True:                       # reap finished runners (they are our children)
-            try:
-                pid, _ = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if pid == 0:
-                break
-        jobs = all_jobs()
-        byid = {j["id"]: j for j in jobs}
-        now = time.time()
-        # 1. runners that died without writing a result
+    # ---------------------------------------------------------------- retries
+    def handle_failures(self, jobs, now):
         for j in jobs:
-            if j["state"] in ACTIVE and j.get("pid") and not _alive(j["pid"]):
-                time.sleep(0.5)
-                k = load(j["id"])
-                if k and k["state"] in ACTIVE:
-                    update(j["id"], state="failed", ended=now, reason="runner stopped unexpectedly")
-        jobs = all_jobs()
-        byid = {j["id"]: j for j in jobs}
-        # 2. retries
-        for j in jobs:
-            if j["state"] in ("failed", "timeout") and not j.get("retried"):
-                why = "oom" if j.get("oom") else "timeout" if j["state"] == "timeout" else "fail"
-                if j["attempt"] <= int(j.get("retries") or 0) and (why in (j.get("retry_on") or []) or "any" in (j.get("retry_on") or [])):
-                    mem = float(j["mem_gb"]) * (1.5 if why == "oom" else 1.0)
-                    update(j["id"], state="queued", attempt=j["attempt"] + 1, mem_gb=round(mem, 1), started=None,
-                           ended=None, rc=None, not_before=now + 30, oom=False,
-                           reason=f"retry {j['attempt']}/{j['retries']} after {why}"
-                                  + (f", memory raised to {mem:.1f} GB" if why == "oom" else ""))
+            if j["state"] not in ("failed", "timeout") or j.get("retried"):
+                continue
+            why = "oom" if j.get("oom") else "timeout" if j["state"] == "timeout" else "fail"
+            on = j.get("retry_on") or ["oom"]
+            codes = j.get("retry_exit_codes")
+            code_ok = codes is None or j.get("rc") in [int(c) for c in codes]
+            if j["attempt"] <= int(j.get("retries") or 0) and (why in on or "any" in on) and code_ok:
+                mem, to = float(j["mem_gb"]), j.get("timeout_s")
+                scale = j.get("retry_scale") or {}
+                if why == "oom":
+                    peak = (j.get("peak_rss") or 0) / GiB
+                    mem = max(mem * float(scale.get("mem", 1.5)), peak * 1.3)
+                if why == "timeout" and to:
+                    to = int(to * float(scale.get("time", 1.5)))
+                sched = j.get("retry_delays")
+                if sched:
+                    delay = float(parse_duration(sched[min(j["attempt"] - 1, len(sched) - 1)]))
                 else:
-                    update(j["id"], retried=True)
-                    if not j.get("flow") and j["id"] not in self.told:
-                        self.told.add(j["id"])
-                        self.notify(f"Job failed: {j['name']}", f"#{j['id']} · {j['reason']} · {short(j['cwd'])}", "high", "x")
-        jobs = all_jobs()
-        byid = {j["id"]: j for j in jobs}
-        # 3. dependencies
+                    base = float(parse_duration(j.get("retry_delay") or 30))
+                    delay = min(base * float(j.get("retry_backoff") or 1) ** (j["attempt"] - 1),
+                                float(parse_duration(j.get("retry_max_delay") or 3600)))
+                update(j["id"], state="queued", attempt=j["attempt"] + 1, mem_gb=round(mem, 1), timeout_s=to,
+                       started=None, ended=None, rc=None, not_before=now + delay, oom=False,
+                       reason=f"retry {j['attempt']}/{j['retries']} in {int(delay)} s after {why}"
+                              + (f", memory {mem:.1f} GB" if why == "oom" else ""))
+                if self.delay is not None and now - (j.get("started") or now) < 120:
+                    self.delay = min(600.0, max(self.delay, 1.0) * 1.3)
+                continue
+            update(j["id"], retried=True)
+            if not j.get("flow") and j["id"] not in self.told and j.get("notify", "failure") != "never":
+                self.told.add(j["id"])
+                self.notify(f"Job failed: {j['name']}", f"#{j['id']} · {j['reason']} · {short(j['cwd'])}", "high", "x")
+        for j in jobs:          # successful single jobs: notify only when asked
+            if j["state"] in ("done", "warning") and not j.get("flow") and j.get("notify") == "always" \
+                    and f"ok{j['id']}" not in self.told:
+                self.told.add(f"ok{j['id']}")
+                self.notify(f"Job {j['state']}: {j['name']}", f"#{j['id']} · {short(j['cwd'])} {j.get('reason', '')}",
+                            "default", "white_check_mark")
+
+    # ---------------------------------------------------------------- dependencies and deadlines
+    def resolve_deps(self, jobs, byid, now):
         for j in jobs:
-            if j["state"] != "queued" or not j.get("depends"):
+            if j["state"] != "queued":
+                continue
+            if j.get("deadline") and now > j["deadline"]:
+                update(j["id"], state="skipped", reason="deadline passed before it could start", ended=now)
+                continue
+            if j.get("deadline"):
+                m = capacity.profiles().get(j.get("tool") or "", {}).get("minutes")
+                if m and now + m * 60 > j["deadline"]:
+                    update(j["id"], state="skipped", reason=f"cannot finish before the deadline (usually {m} min)", ended=now)
+                    continue
+            if not j.get("depends"):
                 continue
             deps = [byid.get(d) for d in j["depends"]]
             if any(d is None for d in deps):
                 update(j["id"], state="skipped", reason="dependency missing", ended=now)
                 continue
-            if j.get("dep_mode", "ok") == "ok" and any(d["state"] in TERMINAL - {"done", "cached"} for d in deps):
-                bad = next(d for d in deps if d["state"] in TERMINAL - {"done", "cached"})
-                update(j["id"], state="skipped", reason=f"dependency #{bad['id']} {bad['state']}", ended=now)
-        jobs = all_jobs()
-        cap = self.capacity(jobs)
+            mode = j.get("dep_mode", "ok")
+            if mode == "ok" and any(d["state"] in TERMINAL - SUCCESS for d in deps):
+                bad = next(d for d in deps if d["state"] in TERMINAL - SUCCESS)
+                if (bad.get("flow") or {}).get("ignore_failure"):
+                    continue
+                update(j["id"], state="skipped", reason=f"dependency #{bad['id']} {bad['state']}", ended=now,
+                       cond_skip=bool(bad.get("cond_skip")))
+            elif mode == "notok" and all(d["state"] in TERMINAL for d in deps) and not any(d["state"] in TERMINAL - SUCCESS for d in deps):
+                update(j["id"], state="skipped", reason="dependencies succeeded (this job runs only after a failure)", ended=now)
+
+    def deps_ready(self, j, byid):
+        if not j.get("depends"):
+            return True
+        mode = j.get("dep_mode", "ok")
+        st = [byid.get(d, {}).get("state") for d in j["depends"]]
+        if mode == "any":
+            return all(x in TERMINAL for x in st)
+        if mode == "notok":
+            return all(x in TERMINAL for x in st) and any(x in TERMINAL - SUCCESS for x in st)
+        ign = [(byid.get(d, {}).get("flow") or {}).get("ignore_failure") for d in j["depends"]]
+        return all(x in SUCCESS or (g and x in TERMINAL) for x, g in zip(st, ign))
+
+    # ---------------------------------------------------------------- memory pressure and preemption
+    def pressure(self, jobs, cap, now):
         running = [j for j in jobs if j["state"] == "running"]
-        # 4. memory pressure: suspend the newest lowest-priority job; resume when there is room again
+        exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
         if cap["avail"] < cap["reserve"] * 0.6 and running and now - self.last_action > 30:
-            victim = sorted(running, key=lambda j: (j["priority"], -(j.get("started") or 0)))[0]
+            cands = [j for j in running if now - (j.get("started") or now) >= exempt] or running
+            victim = sorted(cands, key=lambda j: (int(j.get("priority") or 0), -(j.get("started") or 0)))[0]
             if len(running) > 1 or cap["avail"] < cap["reserve"] * 0.3:
                 signal_job(victim, signal.SIGSTOP)
                 update(victim["id"], state="suspended", reason="paused: RAM almost full", suspended_at=now)
                 self.notify("Job paused (RAM low)", f"#{victim['id']} {victim['name']} paused to protect the machine; "
                                                     "it continues when memory frees up.", "default", "pause_button")
                 self.last_action = now
-                return
-        susp = sorted([j for j in jobs if j["state"] == "suspended"], key=lambda j: (-j["priority"], j.get("started") or 0))
+                return True
+        susp = sorted([j for j in jobs if j["state"] == "suspended" and j.get("reason", "").startswith("paused: ")
+                       or (j["state"] == "suspended" and "higher-priority" in j.get("reason", ""))],
+                      key=lambda j: (-int(j.get("priority") or 0), j.get("started") or 0))
         if susp and now - self.last_action > 30:
             s = susp[0]
-            need = (s.get("rss") or 0) * 0.2 + cap["reserve"] * 0.5
-            if cap["avail"] - cap["reserve"] > need and (s.get("reason", "").startswith("paused: RAM") or cap["free_threads"] >= float(s["cores"])):
+            if s.get("reason", "").startswith("paused: RAM"):
+                ok = cap["avail"] - cap["reserve"] > (s.get("rss") or 0) * 0.2 + cap["reserve"] * 0.5
+            else:
+                ok = cap["free_threads"] >= float(s["cores"]) and not any(
+                    x["state"] == "queued" and x.get("preempt") and int(x.get("priority") or 0) > int(s.get("priority") or 0)
+                    for x in jobs)
+            if ok:
                 signal_job(s, signal.SIGCONT)
                 update(s["id"], state="running", reason="resumed")
                 self.last_action = now
+                return True
+        return False
+
+    # ---------------------------------------------------------------- start what fits
+    def start_jobs(self, jobs, byid, cap, now):
+        from . import flow, resources
+        running = [j for j in jobs if j["state"] in ACTIVE]
+        if cap["no_new"]:
+            for j in jobs:
+                if j["state"] == "queued" and j.get("reason") != "waiting: reserved time window":
+                    update(j["id"], reason="waiting: reserved time window")
+            return
+        if resources.swapping():
+            return
+        if config.num("QUEUE_DISK_BUSY_PCT"):
+            b = resources.disk_busy(config.get("BIG_FOLDER_DEST") or "/")
+            if b is not None and b > config.num("QUEUE_DISK_BUSY_PCT"):
                 return
-        # 5. start what fits, highest priority first (smaller jobs may backfill)
-        ready = []
-        for j in jobs:
-            if j["state"] != "queued" or (j.get("not_before") or 0) > now:
-                continue
-            if j.get("depends") and not all(byid.get(d, {}).get("state") in ("done", "cached") or
-                                            (j.get("dep_mode") == "any" and byid.get(d, {}).get("state") in TERMINAL)
-                                            for d in j["depends"]):
-                continue
-            ready.append(j)
-        ready.sort(key=lambda j: (-int(j.get("priority") or 0), j["id"]))
-        slots = cap["max_slots"] - len(running)
+        base_delay = float(config.num("QUEUE_START_DELAY") or 0)
+        if self.delay is None:
+            self.delay = base_delay
+        if self.delay and now - self.last_start < self.delay:
+            return
+        ready = [j for j in jobs if j["state"] == "queued" and (j.get("not_before") or 0) <= now
+                 and (j.get("begin") or 0) <= now and self.deps_ready(j, byid)]
+        ready.sort(key=lambda j: (-int(j.get("order") or 0), -int(j.get("priority") or 0), j["id"]))
+        slots = cap["max_slots"] - len([j for j in running if j["state"] == "running"])
         free_t, free_m = cap["free_threads"], cap["free_mem"]
+        res_def = resources.load()
+        next_res = resources.minutes_to_next_reservation(now)
+        disk_reserved = {}
+        for r in running:
+            if r.get("disk_gb"):
+                disk_reserved[r.get("disk_path") or r["cwd"]] = disk_reserved.get(r.get("disk_path") or r["cwd"], 0) + float(r["disk_gb"])
         gpus = None
         for j in ready:
             if slots <= 0:
                 break
-            if j.get("inputs") or j.get("outputs"):
-                if j.get("incremental", True) and up_to_date(j):
-                    update(j["id"], state="cached", reason="up to date (same command and inputs)", ended=now)
-                    continue
+            # late binding: placeholders from earlier steps, conditions, fan-out, sub-flows, shared cache
+            act = flow.before_start(self, j, byid)
+            if act != "go":
+                continue
+            j = load(j["id"])
+            if (j.get("inputs") or j.get("outputs")) and j.get("incremental", True) and not j.get("force") and up_to_date(j):
+                update(j["id"], state="cached", reason="up to date (same command, parameters and inputs)", ended=now)
+                continue
             ok, why = check_require(j.get("require"), j["cwd"])
             if not ok:
                 if j.get("reason") != f"waiting: {why}":
@@ -666,6 +749,24 @@ class Scheduler:
                 if j.get("reason") != "waiting for an idle machine":
                     update(j["id"], reason="waiting for an idle machine")
                 continue
+            ok, why = resources.fits(j, jobs + [x for x in running if x not in jobs], res_def)
+            if not ok:
+                if j.get("reason") != why:
+                    update(j["id"], reason=why)
+                continue
+            if next_res is not None and j.get("respect_reservations", True):
+                m = capacity.profiles().get(j.get("tool") or "", {}).get("minutes")
+                if m and m > next_res:
+                    msg = f"waiting: would run into a reserved window in {int(next_res)} min"
+                    if j.get("reason") != msg:
+                        update(j["id"], reason=msg)
+                    continue
+            if j.get("disk_gb"):
+                path = j.get("disk_path") or j["cwd"]
+                d = probes.disk(path) or probes.disk(os.path.dirname(path)) or probes.disk("/")
+                if d and d[1] - disk_reserved.get(path, 0) * GiB < float(j["disk_gb"]) * GiB:
+                    update(j["id"], reason=f"waiting for {j['disk_gb']} GB free disk on {path}")
+                    continue
             need_t = min(max(1.0, float(j["cores"])), cap["threads"] * 0.75)
             need_m = float(j["mem_gb"]) * GiB
             gpu_ids = None
@@ -676,38 +777,80 @@ class Scheduler:
                     continue
                 gpu_ids, gpus = gpus[:int(j["gpus"])], gpus[int(j["gpus"]):]
             if free_t >= need_t and free_m >= need_m:
-                _launch(j, gpu_ids)
-                running.append(j)
+                update(j["id"], slot=resources.free_slot(all_jobs()))
+                _launch(load(j["id"]), gpu_ids)
+                running.append(load(j["id"]))
                 slots -= 1
                 free_t -= need_t
                 free_m -= need_m
-            else:
-                why = "RAM" if free_m < need_m else "CPU"
-                msg = f"waiting for {why} ({need_m / GiB:.1f} GB, {need_t:.1f} cores needed)"
-                if j.get("reason") != msg:
-                    update(j["id"], reason=msg)
-                # 6. preemption: a high-priority job may pause lower-priority running jobs (CPU only)
-                if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
-                    low = sorted([r for r in running if int(r.get("priority") or 0) < int(j.get("priority") or 0)
-                                  and load(r["id"]).get("state") == "running"],
-                                 key=lambda r: (r["priority"], -(r.get("started") or 0)))
-                    if low:
-                        v = low[0]
-                        signal_job(v, signal.SIGSTOP)
-                        update(v["id"], state="suspended", reason=f"paused for higher-priority job #{j['id']}")
-                        self.last_action = now
-                        return
-        # 7. stuck detection for jobs without an explicit timeout
-        for j in running:
+                if j.get("disk_gb"):
+                    disk_reserved[j.get("disk_path") or j["cwd"]] = disk_reserved.get(j.get("disk_path") or j["cwd"], 0) + float(j["disk_gb"])
+                self.last_start = now
+                if self.delay:
+                    return            # one start per delay period
+                continue
+            why = "RAM" if free_m < need_m else "CPU"
+            msg = f"waiting for {why} ({need_m / GiB:.1f} GB, {need_t:.1f} cores needed)"
+            if j.get("reason") != msg:
+                update(j["id"], reason=msg)
+            if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
+                exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
+                low = sorted([r for r in running if r["state"] == "running" and int(r.get("priority") or 0) < int(j.get("priority") or 0)
+                              and now - (r.get("started") or now) >= exempt],
+                             key=lambda r: (int(r.get("priority") or 0), -(r.get("started") or 0)))
+                if low:
+                    v = low[0]
+                    signal_job(v, signal.SIGSTOP)
+                    update(v["id"], state="suspended", reason=f"paused for higher-priority job #{j['id']}")
+                    self.last_action = now
+                    return
+
+    def tick(self):
+        while True:                       # reap finished runners (they are our children)
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+        now = time.time()
+        for j in all_jobs():              # runners that died without writing a result
+            if j["state"] in ACTIVE and j.get("pid") and not _alive(j["pid"]):
+                time.sleep(0.3)
+                k = load(j["id"])
+                if k and k["state"] in ACTIVE:
+                    update(j["id"], state="failed", ended=now, reason="runner stopped unexpectedly")
+        jobs = all_jobs()
+        if self.delay and jobs:           # successes slowly shrink an automatically raised start delay
+            base = float(config.num("QUEUE_START_DELAY") or 0)
+            if any(j["state"] == "done" and now - (j.get("ended") or 0) < 10 for j in jobs):
+                self.delay = max(base, self.delay * 0.9)
+        self.handle_failures(jobs, now)
+        jobs = all_jobs()
+        from . import flow
+        flow.react(self, jobs)            # on_error strategies, halt rules, temp cleanup after consumers
+        jobs = all_jobs()
+        byid = {j["id"]: j for j in jobs}
+        self.resolve_deps(jobs, byid, now)
+        jobs = all_jobs()
+        byid = {j["id"]: j for j in jobs}
+        cap = self.capacity(jobs)
+        if not self.pressure(jobs, cap, now):
+            self.start_jobs(jobs, byid, cap, now)
+        for j in jobs:                    # stuck detection when no explicit timeout
+            if j["state"] != "running":
+                continue
             prof = capacity.profiles().get(j.get("tool") or "", {})
             m = prof.get("minutes") if prof.get("measured") else None
             if m and not j.get("timeout_s") and runtime(j) > max(1800, 3 * m * 60) and f"stuck{j['id']}" not in self.told:
                 self.told.add(f"stuck{j['id']}")
                 self.notify(f"Job may be stuck: {j['name']}", f"#{j['id']} has run {runtime(j) / 3600:.1f} h; "
                                                                f"{j['tool']} usually takes {m} min.", "default", "hourglass")
-        # 8. flows that just finished: summary, hooks, temp cleanup
-        from . import flow
         flow.finish_flows(self)
+        if now - self.last_retention > 3600:
+            self.last_retention = now
+            days = config.num("QUEUE_KEEP_DAYS") or 30
+            clear(days)
 
     def loop(self):
         _ensure()
@@ -802,6 +945,78 @@ def retry(jid):
     return False
 
 
+def clone(jid, **changes):
+    """Run a job again as a new job with the same settings (evQueue relaunch / Jenkins replay)."""
+    j = load(jid)
+    if not j:
+        return None
+    keep = {k: v for k, v in j.items() if k not in ("id", "state", "created", "attempt", "started", "ended", "rc", "reason",
+                                                    "pid", "sid", "peak_rss", "rss", "cpu_s", "run_id", "outputs", "retried",
+                                                    "oom", "cores_used", "issues", "diagnosis", "slot", "gpu_ids", "cmd", "cwd",
+                                                    "name", "depends", "last_line", "progress", "junit", "io_read", "io_write")}
+    keep.update(changes)
+    return submit(changes.get("cmd", j["cmd"]), cwd=j["cwd"], name=j["name"], **keep)
+
+
+def approve(jid, ok=True):
+    j = load(jid)
+    if j and j["state"] == "approval":
+        if ok:
+            update(jid, state="queued", reason="approved", approved_at=time.time())
+        else:
+            update(jid, state="cancelled", reason="rejected", ended=time.time())
+        return True
+    return False
+
+
+def top(jid):
+    """Move a waiting job to the front of the queue (task-spooler -u, scontrol top)."""
+    mx = max([int(j.get("order") or 0) for j in all_jobs()] + [0])
+    return update(jid, order=mx + 1) is not None
+
+
+def requeue(jid):
+    j = load(jid)
+    if not j:
+        return False
+    if j["state"] in ACTIVE:
+        cancel(jid)
+        for _ in range(60):
+            if load(jid)["state"] in TERMINAL:
+                break
+            time.sleep(1)
+    update(jid, state="queued", attempt=load(jid)["attempt"] + 1, started=None, ended=None, rc=None,
+           reason="requeued by user", retried=False, oom=False)
+    return True
+
+
+def wait(jid, timeout=None):
+    t0 = time.time()
+    while True:
+        j = load(jid)
+        if not j:
+            return None
+        if j["state"] in TERMINAL:
+            return j
+        if timeout and time.time() - t0 > timeout:
+            return j
+        time.sleep(2)
+
+
+def history(days=7, state=None, name=None):
+    out = []
+    for j in all_jobs():
+        t = j.get("ended") or j.get("started") or j["created"]
+        if time.time() - t > days * 86400:
+            continue
+        if state and j["state"] != state:
+            continue
+        if name and not re.search(name, j["name"]):
+            continue
+        out.append(j)
+    return out
+
+
 def set_priority(jid, p):
     return update(jid, priority=int(p)) is not None
 
@@ -810,8 +1025,12 @@ def clear(older_than_days=0):
     n = 0
     for j in all_jobs():
         if j["state"] in TERMINAL and time.time() - (j.get("ended") or j["created"]) >= older_than_days * 86400:
+            if (j.get("flow") or {}).get("id") and older_than_days == 0 and time.time() - (j.get("ended") or 0) < 60:
+                continue
             _path(j["id"]).unlink(missing_ok=True)
-            (LOGS / f"{j['id']}.log").unlink(missing_ok=True)
+            for p in (LOGS / f"{j['id']}.log", LOGS / f"{j['id']}.log.1", Q / "series" / f"{j['id']}.csv",
+                      Q / "outputs" / f"{j['id']}.env"):
+                p.unlink(missing_ok=True)
             n += 1
     return n
 

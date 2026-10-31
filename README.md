@@ -18,6 +18,8 @@ machine-specific code: everything specific lives in a few config files.
 | **Health** | Daily check (disks, mounts, memory, CPU heat, failed services, toolchains, Python environments, watched config files, backups, updates) with a dated report and a short summary. |
 | **Long runs** | A one-minute watcher recognises jobs through plugins, reports **failures at once** (with the first `ERROR:` line) and sends **one summary per finished batch** (e.g. a whole DOE sweep). `vrun <cmd>` wraps any command; `tsp vrun <cmd>` queues them. |
 | **Queue & flows** | `ms q add -- CMD` queues a job; the scheduler starts it only when the CPU threads and RAM it needs are free (measured per tool), pauses the newest low-priority job when RAM runs low, retries out-of-memory runs with more memory, enforces timeouts and hard memory limits (cgroups), honours dependencies, priorities and preemption. **Flow files** (YAML) describe steps, parameter sweeps (matrix), per-item dependencies, preconditions, hooks, temporary files and incremental re-runs (skip when inputs are unchanged); `ms flow check` validates and estimates the run time; flows can run on a cron schedule, when the machine is idle, or on every new commit. Efficiency report (`ms q report`), timeline (`ms q timeline`), Prometheus metrics, and a **Queue** page with a Gantt chart. |
+| **Software** | `ms software`: every apt/snap/flatpak/pip update with **who uses it** (projects, Python environments, packages that link the library, programs running now) and what to do — safe now, test after, after the runs, needs reboot. `ms software uses NAME` answers "who uses numpy / libboost / vivado 2023.2 / this venv?". |
+| **Self-test** | `ms selftest` checks the installation and runs end-to-end jobs in a separate temporary queue — your real jobs and simulations are never touched. |
 | **MCP server** | `ms mcp` (registered for Claude Code by the installer): assistants ask for capacity, queue jobs, run flows and read run logs directly. |
 | **Run logs** | One standard log format for every project (`msrun.jsonl`, [spec](src/runlog/RUNLOG_SPEC.md)): start, stages, errors, metrics, files, end. Helpers for Python, Tcl/Vivado and any command (`ms log run -- CMD`), a validator (`ms log check`), and a *Run logs* page that lists every run found in your project folders. AI assistants must use it. |
 | **Results** | Timing, resources and power are extracted from every finished run into `reports/results.csv` (Vivado timing/utilization/power reports, Vitis HLS `csynth.xml`, nextpnr/VPR logs). Older runs: `ms results <folder>`. |
@@ -63,6 +65,9 @@ ms q / ms q report jobs / efficiency (memory and CPU reserved vs used)
 ms flow example    example flow file (steps, sweeps, dependencies)
 ms flow check F    validate a flow and estimate its run time
 ms flow run F      queue every job of a flow (--resume skips finished ones)
+ms software        updates and who uses what; ms software uses NAME
+ms selftest        safe end-to-end test of this installation
+ms lineage FILE    which run produced this file, which runs used it
 ms log run -- CMD  run anything and record it in the standard run log
 ms log check DIR   validate run logs against the format
 ms log list        all runs, newest first

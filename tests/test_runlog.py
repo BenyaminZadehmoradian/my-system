@@ -9,15 +9,16 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src/runlog"))
-sys.path.insert(0, str(ROOT / "src/lib"))
+SRC = ROOT / "src" if (ROOT / "src").is_dir() else ROOT
+sys.path.insert(0, str(SRC / "runlog"))
+sys.path.insert(0, str(SRC / "lib"))
 
 
 def fake_ms():
     tmp = Path(tempfile.mkdtemp())
     ms = tmp / "My_System"
     for d in ("bin", "lib", "plugins", "runlog"):
-        shutil.copytree(ROOT / "src" / d, ms / d)
+        shutil.copytree(SRC / d, ms / d)
     for d in ("config", "state", "reports"):
         (ms / d).mkdir()
     (ms / "bin/notify.sh").write_text(f'#!/bin/sh\necho "$1|$2" >> {tmp}/notes\n')

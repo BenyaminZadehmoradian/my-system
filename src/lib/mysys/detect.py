@@ -239,6 +239,42 @@ KEEP_MONTHLY=6
     files["paths.conf"] = "# Extra known paths shown to AI assistants: label|path (tools are detected automatically)\n"
     files["plugins.conf"] = ("# Run-tracking plugins (one per line). Available: see ~/My_System/plugins/\n"
                              "vivado\nvitis_hls\nyosys\nsimulators\n# make\n")
+    files["queue.conf"] = """# Job queue settings (also read from my_system.conf). Remove the '#' to change a value.
+# QUEUE_MAX_JOBS=16            # never more queued jobs running at once
+# QUEUE_KEEP_THREADS=1         # threads kept free for the desktop
+# QUEUE_START_DELAY=0          # seconds between two job starts (raised automatically when starts fail quickly)
+# QUEUE_DISK_BUSY_PCT=95       # do not start new jobs while the data disk is busier than this
+# QUEUE_MEM_SETTLE_MIN=20      # after this many minutes, a job's reservation shrinks towards its real peak
+# QUEUE_PREEMPT_EXEMPT_MIN=10  # a job is never paused for another during its first minutes
+# QUEUE_KEEP_DAYS=30           # forget finished jobs after this many days
+# QUEUE_LOG_MAX_MB=200         # job output above this is rotated
+# SCRATCH_DIR=                 # where scratch folders and job TMPDIRs go (default: the data folder)
+# SHARED_CACHE_DIR=            # cache shared between flows (default: <data folder>/.ms_cache)
+"""
+    files["resources.conf"] = """# Named resources for the job queue: NAME COUNT [check=COMMAND]
+# A job asks with --res NAME=1 (or resources: {NAME: 1} in a flow). Count 1 = an exclusive lock.
+# check= reads seats used outside the queue, e.g. from FlexLM:
+# vivado_license 4 check=lmutil lmstat -c 2100@licserver -f Synthesis
+# board_zcu104 1
+# jtag_cable 1
+# disk_io 2
+# tool:vivado 8                 # at most 8 queued Vivado jobs at once
+"""
+    files["reservations.conf"] = """# Time windows when the queue holds back (e.g. you need the machine):
+# DAYS HH:MM-HH:MM [keep_threads=N | no_new_jobs]
+# Mon-Fri 09:00-12:00 keep_threads=12
+# Sat 00:00-23:59 no_new_jobs
+"""
+    files["warnings_ignore.txt"] = """# Warnings to ignore when counting new/fixed issues (one regular expression per line)
+# \\[Synth 8-7080\\]
+# \\[Constraints 18-5210\\]
+"""
+    files["failure_kb.yaml"] = """# Known failure causes (checked before the built-in ones). Example:
+# - name: "IP not upgraded"
+#   pattern: '\\[IP_Flow 19-2162\\]'   # single quotes keep the backslashes
+#   fix: "Run upgrade_ip [get_ips] once in the GUI or Tcl."
+[]
+"""
     return files
 
 

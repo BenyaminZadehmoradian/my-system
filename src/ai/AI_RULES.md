@@ -33,6 +33,13 @@ These rules are installed by **my-system** and are read-only. The machine-specif
    any other command `ms log run --name NAME -- CMD`. Keep the tool's own log as well.
    Before you say you are done, run `ms log check <run folder>` and fix every problem it reports.
 
+10. **Before changing, updating or recreating any environment, package or library, ask who uses it:**
+    `ms software uses NAME` (or the `software_uses` MCP tool) and tell the user which projects are affected.
+    Never update packages yourself; `ms software plan` gives the user the commands.
+11. **Make jobs observable:** print progress with `echo PERCENT >&3`, pass results to later steps by
+    writing `key=value` lines to `$MSQ_OUTPUTS`, put temporary files in `$TMPDIR`, and declare
+    `inputs`/`outputs` in flow steps so unchanged work is skipped.
+
 ## Transparency
 Every tool call is logged and visible to the user in the my-system app (AI guard tab).
 If a command is blocked, explain what you wanted to do and why, and let the user decide.

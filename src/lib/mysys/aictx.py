@@ -76,10 +76,22 @@ def build():
         gs = {g["path"]: g for g in json.loads((config.STATE / "git_status.json").read_text())}
     except (OSError, ValueError):
         pass
+    sw = {}
+    try:
+        from . import software
+        sw = (software.load() or {}).get("projects", {})
+    except Exception:
+        pass
     for p in d.get("projects", []):
         g = gs.get(p, {})
         note = f" — branch {g['branch']}" if g.get("branch") else ""
-        lines.append(f"- `{_home(p)}`{note}")
+        u = sw.get(p) or {}
+        bits = []
+        if u.get("venvs"):
+            bits.append("env " + ", ".join(f"`{_home(v)}`" for v in u["venvs"]))
+        if u.get("tools"):
+            bits.append("tools " + ", ".join(f"{k}→{_home(v)}" for k, v in sorted(u["tools"].items())[:6]))
+        lines.append(f"- `{_home(p)}`{note}" + (" — " + "; ".join(bits) if bits else ""))
     if not d.get("projects"):
         lines.append("- (none found)")
 

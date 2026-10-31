@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1055,6 +1056,124 @@ class SystemPage(Page):
         return (r[0][0] if r else "none yet"), ("info" if r else None)
 
 
+class SoftwarePage(Page):
+    title, icon, fallback = "Software", "system-software-update", "package-x-generic"
+    COLS = ["Advice", "Kind", "Name", "Installed", "New", "Used by", "What to do"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._sig = None
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("Software", "Updates for apt, snap, flatpak and every Python environment — each with who uses it "
+                                         "and what to do. Nothing is installed for you. Scanned daily."))
+        top = QHBoxLayout()
+        self.summary = QLabel("")
+        self.summary.setObjectName("muted")
+        self.summary.setWordWrap(True)
+        top.addWidget(self.summary, 1)
+        top.addWidget(btn("Scan now", self.scan, "primary"))
+        top.addWidget(btn("Update plan", self.plan))
+        lay.addLayout(top)
+        row = QHBoxLayout()
+        self.q = QLineEdit()
+        self.q.setPlaceholderText("Who uses…  (a project, Python package, library, tool, environment or Docker image) — press Enter")
+        self.q.returnPressed.connect(self.who)
+        row.addWidget(self.q, 1)
+        self.proj = QComboBox()
+        self.proj.setMinimumWidth(260)
+        self.proj.activated.connect(lambda _: self.project())
+        row.addWidget(QLabel("Project:"))
+        row.addWidget(self.proj)
+        lay.addLayout(row)
+        split = QSplitter(Qt.Orientation.Vertical)
+        self.tab = table(self.COLS, 5)
+        self.tab.setSortingEnabled(True)
+        split.addWidget(self.tab)
+        self.view = mono(QPlainTextEdit())
+        self.view.setReadOnly(True)
+        split.addWidget(self.view)
+        split.setSizes([420, 220])
+        lay.addWidget(split, 1)
+        self.setMinimumHeight(700)
+
+    def refresh(self):
+        from mysys import software as SW
+        try:
+            sig = SW.STATE.stat().st_mtime
+        except OSError:
+            sig = None
+        if sig == self._sig:
+            return
+        self._sig = sig
+        data = SW.load()
+        if not data:
+            self.summary.setText("No scan yet — press Scan now (a few minutes; it only reads).")
+            return
+        apt = [u for u in data["updates"] if u["kind"] == "apt"]
+        sec = sum(1 for u in apt if u.get("security"))
+        pip = sum(len(v.get("outdated") or []) for v in data["venvs"].values())
+        eol = sum(1 for v in data["venvs"].values() if v.get("eol") or v.get("broken"))
+        self.summary.setText(
+            f"{len(apt)} apt updates ({sec} security) · {sum(1 for u in data['updates'] if u['kind'] == 'snap')} snap · "
+            f"{sum(1 for u in data['updates'] if u['kind'] == 'flatpak')} flatpak · {pip} Python packages · "
+            f"{eol} Python environment(s) to recreate · {len(data.get('restart_needed') or [])} program(s) to restart"
+            + (" · reboot pending" if data.get("reboot_required") else "") + "\nscanned "
+            + time.strftime("%Y-%m-%d %H:%M", time.localtime(data["time"])) + f" · {len(data['projects'])} projects mapped")
+        rows = SW.advise(data)
+        self.tab.setSortingEnabled(False)
+        self.tab.setRowCount(len(rows))
+        lvl = {"reboot": ("needs reboot", "bad", 0), "wait": ("after runs", "warn", 1), "test": ("test after", "info", 2),
+               "ok": ("safe now", "ok", 3)}
+        for i, r in enumerate(rows):
+            t, lv, order = lvl[r["level"]]
+            first = NumItem(order, "{:.0f}")
+            first.setText(t)
+            first.setForeground(QColor(tone(lv)))
+            first.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            f_ = first.font()
+            f_.setBold(True)
+            first.setFont(f_)
+            for k, v in enumerate([first, cell(r["kind"]), cell(r["name"], bold=True), cell(r["old"]), cell(r["new"]),
+                                   cell(r["used_by"]), cell(r["advice"])]):
+                self.tab.setItem(i, k, v)
+        self.tab.setSortingEnabled(True)
+        self.tab.sortItems(0, Qt.SortOrder.AscendingOrder)
+        cur = self.proj.currentText()
+        self.proj.clear()
+        self.proj.addItems(sorted(os.path.basename(p) for p in data["projects"]))
+        if cur:
+            self.proj.setCurrentText(cur)
+
+    def scan(self):
+        self.view.setPlainText("Scanning (reads package lists, Python environments and project folders; a few minutes)…")
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "scan"], self.view, None,
+                             lambda: (setattr(self, "_sig", None), self.refresh()))
+
+    def plan(self):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "plan"], capture_output=True, text=True, timeout=120)
+        self.view.setPlainText(r.stdout or r.stderr)
+
+    def who(self):
+        q = self.q.text().strip()
+        if q:
+            r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "uses", q], capture_output=True, text=True, timeout=120)
+            self.view.setPlainText(r.stdout or r.stderr)
+
+    def project(self):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "project", self.proj.currentText()],
+                           capture_output=True, text=True, timeout=120)
+        self.view.setPlainText(r.stdout or r.stderr)
+
+    def nav_status(self):
+        from mysys import software as SW
+        data = SW.load()
+        if not data:
+            return "not scanned", None
+        sec = sum(1 for u in data["updates"] if u.get("security"))
+        n = len(data["updates"]) + sum(len(v.get("outdated") or []) for v in data["venvs"].values())
+        return (f"{n} updates" + (f" · {sec} security" if sec else "")), ("warn" if sec else "info" if n else None)
+
+
 class InventoryPage(Page):
     title, icon, fallback = "Inventory", "applications-engineering", "package-x-generic"
 
@@ -1242,8 +1361,14 @@ class Gantt(QWidget):
         lw = min(260, self.width() * 0.32)
         W = self.width() - lw - 10
         p.setFont(QFont(p.font().family(), 8))
-        for i, (lab, a, b, st) in enumerate(self.rows):
+        for i, (lab, a, b, st, *rest) in enumerate(self.rows):
             y = 4 + i * 16
+            cr = rest[0] if rest else None
+            if cr and cr < a:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(T["grid"]))
+                x0 = lw + (max(cr, t0) - t0) / span * W
+                p.drawRoundedRect(QRectF(x0, y + 5, max(2.0, lw + (a - t0) / span * W - x0), 5), 2, 2)
             p.setPen(QColor(T["text"]))
             p.drawText(QRectF(4, y, lw - 8, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, lab[:40])
             x = lw + (a - t0) / span * W
@@ -1282,15 +1407,23 @@ class QueuePage(Page):
         top.addWidget(btn("Schedules", self.show_schedules))
         lay.addLayout(top)
         row = QHBoxLayout()
-        for label, fn in (("Hold", "hold"), ("Release", "release"), ("Pause", "suspend"), ("Continue", "resume"),
-                          ("Retry", "retry"), ("Cancel", "cancel")):
+        for label, fn in (("Approve", "approve"), ("Hold", "hold"), ("Release", "release"), ("Pause", "suspend"),
+                          ("Continue", "resume"), ("Retry", "retry"), ("Run again", "clone"), ("To front", "top"),
+                          ("Cancel", "cancel")):
             row.addWidget(btn(label, lambda _=False, f=fn: self.act(f)))
         row.addWidget(btn("Priority +", lambda: self.prio(+1)))
         row.addWidget(btn("Priority −", lambda: self.prio(-1)))
-        row.addWidget(btn("Output", self.output))
-        row.addWidget(btn("Clear finished", self.clear))
         row.addStretch()
         lay.addLayout(row)
+        row2 = QHBoxLayout()
+        row2.addWidget(btn("Details", self.details))
+        row2.addWidget(btn("Output", self.output))
+        row2.addWidget(btn("Warnings", self.warnings))
+        row2.addWidget(btn("Flow report", self.flow_report))
+        row2.addWidget(btn("Edit flow file…", self.edit_flow))
+        row2.addWidget(btn("Clear finished", self.clear))
+        row2.addStretch()
+        lay.addLayout(row2)
         split = QSplitter(Qt.Orientation.Vertical)
         self.tab = table(self.COLS, 11)
         self.tab.setSortingEnabled(True)
@@ -1327,7 +1460,7 @@ class QueuePage(Page):
         self.tab.setSortingEnabled(False)
         self.tab.setRowCount(len(jobs))
         lv = {"running": "info", "done": "ok", "cached": None, "failed": "bad", "timeout": "bad", "suspended": "warn",
-              "queued": None, "held": "warn", "skipped": None, "cancelled": None}
+              "queued": None, "held": "warn", "skipped": None, "cancelled": None, "warning": "warn", "approval": "warn"}
         for i, j in enumerate(reversed(jobs)):
             e = Qm.efficiency(j)
             fl = j.get("flow") or {}
@@ -1337,7 +1470,9 @@ class QueuePage(Page):
                     NumItem(e["mem_req_gb"], "{:.1f}"), NumItem(e["mem_peak_gb"] or "", "{:.1f}"),
                     NumItem(e["cores_req"], "{:.1f}"), NumItem(e["cores_used"] if e["cores_used"] is not None else "", "{:.1f}"),
                     cell(time.strftime("%m-%d %H:%M", time.localtime(j["started"])) if j.get("started") else ""),
-                    cell(self.hms(Qm.runtime(j)) if j.get("started") else ""), cell(j.get("reason", ""))]
+                    cell(self.hms(Qm.runtime(j)) if j.get("started") else ""),
+                    cell(j.get("reason", "") or ((f"{j['progress']:.0f}% " if j.get("progress") is not None else "")
+                                                 + (j.get("last_line") or "") if j["state"] == "running" else ""))]
             for k, it in enumerate(vals):
                 it.setData(Qt.ItemDataRole.UserRole, j["id"])
                 self.tab.setItem(i, k, it)
@@ -1379,6 +1514,113 @@ class QueuePage(Page):
         for i in ids:
             getattr(Qm, fn)(i)
         self.refresh()
+
+    def _text_dialog(self, title, text, html_=False, chart=None):
+        d = QDialog(self)
+        d.setWindowTitle(title)
+        d.resize(1000, 700)
+        l_ = QVBoxLayout(d)
+        if chart is not None:
+            l_.addWidget(chart)
+        v = QTextBrowser() if html_ else mono(QPlainTextEdit())
+        if html_:
+            v.setHtml(text)
+        else:
+            v.setReadOnly(True)
+            v.setPlainText(text)
+        l_.addWidget(v, 1)
+        d.exec()
+
+    def _ms(self, *args):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, timeout=120)
+        return r.stdout + r.stderr
+
+    def details(self):
+        from mysys import queue as Qm
+        ids = self.selected()
+        if not ids:
+            return
+        txt = self._ms("q", "show", str(ids[0]))
+        chart = None
+        f = Qm.Q / "series" / f"{ids[0]}.csv"
+        if f.exists():
+            vals = []
+            for row in f.read_text().splitlines()[1:]:
+                try:
+                    vals.append(float(row.split(",")[1]))
+                except (ValueError, IndexError):
+                    pass
+            if len(vals) > 1:
+                chart = Chart(height=160, axis=True)
+                chart.set(vals, T["accent_bg"])
+                txt = "RAM in GB over time (chart above)\n\n" + txt
+        self._text_dialog(f"Job {ids[0]}", txt, chart=chart)
+
+    def warnings(self):
+        ids = self.selected()
+        if ids:
+            self._text_dialog(f"Warnings of job {ids[0]}", self._ms("q", "warnings", str(ids[0])))
+
+    def flow_report(self):
+        from mysys import flow as F, queue as Qm
+        ids = self.selected()
+        j = Qm.load(ids[0]) if ids else None
+        fid = (j or {}).get("flow", {}) and j["flow"].get("id")
+        if not fid:
+            QMessageBox.information(self, "Flow report", "Select a job that belongs to a flow.")
+            return
+        h = F.report_html(fid)
+        h = re.sub(r"<svg.*?</svg>", "", h, flags=re.S)
+        try:
+            _, specs, _ = F.check(F.load_flow(fid)["file"])
+            h = h.replace("<h2>Steps</h2>", "<h2>Steps</h2><pre>" + html.escape(F.dag_text(specs)) + "</pre>")
+        except Exception:
+            pass
+        self._text_dialog(f"Flow {fid}", h, html_=True)
+
+    def edit_flow(self):
+        f = self._pick()
+        if not f:
+            return
+        d = QDialog(self)
+        d.setWindowTitle(f)
+        d.resize(1000, 760)
+        l_ = QVBoxLayout(d)
+        ed = mono(QPlainTextEdit())
+        ed.setPlainText(read(f))
+        out = mono(QPlainTextEdit())
+        out.setReadOnly(True)
+        out.setMaximumHeight(200)
+        l_.addWidget(ed, 1)
+        l_.addWidget(out)
+        row = QHBoxLayout()
+
+        def save():
+            try:
+                Path(f).write_text(ed.toPlainText())
+                return True
+            except OSError as e:
+                out.setPlainText(f"cannot save: {e}")
+                return False
+
+        def check():
+            if save():
+                out.setPlainText(self._ms("flow", "check", f))
+
+        def run():
+            if save():
+                res = self._ms("flow", "check", f)
+                if res.startswith("Problems"):
+                    out.setPlainText(res)
+                    return
+                out.setPlainText(self._ms("flow", "run", f, "--resume"))
+                self.refresh()
+        row.addWidget(btn("Reference", lambda: out.setPlainText(self._ms("flow", "reference"))))
+        row.addStretch()
+        row.addWidget(btn("Save and check", check))
+        row.addWidget(btn("Save and run", run, "primary"))
+        l_.addLayout(row)
+        d.exec()
 
     def prio(self, d):
         from mysys import queue as Qm
@@ -1906,7 +2148,7 @@ class NavItem(QWidget):
 # ======================= main window =======================
 class Main(QMainWindow):
     PAGES = [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
-             ReportsPage, InventoryPage, NotifyPage, SettingsPage]
+             ReportsPage, SoftwarePage, InventoryPage, NotifyPage, SettingsPage]
 
     def __init__(self):
         super().__init__()
