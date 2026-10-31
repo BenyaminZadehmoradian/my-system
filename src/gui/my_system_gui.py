@@ -14,11 +14,12 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QDateTime, QPointF, QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter,
                          QPainterPath, QPalette, QPen)
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit, QDialog, QFileDialog, QFormLayout, QFrame,
+    QSpinBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -481,8 +482,8 @@ class OverviewPage(Page):
         b = kv(STATE / "backup_status")
         ls = float(b.get("last_success", 0) or 0)
         st, txt = CFG.backup_state()
-        tone = {"ok": "ok", "running": "info", "first": "info", "off": "warn"}.get(st, "bad")
-        self.c["backup"].set("running…" if st == "running" else ago(ls) if ls else txt.split(" (")[0], txt, tone)
+        b_lv = {"ok": "ok", "running": "info", "first": "info", "off": "warn"}.get(st, "bad")
+        self.c["backup"].set("running…" if st == "running" else ago(ls) if ls else txt.split(" (")[0], txt, b_lv)
         jobs = W.jobs()
         self.c["jobs"].set(str(len(jobs)), ", ".join(sorted({j["tool"] for j in jobs})) or "idle", "info" if jobs else None)
         self.c["jobs"].t.setText("TRACKED JOBS RUNNING")
@@ -502,6 +503,19 @@ class OverviewPage(Page):
                    and time.time() - time.mktime(time.strptime(r["t"], "%Y-%m-%d %H:%M:%S")) < 86400]
         if blocked:
             items.append((f"{len(blocked)} AI command(s) blocked in the last 24 h — see AI guard", "bad"))
+        try:
+            for line in (REPORTS / "crashes.log").read_text().splitlines()[-3:]:
+                t_, cause = line.split("\t")[:2]
+                if time.time() - time.mktime(time.strptime(t_, "%Y-%m-%d %H:%M")) < 7 * 86400:
+                    items.append((f"Unexpected stop at {t_}: {cause} — see History", "bad"))
+        except (OSError, ValueError):
+            pass
+        try:
+            vul = json.loads((STATE / "vulns.json").read_text()).get("findings") or []
+            if vul:
+                items.append((f"{len(vul)} Python package version(s) with known vulnerabilities — see Software", "warn"))
+        except (OSError, ValueError):
+            pass
         if not items:
             items = [("Nothing — everything looks fine.", "ok")]
         for text, lv in items:
@@ -1073,6 +1087,7 @@ class SoftwarePage(Page):
         top.addWidget(self.summary, 1)
         top.addWidget(btn("Scan now", self.scan, "primary"))
         top.addWidget(btn("Update plan", self.plan))
+        top.addWidget(btn("Check vulnerabilities", self.audit))
         lay.addLayout(top)
         row = QHBoxLayout()
         self.q = QLineEdit()
@@ -1147,6 +1162,11 @@ class SoftwarePage(Page):
     def scan(self):
         self.view.setPlainText("Scanning (reads package lists, Python environments and project folders; a few minutes)…")
         self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "scan"], self.view, None,
+                             lambda: (setattr(self, "_sig", None), self.refresh()))
+
+    def audit(self):
+        self.view.setPlainText("Checking Python packages against osv.dev (only names and versions are sent)…")
+        self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "audit"], self.view, None,
                              lambda: (setattr(self, "_sig", None), self.refresh()))
 
     def plan(self):
@@ -1420,6 +1440,10 @@ class QueuePage(Page):
         row2.addWidget(btn("Output", self.output))
         row2.addWidget(btn("Warnings", self.warnings))
         row2.addWidget(btn("Flow report", self.flow_report))
+        row2.addWidget(btn("Why waiting?", self.explain))
+        row2.addWidget(btn("Change job…", self.edit_job))
+        row2.addWidget(btn("Send input…", self.send_input))
+        row2.addWidget(btn("Groups / flaky", self.groups))
         row2.addWidget(btn("Edit flow file…", self.edit_flow))
         row2.addWidget(btn("Clear finished", self.clear))
         row2.addStretch()
@@ -1555,6 +1579,66 @@ class QueuePage(Page):
                 chart.set(vals, T["accent_bg"])
                 txt = "RAM in GB over time (chart above)\n\n" + txt
         self._text_dialog(f"Job {ids[0]}", txt, chart=chart)
+
+    def explain(self):
+        ids = self.selected()
+        if ids:
+            self._text_dialog(f"Why job {ids[0]} is waiting", self._ms("q", "explain", str(ids[0])))
+
+    def edit_job(self):
+        from mysys import queue as Qm
+        ids = self.selected()
+        if not ids:
+            return
+        j = Qm.load(ids[0])
+        if not j or j["state"] not in ("queued", "held", "approval"):
+            QMessageBox.information(self, "Change job", "Only waiting jobs can be changed. Use \"Run again\" for others.")
+            return
+        d = QDialog(self)
+        d.setWindowTitle(f"Change job {j['id']}")
+        d.resize(720, 260)
+        f = QFormLayout(d)
+        cmd, name = QLineEdit(j["cmd"]), QLineEdit(j["name"])
+        mem = QDoubleSpinBox()
+        mem.setRange(0.1, 4096)
+        mem.setDecimals(1)
+        mem.setValue(float(j["mem_gb"]))
+        cores = QDoubleSpinBox()
+        cores.setRange(1, 1024)
+        cores.setDecimals(0)
+        cores.setValue(float(j["cores"]))
+        prio = QSpinBox()
+        prio.setRange(-100, 100)
+        prio.setValue(int(j.get("priority") or 0))
+        group = QLineEdit(j.get("group") or "")
+        for lab, w in (("Command", cmd), ("Name", name), ("Memory GB", mem), ("Cores", cores), ("Priority", prio), ("Group", group)):
+            f.addRow(lab, w)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(btn("Cancel", d.reject))
+        row.addWidget(btn("Save", d.accept, "primary"))
+        f.addRow(row)
+        if d.exec():
+            ok, msg = Qm.edit(j["id"], cmd=cmd.text(), name=name.text(), mem_gb=mem.value(), cores=cores.value(),
+                              priority=prio.value(), group=group.text().strip() or None)
+            if not ok:
+                QMessageBox.warning(self, "Change job", msg)
+            self.refresh()
+
+    def send_input(self):
+        ids = self.selected()
+        if not ids:
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, "Send input", f"Line to type into job {ids[0]} (started with --stdin):")
+        if ok:
+            out = self._ms("q", "send", str(ids[0]), text)
+            if out.strip():
+                QMessageBox.information(self, "Send input", out)
+
+    def groups(self):
+        self._text_dialog("Groups and flaky jobs", "GROUPS (limits in config/groups.conf)\n" + self._ms("q", "groups")
+                          + "\n\nFLAKY (failed, then passed on retry without changes)\n" + self._ms("q", "flaky"))
 
     def warnings(self):
         ids = self.selected()
@@ -1723,6 +1807,7 @@ class RunLogsPage(Page):
         row.addWidget(self.count)
         row.addWidget(btn("Search folders again", self.rescan))
         row.addWidget(btn("Check format", self.check))
+        row.addWidget(btn("Compare runs", self.compare))
         row.addWidget(btn("Open folder", self.open_folder))
         lay.addLayout(row)
         split = QSplitter(Qt.Orientation.Vertical)
@@ -1907,6 +1992,46 @@ class RunLogsPage(Page):
         r = self.current()
         if r:
             QDesktopServices.openUrl(QUrl.fromLocalFile(r["folder"]))
+
+    def compare(self):
+        """Params and metrics side by side (DVC exp show): runs of the selected run's folder, else the filtered list."""
+        from mysys import runlog as RL
+        r = self.current()
+        runs = [x for x in self._shown if x["folder"] == r["folder"]] if r else list(getattr(self, "_shown", []))
+        if len(runs) < 2:
+            runs = list(getattr(self, "_shown", []))
+        if not runs:
+            return
+        sort = self.metric.currentText() or None
+        header, rows = RL.compare_table(runs[:500], sort, desc=True)
+        d = QDialog(self)
+        d.setWindowTitle(f"Compare {len(rows)} runs" + (f" — best {sort} first" if sort else ""))
+        d.resize(1100, 640)
+        l_ = QVBoxLayout(d)
+        info = QLabel("Only columns that differ between the runs are shown (p: = parameter). Sorted by the trend metric.")
+        info.setObjectName("muted")
+        l_.addWidget(info)
+        t = table(header, 0)
+        t.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for k, v in enumerate(row):
+                t.setItem(i, k, NumItem(v, "{:.4g}") if isinstance(v, (int, float)) and not isinstance(v, bool) else cell(str(v)))
+        t.setSortingEnabled(True)
+        l_.addWidget(t, 1)
+        b = QHBoxLayout()
+        b.addStretch()
+
+        def save():
+            fn, _ = QFileDialog.getSaveFileName(d, "Save CSV", str(Path.home() / "runs_compare.csv"), "CSV (*.csv)")
+            if fn:
+                with open(fn, "w", newline="") as fh:
+                    w = csv.writer(fh)
+                    w.writerow(header)
+                    w.writerows(rows)
+        b.addWidget(btn("Save as CSV…", save))
+        b.addWidget(btn("Close", d.close))
+        l_.addLayout(b)
+        d.exec()
 
     def nav_status(self):
         if self._sig is None:
@@ -2120,6 +2245,57 @@ class SettingsPage(Page):
 
 
 # ======================= sidebar =======================
+class HistoryPage(Page):
+    title, icon, fallback = "History", "document-open-recent", "document-open-recent"
+
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("History", "What the machine was doing at any minute of the last days: load, free RAM, swap, "
+                                        "temperature, memory/disk stalls, the biggest programs and the jobs that ran. "
+                                        "After an unexpected stop (power loss, freeze) you get a notification with the cause."))
+        row = QHBoxLayout()
+        self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(-1800))
+        self.when.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.when.setCalendarPopup(True)
+        self.span = QSpinBox()
+        self.span.setRange(1, 720)
+        self.span.setValue(15)
+        self.span.setSuffix(" min around it")
+        row.addWidget(QLabel("Time"))
+        row.addWidget(self.when)
+        row.addWidget(self.span)
+        row.addWidget(btn("Show", self.show_time, "primary"))
+        row.addWidget(btn("Last hour", lambda: self._run(["replay", "60m", "--span", "60m", "--brief"])))
+        row.addWidget(btn("Unexpected stops", lambda: self._run(["replay", "crashes"])))
+        row.addStretch()
+        lay.addLayout(row)
+        self.view = mono(QPlainTextEdit())
+        self.view.setReadOnly(True)
+        lay.addWidget(self.view, 1)
+        self._shown = False
+
+    def _run(self, args):
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, timeout=60)
+        self.view.setPlainText(r.stdout + r.stderr)
+
+    def show_time(self):
+        self._run(["replay", self.when.dateTime().toString("yyyy-MM-dd HH:mm"), "--span", f"{self.span.value()}m"])
+
+    def refresh(self):
+        if not self._shown:
+            self._shown = True
+            self._run(["replay", "60m", "--span", "60m", "--brief"])
+
+    def nav_status(self):
+        try:
+            lines = (REPORTS / "crashes.log").read_text().splitlines()
+        except OSError:
+            return "recording every minute", None
+        last = lines[-1].split("\t")[0] if lines else ""
+        return (f"last unexpected stop {last}", "warn") if last else ("recording every minute", None)
+
+
 class NavItem(QWidget):
     def __init__(self, page):
         super().__init__()
@@ -2147,8 +2323,8 @@ class NavItem(QWidget):
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    PAGES = [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, StoragePage, SystemPage, ProjectsPage, BackupPage, GuardPage,
-             ReportsPage, SoftwarePage, InventoryPage, NotifyPage, SettingsPage]
+    PAGES = [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, StoragePage, SystemPage, HistoryPage, ProjectsPage,
+             BackupPage, GuardPage, ReportsPage, SoftwarePage, InventoryPage, NotifyPage, SettingsPage]
 
     def __init__(self):
         super().__init__()

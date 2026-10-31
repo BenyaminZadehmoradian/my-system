@@ -3,8 +3,8 @@
 Safety:
   * Every test job runs in a SEPARATE, temporary my-system (own queue, own state, own config) under a
     scratch folder; the real queue, its jobs and your running simulations are never touched or signalled.
-  * Test jobs are tiny (echo/sleep, at most ~150 MB RAM for one memory-limit test), run with nice 19 and
-    ionice idle, one or two at a time. The whole test takes 1–3 minutes.
+  * Test jobs are tiny (echo/sleep, at most ~400 MB RAM for one memory-limit test), run with nice 19 and
+    ionice idle, one or two at a time. The whole test takes 2–5 minutes (more while the machine is busy).
   * Checks of the real installation only read (scheduler alive, hardware data age, MCP registration …).
 """
 import json
@@ -25,6 +25,7 @@ for d in ("lib", "plugins", "runlog"):
     sys.path.insert(0, os.path.join(MS, d))
 from mysys import probes, queue, flow, runlog, lineage
 probes.loadavg = lambda: (0.0, 0.0, 0.0)      # test jobs are tiny: ignore the real machine's load here
+probes.PSI_DIR = "/nonexistent"              # real memory/disk pressure must not hold back test jobs
 S = queue.Scheduler()
 RES = []
 def ok(name, cond, detail=""):
@@ -127,6 +128,56 @@ if queue.cgroup_ok():
     ok("memory limit stops a job that uses too much RAM", jm["state"] == "failed" and "memory" in (jm.get("reason") or ""), jm.get("reason"))
 else:
     RES.append(("memory limit (systemd user scope)", None, "not available on this system — jobs run without a hard RAM limit"))
+
+# 7. (1.6) groups, explain, edit, input, OOM priority, flaky, race
+open(os.path.join(MS, "config", "groups.conf"), "w").write("t_grp 1\n")
+g1 = queue.submit("sleep 2", cwd=W, name="t_g1", group="t_grp", **small)
+g2 = queue.submit("sleep 2", cwd=W, name="t_g2", group="t_grp", **small)
+until(lambda: st(g1["id"]) in queue.TERMINAL and st(g2["id"]) in queue.TERMINAL)
+k1, k2 = queue.load(g1["id"]), queue.load(g2["id"])
+ovl = k1.get("started") and k2.get("started") and k1["started"] < k2["ended"] and k2["started"] < k1["ended"]
+ok("group limit is respected (no overlap)", k1["state"] == k2["state"] == "done" and not ovl, f"{k1['state']} {k2['state']}")
+h = queue.submit("echo edited-$X", cwd=W, name="t_edit", state="held", **small)
+ex = queue.explain(h["id"])
+ok("explain lists the conditions of a waiting job", any(c == "RAM" for _, c, _ in ex) and any(c == "CPU" for _, c, _ in ex), str(ex[:2]))
+e_ok, e_msg = queue.edit(h["id"], cmd="echo edited-ok", mem_gb=0.3)
+queue.release(h["id"])
+until(lambda: st(h["id"]) in queue.TERMINAL)
+ok("a waiting job can be edited", e_ok and "edited-ok" in open(queue.LOGS / f"{h['id']}.log").read(), e_msg)
+from mysys import qcli
+i = queue.submit("read l; echo got-$l; cat /proc/self/oom_score_adj > adj.txt", cwd=W, name="t_stdin", stdin=True, **small)
+until(lambda: st(i["id"]) == "running", 30)
+t0 = time.time()
+while qcli.send_input(i["id"], "hello") != 0 and time.time() - t0 < 20:
+    time.sleep(0.5)
+until(lambda: st(i["id"]) in queue.TERMINAL, 30)
+ok("ms q send types into a running job", "got-hello" in open(queue.LOGS / f"{i['id']}.log").read(), st(i["id"]))
+try:
+    adj = int(open(os.path.join(W, "adj.txt")).read())
+except (OSError, ValueError):
+    adj = None
+ok("queue jobs are killed before your desktop if RAM runs out (oom_score_adj)", adj is not None and adj >= 300, str(adj))
+fk = queue.submit("test -f flaky.flag || (touch flaky.flag; exit 1)", cwd=W, name="t_flaky", retries=1, retry_on=["fail"],
+                  retry_delay="1s", **small)
+until(lambda: st(fk["id"]) in queue.TERMINAL and queue.load(fk["id"])["attempt"] == 2, 60)
+ok("flaky job is recognised (failed, then passed unchanged)", queue.load(fk["id"]).get("flaky") is True, queue.load(fk["id"]).get("reason"))
+RF = os.path.join(os.environ["MS_TEST_WORK"], "race.yaml")
+open(RF, "w").write("""
+name: selftest_race
+cwd: %s
+defaults: {mem_gb: 0.2, cores: 1, nice: 19}
+steps:
+  - name: try
+    matrix: {s: [1, 2]}
+    folder: "s{{s}}"
+    stop_when: "good == 1"
+    cmd: "if [ {{s}} = 1 ]; then echo good=1 >> $MSQ_OUTPUTS; else sleep 60; fi"
+""" % os.path.join(os.environ["MS_TEST_WORK"], "race"))
+rr, _ = flow.submit_flow(RF)
+until(lambda: flow.load_flow(rr["id"]).get("notified"), 60)
+rj = {j["name"]: j for j in flow.flow_jobs(rr)}
+ok("race: other variants stop once one reaches the goal", rj.get("try_2", {}).get("race_lost") and flow.flow_state(rr)[2],
+   str({k: v["state"] for k, v in rj.items()}))
 print(json.dumps(RES))
 '''
 
@@ -191,6 +242,28 @@ def live_checks():
     except (OSError, subprocess.TimeoutExpired):
         lg = ""
     out.append(("queue keeps running after log out (linger)", lg == "yes" if lg else None, lg or "unknown"))
+    from . import probes
+    ps = probes.psi()
+    out.append(("kernel pressure information (PSI) available", bool(ps) if ps else None,
+                f"memory stalls {ps.get('memory', {}).get('full', 0):.0f}%, disk stalls {ps.get('io', {}).get('some', 0):.0f}%" if ps
+                else "not provided by this kernel — the queue uses free RAM only"))
+    for mp in dict.fromkeys(config.words("DATA_DISKS") + config.words("NET_SHARES")):
+        r = probes.responsive(mp, 5)
+        out.append((f"{mp} responds", bool(r and os.path.ismount(mp)), "mounted" if r and os.path.ismount(mp)
+                    else ("not answering (hung)" if r is False else "not mounted")))
+    hist = sorted((config.STATE / "history").glob("*.jsonl*"))
+    out.append(("minute-by-minute history is recorded (ms replay)", bool(hist) if hist else None,
+                f"{len(hist)} day(s)" if hist else "starts with the next watcher tick after this update"))
+    pings = [k for k in ("PING_WATCH", "PING_DAILY", "PING_BACKUP", "PING_VERIFY") if (config.get(k) or "").startswith("http")]
+    out.append(("dead-man's switch (alert when the computer stops pinging)", True if pings else None,
+                ", ".join(pings) if pings else "optional: set PING_WATCH in my_system.conf (healthchecks.io)"))
+    try:
+        import urllib.request
+        urllib.request.urlopen("https://api.osv.dev/v1/vulns/PYSEC-2021-1", timeout=10).read(10)
+        osv = True
+    except Exception:
+        osv = None
+    out.append(("vulnerability database (osv.dev) reachable", osv, "" if osv else "offline or blocked — audit skipped"))
     pol = Path("/etc/claude-code/managed-settings.json")
     out.append(("AI policy installed", pol.exists(), ""))
     out.append(("code and config locked", (config.MS / "bin").stat().st_uid == 0, ""))

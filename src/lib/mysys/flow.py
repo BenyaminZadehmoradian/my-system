@@ -52,7 +52,7 @@ STEP_KEYS = {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix
              "protect", "ensure", "keep_incomplete", "publish", "junit", "quality_gate", "follow", "exit_codes",
              "warn_patterns", "resources", "disk_gb", "disk_path", "benchmark", "cache_mode", "rerun_on", "cache",
              "on_error", "secrets", "notify", "begin", "deadline", "collapse_key", "max_parallel", "require_outputs",
-             "respect_reservations"}
+             "respect_reservations", "stop_when", "stop_after", "group", "labels", "stdin"}
 DEFAULT_KEYS = STEP_KEYS - {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix_mode", "matrix_csv",
                             "folder", "depends", "description", "foreach", "flow", "with", "wait", "approval"}
 PASS_KEYS = ["mem_gb", "cores", "gpus", "priority", "retries", "retry_on", "retry_delay", "retry_backoff",
@@ -60,7 +60,8 @@ PASS_KEYS = ["mem_gb", "cores", "gpus", "priority", "retries", "retry_on", "retr
              "preempt", "tool", "incremental", "dep_mode", "signal_before", "kill_seq", "scratch", "protect", "ensure",
              "keep_incomplete", "quality_gate", "exit_codes", "warn_patterns", "resources", "disk_gb", "benchmark",
              "cache_mode", "rerun_on", "cache", "secrets", "notify", "collapse_key", "max_parallel", "require_outputs",
-             "respect_reservations", "repeat", "approval", "stub", "begin", "deadline"]
+             "respect_reservations", "repeat", "approval", "stub", "begin", "deadline", "stop_when", "stop_after",
+             "group", "labels", "stdin"]
 PH = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 LATE = re.compile(r"^steps\.[A-Za-z0-9_.+-]+\.(outputs|metrics)\.[A-Za-z0-9_]+$")
 
@@ -751,6 +752,52 @@ def react(sched, jobs):
                         queue.update(x["id"], state="skipped", ended=now, reason=f"flow stopped after #{j['id']} failed")
                     elif how == "terminate" and x["state"] in queue.ACTIVE:
                         queue.cancel(x["id"])
+    # race (stop_when): once enough variants of a step reach the goal, the others are not needed any more
+    from . import expr
+    won = {}
+    for j in jobs:
+        fl = j.get("flow") or {}
+        if not j.get("stop_when") or not fl.get("id") or j["state"] not in queue.SUCCESS:
+            continue
+        key = (fl["id"], fl.get("step"))
+        if j.get("race_ok") is None:
+            names = {}
+            for k, v in (j.get("outputs") or {}).items():
+                try:
+                    names[k] = float(v)
+                except (TypeError, ValueError):
+                    names[k] = v
+            try:
+                from . import runlog
+                r = runlog.read(os.path.join(j["cwd"], runlog.FILENAME)).get(j.get("run_id") or "")
+                names.update((r or {}).get("metrics", {}))
+                ok = bool(expr.evaluate(j["stop_when"], names))
+            except Exception:
+                ok = False
+            queue.update(j["id"], race_ok=ok)
+            j["race_ok"] = ok
+        if j["race_ok"]:
+            won.setdefault(key, []).append(j)
+    for (fid, step), winners in won.items():
+        need = int(winners[0].get("stop_after") or 1)
+        if len(winners) < need:
+            continue
+        wid = winners[0]["id"]
+        for x in jobs:
+            fx = x.get("flow") or {}
+            if fx.get("id") != fid or fx.get("step") != step or x["state"] in queue.TERMINAL:
+                continue
+            why = f"not needed: #{wid} already reached the goal ({x.get('stop_when')})"
+            fx = dict(fx, ignore_failure=True)
+            if x["state"] in queue.ACTIVE:
+                queue.update(x["id"], flow=fx, cond_skip=True, race_lost=True)
+                queue.cancel(x["id"], why)
+            else:
+                queue.update(x["id"], state="skipped", ended=now, reason=why, flow=fx, cond_skip=True, race_lost=True)
+        if not any(r.get("race_told") for r in winners):
+            queue.update(wid, race_told=True)
+            sched.notify("Goal reached", f"#{wid} {winners[0]['name']} met {winners[0]['stop_when']} — "
+                                         f"remaining variants of step {step} stopped", "default", "trophy")
     # halt rules (GNU Parallel --halt)
     for rec in flows():
         h = rec.get("halt")

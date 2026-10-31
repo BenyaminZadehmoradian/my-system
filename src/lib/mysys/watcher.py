@@ -9,6 +9,8 @@ Per tick:
   * "good moment to reboot" when an update needs a reboot and nothing has run for 10 min
   * watchdog: daily report / backup stopped happening
   * hourly sample to reports/metrics.csv
+  * (1.6) per-minute history for `ms replay`, report after an unexpected stop, RAM-exhausted and thrashing
+    warnings, hung/missing disks and network shares, heartbeat ping (PING_WATCH)
 """
 import csv
 import json
@@ -280,6 +282,47 @@ def tick():
 
     cur = track_jobs(s, now, conf)
 
+    # 1.6: crash report, time-travel record, memory early warning, thrashing, hung shares, heartbeat
+    from . import history
+    try:
+        history.check_unclean(notify)
+    except Exception:
+        pass
+    try:
+        history.record(s, [f"{j.get('tool')} in {short(j.get('cwd', ''), 2)}" for j in cur])
+    except Exception:
+        pass
+    m = probes.meminfo()
+    tot, av = m.get("MemTotal", 0), m.get("MemAvailable", 0)
+    if tot and av < tot * float(config.num("LOW_MEM_PCT") or 5) / 100 and rate_ok(s, "lowmem", 900):
+        big = ", ".join(f"{n} {r / 2**30:.1f} GB" for _, n, r, _ in probes.top_procs(3))
+        notify("RAM almost exhausted", f"only {av / 2**30:.1f} GB of {tot / 2**30:.0f} GB free. Biggest: {big}. "
+                                       "Queue jobs are paused automatically; save your work in open programs.", "urgent", "rotating_light")
+    pm = probes.psi().get("memory", {}).get("full", 0)
+    lim = float(config.num("PSI_ALERT_MEM_FULL") or 0)
+    s["thrash_ticks"] = s.get("thrash_ticks", 0) + 1 if lim and pm >= lim else 0
+    if s["thrash_ticks"] >= 2 and rate_ok(s, "thrash", 3600):
+        notify("Machine is thrashing", f"all programs waited for memory {pm:.0f}% of the time in the last 10 s — "
+                                       "it feels frozen. Stop or pause a big job (ms q suspend ID).", "high", "snail")
+    mst = s.setdefault("mounts", {})
+    for mp in dict.fromkeys(config.words("DATA_DISKS") + config.words("NET_SHARES")):
+        r = probes.responsive(mp, 5)
+        st = "ok" if r and os.path.ismount(mp) else ("hung" if r is False else "missing")
+        old_st = mst.get(mp, "ok")
+        if st != old_st:
+            if st == "hung":
+                notify("Share not responding", f"{mp} does not answer (network or server problem). "
+                                               "Programs reading it will hang until it is back.", "high", "warning")
+            elif st == "missing":
+                notify("Disk not mounted", f"{mp} is not mounted. Jobs and backups that need it will wait or fail.",
+                       "high", "warning")
+            elif old_st in ("hung", "missing"):
+                notify("Disk back", f"{mp} is available again.", "low", "white_check_mark")
+        mst[mp] = st
+    if now - s.get("ping_watch", 0) >= 290:
+        s["ping_watch"] = now
+        config.ping("watch")
+
     # overload advice
     l1 = probes.loadavg()[0]
     th = probes.threads()
@@ -332,7 +375,7 @@ def tick():
     if now - s.get("last_metric", 0) >= 3600 - 30:
         s["last_metric"] = now
         m = probes.meminfo()
-        dd = [probes.disk(x) for x in config.words("DATA_DISKS")]
+        dd = [probes.disk(x) for x in config.words("DATA_DISKS") if s.get("mounts", {}).get(x, "ok") == "ok"]
         dd = next((x for x in dd if x), None)
         row = [time.strftime("%Y-%m-%d %H:%M"),
                f"{d[0] / d[2] * 100:.1f}" if d else "", f"{d[1] / 2**30:.1f}" if d else "",

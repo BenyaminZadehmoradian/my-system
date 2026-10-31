@@ -32,6 +32,24 @@ DEFAULTS = {
     "REBOOT_HINT": "1",
     "REPORT_KEEP_DAYS": "60",
     "NTFY_SERVER": "https://ntfy.sh",
+    # 1.6: pressure, fairness, safety
+    "QUEUE_PSI_MEM_FULL": "10",     # % of time all tasks stalled on memory (avg 10 s) — no new jobs above this
+    "QUEUE_PSI_IO_SOME": "80",      # % of time some task stalled on disk I/O — no new jobs above this
+    "QUEUE_STARVE_MIN": "30",       # a job waiting this long for RAM/CPU gets room kept free for it
+    "QUEUE_BACKFILL_MIN": "20",     # ... but jobs expected to finish within this many minutes may still use the room
+    "QUEUE_PIN_CPUS": "0",          # 1 = give each job its own CPU cores (taskset)
+    "QUEUE_OOM_SCORE_ADJ": "300",   # queue jobs are killed before your desktop / interactive tools if RAM runs out
+    "QUEUE_SLOW_FACTOR": "2",       # tell me when a job runs this many times longer than usual
+    "LOW_MEM_PCT": "5",             # urgent warning when available RAM drops below this
+    "PSI_ALERT_MEM_FULL": "20",     # warning when the machine is thrashing (memory full pressure, % of time)
+    "HISTORY_KEEP_DAYS": "14",      # per-minute record of load/RAM/top processes (ms replay)
+    "AUDIT_KEEP_MONTHS": "12",
+    "NOTIFY_LOG_MAX_MB": "5",
+    "OSV_AUDIT": "1",               # weekly check of Python packages against the OSV vulnerability database
+    "BACKUP_SPOT_FILES": "20",
+    "BACKUP_COUNT_TOLERANCE_PCT": "10",
+    "BACKUP_REPO_CHECK_DAYS": "90",
+    # dead-man's-switch URLs (healthchecks.io or compatible, optional): PING_WATCH PING_DAILY PING_BACKUP PING_VERIFY
 }
 
 
@@ -162,3 +180,18 @@ def backup_state():
     if backup_repo():
         return "first", "configured, first backup not finished yet"
     return "off", "not set up (ms backup-setup)"
+
+
+def ping(name, what=""):
+    """Healthchecks-style ping: PING_<NAME> url [+ /start | /fail | /<exit code>]. Never raises, never blocks long."""
+    url = (load().get(f"PING_{name.upper()}") or "").strip()
+    if not url.startswith(("https://", "http://")):
+        return False
+    if what and what not in ("ok", "0"):
+        url = url.rstrip("/") + "/" + str(what)
+    try:
+        import urllib.request
+        urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "my-system"}), timeout=10).read(64)
+        return True
+    except Exception:
+        return False

@@ -21,13 +21,20 @@ Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and
     files       --follow vivado.log  --scratch [ram|PATH]  --outputs GLOB  --inputs GLOB
     other       --name N  --nice N  --no-limit  --container IMG  --host SSH  --env K=V  --require "mounted /mnt/data"
                 --approval "text" (wait for ms q approve)  --notify always|failure|never  --secret NAME  --wait
-  ms q [list] [--all]                jobs (finished ones only with --all)
+                --group G (limit per group in config/groups.conf)  --label L  --stdin (accept ms q send)
+  ms q [list] [--all] [--state S] [--name RE] [--label L] [--group G] [--json]   jobs
   ms q show ID | log ID | stat ID    details | output | memory/CPU over time
   ms q cancel|hold|release|suspend|resume|retry|requeue|top|approve|reject ID ...
   ms q clone ID                      run a job again with the same settings
   ms q wait ID                       block until the job ends; exit code 0 = success
   ms q prio ID P                     change priority (higher runs first)
   ms q why ID                        why a job would run again (what changed)
+  ms q explain ID                    why a waiting job has not started: every condition, pass/fail
+  ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] [--env K=V]
+  ms q send ID TEXT                  type a line into a running job started with --stdin
+  ms q groups                        groups, their limits and how many jobs run in each
+  ms q flaky                         steps that failed and then passed on retry without changes
+  ms q cancel|hold|release --group G every job of a group
   ms q warnings ID                   new / fixed / outstanding warnings vs. the previous run
   ms q history [--days 7] [--state failed] [--name REGEX]
   ms q eta                           estimated start time of waiting jobs
@@ -99,7 +106,9 @@ step        name cmd depends[steps] dep_mode(ok|any|notok) folder
   logic     when "expr" (skip if false)  assert "expr" (fail if false)  approval "text"  flow: other.yaml with{...}
             wait{file,until HH:MM,duration,cmd,timeout,interval}  repeat{until_exit|until cmd, interval, limit}
   resources mem_gb cores gpus resources{name:n} disk_gb disk_path max_parallel tool nice limit_memory
-            when_idle preempt priority begin deadline collapse_key respect_reservations
+            when_idle preempt priority begin deadline collapse_key respect_reservations group labels[..] stdin
+  race      stop_when "expr on outputs/metrics" (e.g. "wns >= 0") stop_after N — once N variants of the step reach
+            the goal, the others are stopped and do not count as failures
   failure   retries retry_on[oom,timeout,fail,any] retry_exit_codes[..] retry_delay retry_backoff retry_max_delay
             retry_delays[30s,2m,10m] retry_scale{mem,time} timeout(2h|auto|300%) idle_timeout signal_before(USR1@300)
             kill_seq(TERM,30,KILL) exit_codes{1: warning} warn_patterns[...] on_error(terminate|finish|ignore|retry)
@@ -118,6 +127,43 @@ def _ids(a):
     for x in a:
         out += [int(y) for y in str(x).split(",") if y.strip()]
     return out
+
+
+def filter_jobs(js, a):
+    """--state S[,S2] --name REGEX --label L --group G (pueue/squeue style filters)."""
+    import re as _re
+
+    def arg(k):
+        return a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None
+    st, nm, lb, gr = arg("--state"), arg("--name"), arg("--label"), arg("--group")
+    if st:
+        js = [j for j in js if j["state"] in st.split(",")]
+    if nm:
+        js = [j for j in js if _re.search(nm, j.get("name", ""))]
+    if lb:
+        js = [j for j in js if lb in (j.get("labels") or [])]
+    if gr:
+        js = [j for j in js if j.get("group") == gr]
+    return js
+
+
+def send_input(jid, text):
+    j = queue.load(jid)
+    if not j or j["state"] != "running":
+        print(f"job {jid} is not running")
+        return 1
+    if not j.get("stdin"):
+        print(f"job {jid} was not started with --stdin")
+        return 1
+    fifo = queue.LOGS / f"{jid}.in"
+    try:
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        print("the job is not reading input yet — try again in a few seconds")
+        return 1
+    with os.fdopen(fd, "w") as f:
+        f.write(text + "\n")
+    return 0
 
 
 def _fmt_t(t):
@@ -140,11 +186,12 @@ ADD_SIMPLE = {"--name": "name", "--mem": "mem_gb", "--cores": "cores", "--priori
               "--nice": "nice", "--idle-timeout": "idle_timeout_s", "--signal-before": "signal_before",
               "--kill-seq": "kill_seq", "--retry-delay": "retry_delay", "--retry-backoff": "retry_backoff",
               "--begin": "begin", "--deadline": "deadline", "--collapse": "collapse_key", "--disk-gb": "disk_gb",
-              "--disk-path": "disk_path", "--approval": "approval", "--notify": "notify", "--benchmark": "benchmark"}
+              "--disk-path": "disk_path", "--approval": "approval", "--notify": "notify", "--benchmark": "benchmark",
+              "--group": "group"}
 ADD_LIST = {"--require": "require", "--follow": "follow", "--outputs": "outputs", "--inputs": "inputs",
-            "--warn-pattern": "warn_patterns", "--secret": "secrets", "--junit": "junit"}
+            "--warn-pattern": "warn_patterns", "--secret": "secrets", "--junit": "junit", "--label": "labels"}
 ADD_FLAG = {"--no-limit": ("limit_memory", False), "--when-idle": ("when_idle", True), "--preempt": ("preempt", True),
-            "--protect": ("protect", True)}
+            "--protect": ("protect", True), "--stdin": ("stdin", True)}
 
 
 def parse_add(a):
@@ -212,10 +259,14 @@ def parse_add(a):
 
 
 def q_cmd(a):
-    if not a or a[0] in ("list", "ls") or a[0].startswith("--all"):
+    if not a or a[0] in ("list", "ls") or a[0].startswith("--"):
         show_all = "--all" in a
         js = [j for j in queue.all_jobs() if show_all or j["state"] not in queue.TERMINAL
               or time.time() - (j.get("ended") or 0) < 3600]
+        js = filter_jobs(js, a)
+        if "--json" in a:
+            print(json.dumps(js, indent=1, default=str))
+            return 0
         st, _ = queue.daemon_state()
         print(f"scheduler: {st}   ({len(js)} job(s) shown; --all for history)")
         print(f"{'id':>5} {'state':<9} {'pri':>3} {'name':<26} {'flow:step':<20} {'mem':>6} {'cpu':>5} {'time':>7}  note")
@@ -293,6 +344,12 @@ def q_cmd(a):
                "resume": queue.resume, "retry": queue.retry, "requeue": queue.requeue, "top": queue.top,
                "approve": lambda i: queue.approve(i, True), "reject": lambda i: queue.approve(i, False)}
     if sub in actions:
+        if "--group" in a:
+            g = a[a.index("--group") + 1]
+            ids = [i for i in queue.in_group(g) if (queue.load(i) or {}).get("state") not in queue.TERMINAL]
+            n = sum(1 for i in ids if actions[sub](i))
+            print(f"{sub}: {n} job(s) of group {g}")
+            return 0
         bad = [i for i in _ids(a) if not actions[sub](i)]
         if bad:
             print(f"not possible for: {', '.join(map(str, bad))} (check their state with ms q)")
@@ -317,6 +374,68 @@ def q_cmd(a):
         r = queue.why_rerun(j)
         print("up to date — would be skipped" if not r else "would run because:\n  " + "\n  ".join(r))
         return 0
+    if sub == "explain":
+        rows = queue.explain(_ids(a)[0])
+        for ok, check, detail in rows:
+            mark = "  ok " if ok else "  NO "
+            if check == "suggestion":
+                mark = "  -> "
+            print(f"{mark} {check:<34} {detail}")
+        return 0
+    if sub == "edit":
+        if not a:
+            print("usage: ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] [--env K=V]")
+            return 2
+        jid, rest, kw = int(a[0]), a[1:], {}
+        names = {"--cmd": "cmd", "--mem": "mem_gb", "--cores": "cores", "--priority": "priority", "--name": "name",
+                 "--timeout": "timeout_s", "--group": "group", "--retries": "retries", "--nice": "nice", "--cwd": "cwd"}
+        i = 0
+        while i < len(rest):
+            k = rest[i]
+            v = rest[i + 1] if i + 1 < len(rest) else None
+            if k in names and v is not None:
+                kw[names[k]] = v
+            elif k == "--env" and v:
+                kk, _, vv = v.partition("=")
+                kw.setdefault("env", {})[kk] = vv
+            elif k == "--label" and v:
+                kw.setdefault("labels", []).append(v)
+            else:
+                print(f"unknown option {k}")
+                return 2
+            i += 2
+        for k in ("retries", "nice"):
+            if k in kw:
+                kw[k] = int(kw[k])
+        ok, msg = queue.edit(jid, **kw)
+        print(msg)
+        return 0 if ok else 1
+    if sub == "send":
+        if len(a) < 2:
+            print("usage: ms q send ID TEXT")
+            return 2
+        return send_input(int(a[0]), " ".join(a[1:]))
+    if sub == "groups":
+        lim = queue.groups()
+        js = queue.all_jobs()
+        names = sorted(set(lim) | {j["group"] for j in js if j.get("group")})
+        if not names:
+            print("no groups. Define limits in config/groups.conf ('vivado 3') and add jobs with --group vivado")
+            return 0
+        print(f"{'group':<20} {'limit':>5} {'running':>7} {'waiting':>7}")
+        for g in names:
+            run = sum(1 for j in js if j.get("group") == g and j["state"] in queue.ACTIVE)
+            wait = sum(1 for j in js if j.get("group") == g and j["state"] in ("queued", "held", "approval"))
+            print(f"{g:<20} {str(lim.get(g, '–')):>5} {run:>7} {wait:>7}")
+        return 0
+    if sub == "flaky":
+        d = queue.flaky()
+        if not d:
+            print("no flaky jobs recorded")
+            return 0
+        for k, e in sorted(d.items(), key=lambda kv: -kv[1]["count"]):
+            print(f"{e['count']:>4}x  {k:<50} last {_fmt_t(e.get('last'))}  jobs {', '.join(map(str, e['jobs'][-5:]))}")
+        return 0
     if sub == "warnings":
         from . import issues, jobrun
         j = queue.load(_ids(a)[0])
@@ -336,7 +455,7 @@ def q_cmd(a):
         days = float(a[a.index("--days") + 1]) if "--days" in a else 7
         st = a[a.index("--state") + 1] if "--state" in a else None
         nm = a[a.index("--name") + 1] if "--name" in a else None
-        for j in queue.history(days, st, nm):
+        for j in filter_jobs(queue.history(days, st, nm), a):
             print(_row(j))
         return 0
     if sub == "eta":

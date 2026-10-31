@@ -350,7 +350,10 @@ def scan(outdated=True, ldd=True, budget_s=900):
         data["recent_runs"] = {}
     # processes still using replaced libraries
     _, deleted = maps_in_use()
-    data["restart_needed"] = sorted({f"{comm} (pid {pid})" for s in deleted.values() for pid, comm in s})[:100]
+    rn = {f"{comm} (pid {pid})" for s in deleted.values() for pid, comm in s}
+    rn |= {f"{comm} (pid {pid}, program file replaced)" for pid, comm in replaced_executables()}
+    data["restart_needed"] = sorted(rn)[:100]
+    data["vulns"] = (load_audit() or {}).get("findings", [])
     data["duration_s"] = round(time.time() - t0, 1)
     CACHE.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(data, indent=1, default=list))
@@ -437,6 +440,11 @@ def advise(data):
             rows.append({"kind": "python", "name": f"broken environment {_short(vp)}", "old": "", "new": "",
                          "used_by": ", ".join(_short(p) for p in users_of_venv(data, vp)) or "—",
                          "advice": "its Python interpreter is gone (system upgrade?) — recreate it", "level": "test"})
+    for f in data.get("vulns") or (load_audit() or {}).get("findings", []):
+        rows.append({"kind": "pip security", "name": f["package"], "old": f["version"], "new": f.get("fixed") or "?",
+                     "used_by": ", ".join(f.get("projects") or []) or "—",
+                     "advice": f"known vulnerability {', '.join(f['ids'][:2])}" + (f": {f['summary'][:80]}" if f.get("summary") else "")
+                               + " — update it, then run the projects' tests", "level": "test"})
     for p in data.get("restart_needed") or []:
         rows.append({"kind": "restart", "name": p, "old": "", "new": "", "used_by": "—",
                      "advice": "still uses a library that an update replaced — restart it when convenient", "level": "wait"})
@@ -497,7 +505,8 @@ def summary_text(data):
          f"  snap / flatpak   {sum(1 for u in data['updates'] if u['kind'] == 'snap')} / {sum(1 for u in data['updates'] if u['kind'] == 'flatpak')}",
          f"  pip (outdated)   {pip} in {sum(1 for v in data['venvs'].values() if v.get('outdated'))} environment(s)",
          f"  Python EOL       {len(eol)} environment(s)" + (f": {', '.join(_short(x) for x in eol)}" if eol else ""),
-         f"  restart needed   {len(data.get('restart_needed') or [])} program(s) use replaced libraries",
+         f"  restart needed   {len(data.get('restart_needed') or [])} program(s) use replaced libraries or program files",
+         f"  vulnerabilities  {len(data.get('vulns') or [])} Python package version(s) with known security issues (ms software audit)",
          f"  projects mapped  {len(data['projects'])} · environments {len(data['venvs'])} · toolchains {len(data['tools'])}", ""]
     groups = {"reboot": "Needs a reboot", "wait": "Wait until runs finish", "test": "Update, then test the users listed",
               "ok": "Safe to update now"}
@@ -576,6 +585,124 @@ def write_report(day_dir=None):
     return d / "software.txt"
 
 
+# ---------------------------------------------------------------- 1.6: replaced programs, known vulnerabilities
+def replaced_executables():
+    """[(pid, comm)] of your processes whose program file was replaced by an update (needrestart -t)."""
+    out = []
+    uid = os.getuid()
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            if p.stat().st_uid != uid:
+                continue
+            exe = os.readlink(p / "exe")
+            if exe.endswith(" (deleted)"):
+                out.append((int(p.name), (p / "comm").read_text().strip()))
+        except OSError:
+            continue
+    return out
+
+
+AUDIT = config.STATE / "vulns.json"
+OSV_BATCH = "https://api.osv.dev/v1/querybatch"
+OSV_VULN = "https://api.osv.dev/v1/vulns/"
+
+
+def load_audit():
+    try:
+        return json.loads(AUDIT.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _post(url, body, timeout=60):
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json",
+                                                                             "User-Agent": "my-system"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _get(url, timeout=30):
+    import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "my-system"}), timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _fixed_in(vuln, pkg):
+    for a in vuln.get("affected") or []:
+        if (a.get("package") or {}).get("name", "").lower() != pkg.lower():
+            continue
+        for r in a.get("ranges") or []:
+            for e in r.get("events") or []:
+                if e.get("fixed"):
+                    return e["fixed"]
+    return ""
+
+
+def audit(data=None, post=None, get=None):
+    """Check every Python package in every environment against the OSV database (osv.dev, like pip-audit).
+    Only package names and versions are sent. Result in state/vulns.json; returns it."""
+    post, get = post or _post, get or _get
+    data = data or load() or {}
+    pkgs = {}
+    for vp, v in (data.get("venvs") or {}).items():
+        for name, info in (v.get("packages") or {}).items():
+            ver = info.get("version") if isinstance(info, dict) else info
+            if ver:
+                pkgs.setdefault((name, ver), []).append(vp)
+    keys = sorted(pkgs)
+    found, errors = [], ""
+    details = {}
+    try:
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            res = post(OSV_BATCH, {"queries": [{"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in chunk]})
+            for (n, v), r in zip(chunk, res.get("results") or []):
+                ids = [x["id"] for x in r.get("vulns") or []]
+                if ids:
+                    found.append({"package": n, "version": v, "ids": ids, "venvs": pkgs[(n, v)]})
+        for f in found[:80]:                 # details (summary, fixed version) for the first ones
+            for vid in f["ids"][:3]:
+                if vid not in details:
+                    try:
+                        details[vid] = get(OSV_VULN + vid)
+                    except Exception:
+                        details[vid] = {}
+            f["summary"] = next((details[x].get("summary") for x in f["ids"][:3] if details.get(x, {}).get("summary")), "")
+            fixes = [_fixed_in(details.get(x, {}), f["package"]) for x in f["ids"][:3]]
+            f["fixed"] = max((x for x in fixes if x), key=lambda x: [int(p) if p.isdigit() else 0 for p in re.split(r"[.+-]", x)], default="")
+    except Exception as e:
+        errors = f"{type(e).__name__}: {e}"
+    users = {}
+    for p, d in (data.get("projects") or {}).items():
+        for pk, info in (d.get("packages") or {}).items():
+            users.setdefault((pk.lower(), info.get("venv")), []).append(p)
+    for f in found:
+        f["projects"] = sorted({_short(p) for vp in f["venvs"] for p in users.get((f["package"].lower(), vp), [])})
+    out = {"time": time.time(), "checked": len(keys), "findings": found, "error": errors}
+    if not errors or found:
+        AUDIT.write_text(json.dumps(out, indent=1))
+    return out
+
+
+def audit_text(res):
+    if not res:
+        return "no vulnerability check yet (ms software audit)"
+    lines = [f"checked {res['checked']} Python package versions against osv.dev "
+             f"({time.strftime('%Y-%m-%d', time.localtime(res['time']))})" + (f" — error: {res['error']}" if res.get("error") else "")]
+    if not res["findings"]:
+        lines.append("no known vulnerabilities")
+    for f in res["findings"]:
+        lines.append(f"  {f['package']} {f['version']}: {', '.join(f['ids'][:4])}" + (f" — fixed in {f['fixed']}" if f.get("fixed") else ""))
+        if f.get("summary"):
+            lines.append(f"      {f['summary'][:150]}")
+        lines.append(f"      in: {', '.join(_short(v) for v in f['venvs'][:4])}" +
+                     (f"   used by: {', '.join(f['projects'][:6])}" if f.get("projects") else "   (no project imports it)"))
+    return "\n".join(lines)
+
+
 HELP = """ms software — updates and who uses what (read-only)
 
   ms software                  summary: updates grouped by advice (safe / test / wait / reboot)
@@ -584,6 +711,7 @@ HELP = """ms software — updates and who uses what (read-only)
   ms software plan             suggested update order with the commands to run yourself
   ms software uses NAME        who uses a project / environment / package / library / tool / image
   ms software project NAME     what one project uses (environments, packages, tools, images)
+  ms software audit [--weekly] Python packages with known vulnerabilities (osv.dev; sends only names+versions)
 """
 
 
@@ -609,6 +737,13 @@ def cli(a):
         for r in advise(data):
             print(f"[{r['level']:<6}] {r['kind']:<22} {r['name'][:36]:<36} {str(r['old'])[:14]:>14} → {str(r['new'])[:14]:<14}\n"
                   f"          used by: {r['used_by']}\n          {r['advice']}")
+        return 0
+    if sub == "audit":
+        prev = load_audit()
+        if "--weekly" in a and (not config.num("OSV_AUDIT") or (prev and time.time() - prev["time"] < 6.5 * 86400)):
+            return 0
+        res = audit(data)
+        print(audit_text(res))
         return 0
     if sub == "plan":
         print(plan_text(data))

@@ -214,6 +214,14 @@ MIN_RUN=60               # ignore jobs shorter than this (seconds)
 BATCH_QUIET=300          # summarise a batch folder after it has been idle this long
 REPORT_KEEP_DAYS=60
 NTFY_SERVER="https://ntfy.sh"
+LOW_MEM_PCT=5            # urgent warning when available RAM drops below this (%)
+HISTORY_KEEP_DAYS=14     # per-minute record for "ms replay" (what was running at a given time)
+# Dead-man's switch (optional): a healthchecks.io-style URL per task; you are alerted when pings STOP,
+# e.g. when the computer froze or lost power. Leave empty to disable.
+#PING_WATCH="https://hc-ping.com/your-uuid"     # every 5 minutes while the computer runs
+#PING_DAILY=""                                   # daily check (start / ok / fail)
+#PING_BACKUP=""                                  # each backup (start / ok / exit code)
+#PING_VERIFY=""                                  # monthly restore test
 """
     prot = list(GENERIC_PROTECTED) + [_home_rel(r) for _, r in d["tools"]] + \
         [_home_rel(v["path"]) for v in d["venvs"]] + ["~/My_System"]
@@ -250,6 +258,17 @@ KEEP_MONTHLY=6
 # QUEUE_LOG_MAX_MB=200         # job output above this is rotated
 # SCRATCH_DIR=                 # where scratch folders and job TMPDIRs go (default: the data folder)
 # SHARED_CACHE_DIR=            # cache shared between flows (default: <data folder>/.ms_cache)
+# QUEUE_PSI_MEM_FULL=10        # no new jobs while all programs wait for memory this % of the time
+# QUEUE_PSI_IO_SOME=80         # no new jobs while disk I/O stalls this % of the time
+# QUEUE_STARVE_MIN=30          # a big job waiting this long gets room kept free (smaller jobs cannot overtake it forever)
+# QUEUE_BACKFILL_MIN=20        # ... except jobs that usually finish within this many minutes
+# QUEUE_PIN_CPUS=0             # 1 = each job gets its own physical cores (taskset)
+# QUEUE_OOM_SCORE_ADJ=300      # if RAM runs out, the kernel kills queue jobs before your desktop
+# QUEUE_SLOW_FACTOR=2          # notify when a job runs this many times longer than usual
+"""
+    files["groups.conf"] = """# Job groups: NAME LIMIT — at most LIMIT jobs of the group run at once (ms q add --group NAME, flow key group:)
+# vivado_impl 3
+# sims 6
 """
     files["resources.conf"] = """# Named resources for the job queue: NAME COUNT [check=COMMAND]
 # A job asks with --res NAME=1 (or resources: {NAME: 1} in a flow). Count 1 = an exclusive lock.

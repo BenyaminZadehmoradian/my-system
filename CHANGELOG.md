@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.6.0 — 2026-10-31
+
+Third comparison with similar projects (pueue, below/atop, earlyoom/systemd-oomd, healthchecks.io, borgmatic,
+osv-scanner/pip-audit, needrestart, DVC, HTCondor, Slurm backfill, Jenkins/Buildbot flaky tests).
+
+Queue and flows
+- Pressure-aware starts: no new jobs while the kernel reports memory or disk stalls (PSI); thrashing pauses a job.
+- No starvation: a job that waited longer than QUEUE_STARVE_MIN gets room kept free; only jobs that usually finish
+  within QUEUE_BACKFILL_MIN may still use the gap (Slurm backfill).
+- Groups with their own limit: `--group NAME`, `config/groups.conf`, `ms q groups`, `ms q hold|release|cancel --group`.
+- `ms q explain ID`: every start condition with pass/fail and a suggestion (HTCondor -better-analyze). Also in the app
+  ("Why waiting?") and for AI assistants (MCP `queue_explain`).
+- `ms q edit ID …` changes a waiting job (command, memory, cores, priority, name, timeout, group, env).
+- `ms q send ID TEXT` types a line into a running job started with `--stdin`.
+- Labels (`--label`) and filters: `ms q list --state S --name RE --label L --group G --json`.
+- Queue jobs get oom_score_adj 300: if RAM runs out, the kernel kills them before your desktop/interactive tools.
+- Optional CPU pinning (QUEUE_PIN_CPUS=1): each job gets its own physical cores.
+- Flaky jobs (failed, then passed on retry unchanged) are marked and listed (`ms q flaky`).
+- "Slower than usual" notification when a job runs QUEUE_SLOW_FACTOR × its usual time.
+- Flow race: `stop_when: "wns >= 0"` (+ `stop_after: N`) stops the remaining variants once enough reached the goal;
+  stopped variants do not count as failures and downstream steps still run.
+
+Monitoring
+- Minute-by-minute history (load, RAM, swap, temperature, PSI, biggest programs, jobs): `ms replay TIME`, History page.
+- Report after an unexpected stop (power loss, freeze, out-of-memory hang) with the likely cause and what was running.
+- Warnings: RAM almost exhausted (with the biggest programs), thrashing, data disk / network share not mounted or
+  not answering (checked without ever blocking the watcher), and when it is back.
+- Dead-man's switch: PING_WATCH / PING_DAILY / PING_BACKUP / PING_VERIFY (healthchecks.io-style start/ok/fail pings).
+
+Software, backup, run logs
+- `ms software audit`: Python packages vs. the OSV vulnerability database, with fixed version and affected projects
+  (weekly from the daily job; shown in the update advice, the daily check and the app).
+- Programs whose executable file was replaced by an update are listed for restart (like needrestart).
+- Restore test: spot check where unchanged files must match exactly, file-count drop check, full repository check
+  every BACKUP_REPO_CHECK_DAYS.
+- `ms log compare` / `ms log diff` (DVC exp show / exp diff) and "Compare runs" in the app.
+- `ms housekeeping` (daily): rotates notifications.log, trims AI audit logs, metrics and leftovers of cleared jobs.
+
+Fixes
+- Overview page: the status line ("All good" / "N things need attention") failed to update.
+- A cancelled running job now always gets an end time; cancel keeps its reason.
+
 ## 1.5.3 — 2026-10-31
 
 - Queue: a job killed by the kernel at its memory limit is now reported as "out of memory" (and retried with more RAM

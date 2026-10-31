@@ -194,17 +194,49 @@ class Runner:
     def io_tot(self):
         return sum(v[0] for v in self.io.values()), sum(v[1] for v in self.io.values())
 
+    def stdin_pump(self):
+        """Forward lines written with `ms q send ID TEXT` (a named pipe) to the job's standard input."""
+        fifo = queue.LOGS / f"{self.jid}.in"
+        try:
+            if not fifo.exists():
+                os.mkfifo(fifo, 0o600)
+            fd = os.open(fifo, os.O_RDWR)          # read+write: never blocks, never sees end-of-file
+        except OSError:
+            return
+        with os.fdopen(fd, "r", errors="replace") as f:
+            for line in f:
+                if self.p.poll() is not None:
+                    break
+                try:
+                    self.p.stdin.write(line)
+                    self.p.stdin.flush()
+                    self.write_out(f"[input] {line if line.endswith(chr(10)) else line + chr(10)}")
+                except (OSError, ValueError):
+                    break
+
     # ---------------------------------------------------------- one execution of the command
     def run_once(self, cmd_argv, env, t_start):
         j = self.j
         r_fd, w_fd = os.pipe()
 
+        adj = int(config.num("QUEUE_OOM_SCORE_ADJ") or 0)
+
         def pre():
             os.dup2(w_fd, 3)
             os.set_inheritable(3, True)
+            if adj:                     # if RAM runs out, the kernel kills queue jobs before your desktop/interactive tools
+                try:
+                    with open("/proc/self/oom_score_adj", "w") as f:
+                        f.write(str(adj))
+                except OSError:
+                    pass
+        want_in = bool(j.get("stdin"))
         self.p = subprocess.Popen(cmd_argv, cwd=self.workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.PIPE if want_in else subprocess.DEVNULL,
                                   text=True, errors="replace", bufsize=1, preexec_fn=pre, pass_fds=(w_fd, 3))
         os.close(w_fd)
+        if want_in:
+            threading.Thread(target=self.stdin_pump, daemon=True).start()
         th = threading.Thread(target=self.pump, args=(self.p.stdout,), daemon=True)
         th.start()
         tp = threading.Thread(target=self.fd3, args=(r_fd,), daemon=True)
@@ -224,6 +256,8 @@ class Runner:
         if ser.tell() == 0:
             ser.write("t,rss_gb,cores,read_mb,write_mb\n")
         prev_cpu, prev_t = self.cpu_s(), time.time()
+        usual = queue.usual_seconds(j)
+        slow_f = float(config.num("QUEUE_SLOW_FACTOR") or 0)
         while self.p.poll() is None:
             now = time.time()
             rss = self.sample()
@@ -262,6 +296,12 @@ class Runner:
                     why = "timeout"
                     self.run.log("ERROR", f"time limit of {int(to)} s reached — stopping")
                     self.kill(j.get("kill_seq"))
+            if slow_f and usual >= 300 and el > slow_f * usual and "slow" not in told:
+                told.add("slow")
+                msg = f"running {el / 60:.0f} min, usually {usual / 60:.0f} min"
+                self.run.log("WARN", f"slower than usual: {msg}")
+                queue.update(self.jid, slow=True)
+                notify(f"Slower than usual: {j['name']}", f"#{j['id']} {msg} — check: ms q log {j['id']}", "default", "turtle")
             if idle_to and now - self.last_out > idle_to and not why:
                 why = "idle"
                 self.run.log("ERROR", f"no output for {int(idle_to)} s — stopping")
@@ -358,7 +398,7 @@ class Runner:
         codes = {str(k): v for k, v in (j.get("exit_codes") or {}).items()}
         mapped = codes.get(str(rc))
         if why == "cancelled" or cur.get("state") == "cancelled":
-            status, state, reason = "cancelled", "cancelled", "cancelled by user"
+            status, state, reason = "cancelled", "cancelled", cur.get("cancel_reason") or "cancelled by user"
         elif why == "timeout":
             status, state, reason = "failed", "timeout", f"time limit {int(j['timeout_s'])} s reached"
         elif why == "idle":
@@ -489,10 +529,22 @@ class Runner:
         for k, v in _numify(outs):
             if re.match(r"^[a-z][a-z0-9_]*$", k):
                 self.run.metric(k, v)
+        is_flaky = state in ("done", "warning") and j.get("attempt", 1) > 1 and j.get("prev_fail") == "fail"
+        if is_flaky:
+            key, cnt = queue.mark_flaky(j)
+            reason = (reason + "; " if reason else "") + f"flaky: failed, then passed on retry {j['attempt'] - 1}"
+            self.run.log("WARN", f"flaky: {key} failed and then passed on retry without changes ({cnt}x so far)")
+            if cnt in (1, 3, 10):
+                notify(f"Flaky job: {j['name']}", f"#{j['id']} failed, then passed on retry ({cnt}x for {key}). "
+                                                  "Look for races, random seeds or resource limits.", "default", "warning")
         end_status = "ok" if state in ("done", "warning") else ("cancelled" if state == "cancelled" else "failed")
         self.run.end(end_status, rc=rc if rc is not None else 1, error=None if end_status == "ok" else (reason or "failed"))
         cores_used = self.cpu_s() / secs if secs > 0 else 0
-        queue.update(jid, state=state, rc=rc, ended=time.time(), reason=reason, peak_rss=self.peak, oom=bool(oom),
+        try:
+            (queue.LOGS / f"{jid}.in").unlink()
+        except OSError:
+            pass
+        queue.update(jid, state=state, rc=rc, ended=time.time(), reason=reason, peak_rss=self.peak, oom=bool(oom), flaky=is_flaky,
                      cpu_s=self.cpu_s(), cores_used=round(cores_used, 2), outputs=outs, io_read=rd, io_write=wr,
                      last_line=self.last_line, progress=100 if state in ("done", "warning") else self.progress,
                      issues=summ, diagnosis=diag, junit=ju)

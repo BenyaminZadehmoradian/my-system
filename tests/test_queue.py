@@ -32,6 +32,7 @@ G = 2**30
 AVAIL = [64 * G]
 probes.threads = lambda: 8
 probes.loadavg = lambda: (0.0, 0.0, 0.0)
+probes.PSI_DIR = "/nonexistent"              # real memory/disk pressure must not hold back test jobs
 probes.meminfo = lambda: {"MemTotal": 96 * G, "MemAvailable": AVAIL[0], "SwapTotal": 0, "SwapFree": 0}
 S = queue.Scheduler()
 def run_until(cond, limit=60):

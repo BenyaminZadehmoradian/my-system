@@ -150,6 +150,13 @@ else
   info "no AI activity logged"
 fi
 
+echo; echo "## Stability"
+if [ -s "$MS/reports/crashes.log" ]; then
+  recent=$(awk -F'\t' -v d="$(date -d '-1 day' '+%F %R')" '$1 >= d' "$MS/reports/crashes.log")
+  if [ -n "$recent" ]; then while IFS=$'\t' read -r t c w; do warn "unexpected stop at $t: $c (running: $w) — ms replay '$t'"; done <<< "$recent"
+  else ok "no unexpected stop in the last 24 h ($(wc -l < "$MS/reports/crashes.log") recorded in total)"; fi
+else ok "no unexpected stop recorded"; fi
+
 echo; echo "## Notifications"
 [ -s "$MS/state/ntfy_topic" ] && [ ! -f "$MS/state/ntfy_off" ] && ok "phone notifications on" || info "phone notifications off"
 
@@ -170,6 +177,8 @@ else:
             print(f'  -- Python {i[\"python\"]} in {v} no longer gets security fixes')
     if d.get('restart_needed'):
         print(f'  -- {len(d[\"restart_needed\"])} program(s) still use replaced libraries (restart them)')
+    for f in (S.load_audit() or {}).get('findings', [])[:10]:
+        print(f'  !! {f[\"package\"]} {f[\"version\"]} has a known vulnerability ({f[\"ids\"][0]})' + (f', fixed in {f[\"fixed\"]}' if f.get('fixed') else '') + (f' — used by {\", \".join(f[\"projects\"][:3])}' if f.get('projects') else ''))
 ")
 echo "${sw_out:-  -- no data}"
 while IFS= read -r l; do WARN+=("${l#  !! }"); done < <(grep '^  !! ' <<< "$sw_out")

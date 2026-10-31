@@ -360,3 +360,85 @@ def failed_units():
 def apt_upgradable():
     out = _cmd(["apt", "list", "--upgradable"], 60)
     return [l.split("/")[0] for l in out.splitlines() if "upgradable" in l]
+
+
+# ---------------------------------------------------------------- pressure, responsiveness, processes (1.6)
+PSI_DIR = os.environ.get("MS_PSI_DIR", "/proc/pressure")
+
+
+def psi():
+    """Pressure stall information (kernel PSI): {'cpu': {'some': avg10, ...}, 'memory': {'some', 'full'}, 'io': ...}.
+    'full' memory pressure = every task waited for memory (thrashing). Empty dict when the kernel has no PSI."""
+    out = {}
+    for res in ("cpu", "memory", "io"):
+        try:
+            with open(os.path.join(PSI_DIR, res)) as f:
+                for line in f:
+                    kind, *kv = line.split()
+                    vals = dict(x.split("=") for x in kv)
+                    out.setdefault(res, {})[kind] = float(vals.get("avg10", 0))
+                    out[res][kind + "60"] = float(vals.get("avg60", 0))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def responsive(path, timeout=5.0):
+    """True / False (hung, e.g. a network share that stopped answering) / None (not there).
+    The check runs in a thread so a hung mount cannot block the caller."""
+    import threading
+    res = {}
+
+    def look():
+        try:
+            os.statvfs(path)
+            res["ok"] = True
+        except FileNotFoundError:
+            res["ok"] = None
+        except OSError:
+            res["ok"] = False
+    t = threading.Thread(target=look, daemon=True)
+    t.start()
+    t.join(timeout)
+    return res.get("ok", False) if not t.is_alive() else False
+
+
+def boot_id():
+    return _read("/proc/sys/kernel/random/boot_id").strip()
+
+
+def top_procs(n=8, prev=None):
+    """Biggest processes by RAM: [(pid, name, rss_bytes, cpu_ticks)]. `prev` is unused (kept for callers)."""
+    page = os.sysconf("SC_PAGE_SIZE")
+    rows = []
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            st = (p / "stat").read_text()
+            name = st[st.find("(") + 1:st.rfind(")")]
+            f = st[st.rfind(")") + 2:].split()
+            rows.append((int(p.name), name, int(f[21]) * page, int(f[11]) + int(f[12])))
+        except (OSError, ValueError, IndexError):
+            continue
+    rows.sort(key=lambda r: -r[2])
+    return rows[:n]
+
+
+def cpu_siblings():
+    """[[cpu, sibling], ...] one list per physical core (hyper-threads together)."""
+    seen, cores = set(), []
+    for d in sorted(Path("/sys/devices/system/cpu").glob("cpu[0-9]*"), key=lambda x: int(x.name[3:])):
+        try:
+            txt = (d / "topology" / "thread_siblings_list").read_text().strip()
+        except OSError:
+            continue
+        ids = []
+        for part in txt.split(","):
+            a, _, b = part.partition("-")
+            ids += list(range(int(a), int(b or a) + 1))
+        key = tuple(sorted(ids))
+        if key not in seen:
+            seen.add(key)
+            cores.append(list(key))
+    return cores or [[i] for i in range(threads())]

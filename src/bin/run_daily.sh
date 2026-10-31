@@ -6,6 +6,7 @@
 DAY="$MS/reports/$(date +%F)"
 mkdir -p "$DAY"
 low() { nice -n 19 ionice -c3 "$@"; }
+"$PY" "$MS/bin/ms" ping daily start >/dev/null 2>&1
 
 low "$PY" "$MS/bin/ms" detect --state > /dev/null 2>&1
 low "$MS/bin/inventory.sh" "$DAY/inventory" > /dev/null 2>&1
@@ -14,6 +15,8 @@ low "$PY" "$MS/bin/ms" sizes > "$DAY/sizes.txt" 2>/dev/null
 low "$PY" "$MS/bin/ms" git > "$DAY/git.txt" 2>/dev/null
 low "$PY" "$MS/bin/ms" log index > /dev/null 2>&1
 low "$PY" "$MS/bin/ms" software scan > /dev/null 2>&1
+low "$PY" "$MS/bin/ms" software audit --weekly > /dev/null 2>&1
+low "$PY" "$MS/bin/ms" housekeeping > /dev/null 2>&1
 nice -n 19 "$MS/bin/health_check.sh" "$DAY/health.txt" > "$DAY/summary.txt"
 status=$?
 "$PY" "$MS/bin/ms" ai-context > /dev/null 2>&1
@@ -23,4 +26,5 @@ find "$MS/reports" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??' -mtime +"$
 if [ "$status" -ne 0 ]; then
   "$MS/bin/notify.sh" "Daily check: $(grep -c '^WARN' "$DAY/summary.txt") warning(s)" "$(head -4 "$DAY/summary.txt")" default warning
 fi
+"$PY" "$MS/bin/ms" ping daily "$status" >/dev/null 2>&1
 cat "$DAY/summary.txt"

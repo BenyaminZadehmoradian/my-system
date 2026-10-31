@@ -30,6 +30,9 @@
   ms capacity [TOOL]     how many more jobs fit right now (for you and AI assistants)
   ms hw                  hardware health (disks, memory modules, fans, firmware)
   ms doctor              self-check of my-system itself
+  ms replay TIME         what the machine was doing then (load, RAM, biggest programs, jobs); ms replay crashes
+  ms ping NAME [start|fail|CODE]   dead-man's-switch ping to PING_<NAME> in my_system.conf
+  ms housekeeping        rotate / trim my-system's own logs (daily job does this)
 """
 import os
 import subprocess
@@ -119,6 +122,9 @@ LOG_HELP = """ms log — standard run logs (format: ~/My_System/runlog/RUNLOG_SP
   ms log list [N]          all known runs, newest first
   ms log index             search project folders for run logs
   ms log template python|tcl|spec   print a writer to copy into a project
+  ms log compare [PATH ...] [--sort METRIC] [--desc] [--all-columns] [--status ok] [--name RE] [--csv FILE]
+                           params and metrics of many runs side by side (only columns that differ)
+  ms log diff RUN_A RUN_B  what differs between two runs (params, metrics, git commit, status)
 """
 
 
@@ -150,6 +156,41 @@ def log_cmd(rest):
         print(LOG_HELP)
         return 0
     sub, a = rest[0], rest[1:]
+    if sub == "compare":
+        def opt(k):
+            return a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None
+        flags = {"--sort", "--status", "--name", "--csv"}
+        paths = [x for i, x in enumerate(a) if not x.startswith("--") and (i == 0 or a[i - 1] not in flags)]
+        runs = runlog.collect(paths, opt("--status"), opt("--name"))
+        if not runs:
+            print("no runs found")
+            return 1
+        header, rows = runlog.compare_table(runs, opt("--sort"), "--desc" in a, "--all-columns" not in a)
+        if opt("--csv"):
+            import csv as _csv
+            with open(opt("--csv"), "w", newline="") as f:
+                w = _csv.writer(f)
+                w.writerow(header)
+                w.writerows(rows)
+            print(f"written {opt('--csv')} ({len(rows)} runs)")
+        else:
+            runlog.print_table(header, rows)
+        return 0
+    if sub == "diff":
+        if len(a) < 2:
+            print("usage: ms log diff RUN_A RUN_B   (run id, id prefix or run name = its newest run)")
+            return 2
+        ra, rb = runlog.find_run(a[0]), runlog.find_run(a[1])
+        if not ra or not rb:
+            print(f"run not found: {a[0] if not ra else a[1]}")
+            return 1
+        print(f"A = {ra['name']} {ra['run'][:12]}  ({ra['folder']})\nB = {rb['name']} {rb['run'][:12]}  ({rb['folder']})")
+        d = runlog.diff(ra, rb)
+        if not d:
+            print("no differences in params, metrics or status")
+        for kind, k, va, vb in d:
+            print(f"  {kind:<7} {k:<30} {runlog._cell(va) if va is not None else '–':>14}  →  {runlog._cell(vb) if vb is not None else '–'}")
+        return 0
     if sub == "template":
         f = {"python": "msrun.py", "tcl": "msrun.tcl", "spec": "RUNLOG_SPEC.md"}.get(a[0] if a else "", None)
         if not f:
@@ -436,6 +477,17 @@ def main(argv):
         hw.health_lines(update_prev=False)
     elif cmd == "doctor":
         return doctor()
+    elif cmd == "replay":
+        from mysys import history
+        return history.cli(rest)
+    elif cmd == "ping":
+        if not rest:
+            print("usage: ms ping NAME [start|fail|EXIT_CODE]   (URL from PING_<NAME> in my_system.conf)")
+            return 2
+        return 0 if config.ping(rest[0], rest[1] if len(rest) > 1 else "") else 1
+    elif cmd == "housekeeping":
+        from mysys import housekeep
+        housekeep.run(verbose=True)
     elif cmd == "version":
         print(__version__)
     else:

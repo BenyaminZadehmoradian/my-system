@@ -330,3 +330,89 @@ def new_endings(since):
             if r["end_ts"] and r["end_ts"] >= since - 1:
                 out.append(r)
     return out
+
+
+# ---------------------------------------------------------------- 1.6: compare runs (DVC exp show / exp diff)
+def collect(paths=None, status=None, name=None):
+    """Runs from the given files/folders (default: all known), optionally filtered."""
+    import re as _re
+    files = []
+    for p in paths or []:
+        p = Path(p)
+        if p.is_dir():
+            files += [str(x) for x in p.rglob(FILENAME)]
+        elif p.exists():
+            files.append(str(p))
+    runs = []
+    for f in files or known_paths():
+        runs += read(f).values()
+    if status:
+        runs = [r for r in runs if r["status"] in status.split(",")]
+    if name:
+        runs = [r for r in runs if _re.search(name, r["name"] or "")]
+    return sorted(runs, key=lambda r: r.get("start_ts") or 0)
+
+
+def compare_table(runs, sort=None, desc=False, only_changed=True, max_cols=14):
+    """(header, rows): one row per run, columns = params then metrics. Constant columns dropped with only_changed."""
+    pk = sorted({k for r in runs for k in r["params"]})
+    mk = sorted({k for r in runs for k in r["metrics"]})
+    if only_changed and len(runs) > 1:
+        pk = [k for k in pk if len({json.dumps(r["params"].get(k), default=str) for r in runs}) > 1]
+        mk = [k for k in mk if len({json.dumps(r["metrics"].get(k), default=str) for r in runs}) > 1]
+    if sort and sort not in mk and sort not in pk:
+        mk = [sort] + mk
+    if sort:
+        def key(r):
+            v = r["metrics"].get(sort, r["params"].get(sort))
+            return (v is None, -v if desc and isinstance(v, (int, float)) else v if isinstance(v, (int, float)) else str(v))
+        runs = sorted(runs, key=key)
+    pk, mk = pk[:max_cols // 2 + max(0, max_cols // 2 - len(mk))], mk[:max_cols]
+    header = ["run", "status", "time"] + [f"p:{k}" for k in pk] + mk
+    rows = []
+    for r in runs:
+        rows.append([r["name"] or r["run"][:12], r["status"], fmt_seconds(r["seconds"])] +
+                    [r["params"].get(k, "") for k in pk] + [r["metrics"].get(k, "") for k in mk])
+    return header, rows
+
+
+def diff(a, b):
+    """Differences between two runs: [(kind, key, value_a, value_b)]."""
+    out = []
+    for kind in ("params", "metrics"):
+        for k in sorted(set(a[kind]) | set(b[kind])):
+            va, vb = a[kind].get(k), b[kind].get(k)
+            if va != vb:
+                out.append((kind[:-1], k, va, vb))
+    for k in ("status", "seconds", "errors", "warnings"):
+        if a.get(k) != b.get(k):
+            out.append(("run", k, a.get(k), b.get(k)))
+    ga, gb = (a.get("git") or {}), (b.get("git") or {})
+    if ga.get("commit") != gb.get("commit") or ga.get("dirty") != gb.get("dirty"):
+        out.append(("git", "commit", f"{(ga.get('commit') or '')[:10]}{' dirty' if ga.get('dirty') else ''}",
+                    f"{(gb.get('commit') or '')[:10]}{' dirty' if gb.get('dirty') else ''}"))
+    return out
+
+
+def find_run(key, runs=None):
+    runs = runs if runs is not None else all_runs(5000)
+    for r in runs:
+        if r["run"] == key or r["run"].startswith(key):
+            return r
+    hits = [r for r in runs if r["name"] == key]
+    return sorted(hits, key=lambda r: r.get("start_ts") or 0)[-1] if hits else None
+
+
+def _cell(v):
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    return str(v)
+
+
+def print_table(header, rows):
+    w = [max(len(_cell(h)), *(len(_cell(r[i])) for r in rows)) if rows else len(h) for i, h in enumerate(header)]
+    w = [min(x, 28) for x in w]
+    print("  ".join(_cell(h)[:w[i]].ljust(w[i]) for i, h in enumerate(header)))
+    for r in rows:
+        print("  ".join(_cell(c)[:w[i]].rjust(w[i]) if isinstance(c, (int, float)) else _cell(c)[:w[i]].ljust(w[i])
+                        for i, c in enumerate(r)))

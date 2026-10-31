@@ -25,7 +25,10 @@ These rules are installed by **my-system** and are read-only. The machine-specif
    `ms q add --name NAME [--mem GB] [--cores N] -- <command>` (or the `queue_submit` MCP tool).
    Sweeps and multi-step work are a flow file: `ms flow example` shows the format,
    `ms flow check FILE` must pass, then `ms flow run FILE`. Watch progress with `ms q`.
-   The queue decides when each job may start; do not try to work around it.
+   The queue decides when each job may start; do not try to work around it. If a job waits,
+   `ms q explain ID` says exactly which condition blocks it (RAM, CPU, licenses, group, pressure).
+   For "try several variants until one meets the goal" (seeds, strategies) use `stop_when` in the
+   flow step so the remaining variants are stopped automatically.
 9. **Every program, script or flow you write that runs a job or produces results must write a
    standard run log** (`msrun.jsonl`, format in `~/My_System/runlog/RUNLOG_SPEC.md`) in its run
    folder — start, stages, errors, metrics, artifacts, end. Use the helpers, never hand-written JSON:
@@ -39,6 +42,9 @@ These rules are installed by **my-system** and are read-only. The machine-specif
 11. **Make jobs observable:** print progress with `echo PERCENT >&3`, pass results to later steps by
     writing `key=value` lines to `$MSQ_OUTPUTS`, put temporary files in `$TMPDIR`, and declare
     `inputs`/`outputs` in flow steps so unchanged work is skipped.
+12. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
+    (or the `runs_compare` MCP tool) instead of parsing logs yourself. To find out what the machine was
+    doing at a given time (e.g. why a run was slow or the machine froze) use `ms replay TIME`.
 
 ## Transparency
 Every tool call is logged and visible to the user in the my-system app (AI guard tab).

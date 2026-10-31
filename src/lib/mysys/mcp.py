@@ -1,7 +1,8 @@
 """Minimal MCP server (stdio, JSON-RPC 2.0) so AI assistants can ask my-system directly.
 
 Registered for Claude Code by install.sh as `my-system` (command: ms mcp). Tools:
-  capacity, queue_list, queue_submit, queue_cancel, runs_list, run_detail, flow_check, flow_run, system_map
+  capacity, queue_list, queue_submit, queue_cancel, queue_explain, runs_list, run_detail, runs_compare, flow_check,
+  flow_run, software_uses, software_updates, vulnerabilities, replay, system_map
 Submitting goes through the same queue as everything else, so an assistant can never overload the machine.
 """
 import json
@@ -116,6 +117,33 @@ def t_software_updates():
     return software.summary_text(d) if d else "software not scanned yet (ms software scan)"
 
 
+def t_queue_explain(id):
+    return "\n".join(f"{'ok ' if ok else 'NO '} {c}: {d}" for ok, c, d in queue.explain(int(id)))
+
+
+def t_replay(time_text, span_minutes=10):
+    from . import history
+    try:
+        t = history.parse_time(time_text)
+    except ValueError as e:
+        return str(e)
+    rows = history.around(t, int(span_minutes) * 60)
+    return "\n".join(history.fmt(r) for r in rows) or "no samples recorded for that time"
+
+
+def t_runs_compare(paths=None, sort=None, desc=False, name=None):
+    runs = runlog.collect(paths or [], None, name)
+    if not runs:
+        return "no runs found"
+    h, rows = runlog.compare_table(runs, sort, desc)
+    return json.dumps({"columns": h, "rows": rows[-200:]}, default=str)
+
+
+def t_vulnerabilities():
+    from . import software
+    return software.audit_text(software.load_audit())
+
+
 def t_system_map():
     try:
         return (config.STATE / "SYSTEM_MAP.md").read_text()
@@ -146,6 +174,15 @@ TOOLS = {
     "software_uses": (t_software_uses, "Who uses a project, Python package, system library, tool or environment — "
                                        "check this before changing or updating anything.", {"name": S}, ["name"]),
     "software_updates": (t_software_updates, "Available updates grouped by advice (safe / test / wait / reboot).", {}, []),
+    "queue_explain": (t_queue_explain, "Why a waiting job has not started: every condition (RAM, CPU, licenses, "
+                                       "dependencies, groups, pressure) with pass/fail.", {"id": I}, ["id"]),
+    "replay": (t_replay, "What the machine was doing at a past time (load, free RAM, biggest programs, jobs); "
+                         "time like '2026-10-31 07:30', '07:30' or '90m' (ago).", {"time_text": S, "span_minutes": I}, ["time_text"]),
+    "runs_compare": (t_runs_compare, "Params and metrics of many standard-log runs side by side (only differing columns), "
+                                     "sorted by a metric — e.g. which seed/strategy gave the best WNS.",
+                     {"paths": {"type": "array", "items": S}, "sort": S, "desc": B, "name": S}, []),
+    "vulnerabilities": (t_vulnerabilities, "Python packages with known security vulnerabilities and which projects use them.",
+                        {}, []),
     "system_map": (t_system_map, "This machine: hardware, capacity rules, toolchains, environments, projects, protected paths.",
                    {}, []),
 }

@@ -33,6 +33,7 @@ from mysys import probes, queue, flow, expr, issues, resources, runlog
 G = 2**30
 probes.threads = lambda: 8
 probes.loadavg = lambda: (0.0, 0.0, 0.0)
+probes.PSI_DIR = "/nonexistent"              # real memory/disk pressure must not hold back test jobs
 probes.meminfo = lambda: {"MemTotal": 64 * G, "MemAvailable": 48 * G, "SwapTotal": 0, "SwapFree": 0}
 S = queue.Scheduler()
 def until(cond, limit=60):
