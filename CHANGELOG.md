@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.2 — 2026-11-02
+
+- Remote Slurm servers whose nodes report no RAM (Titan): jobs are sent without --mem (it is refused there).
+  Detected automatically (`slurm_mem = auto|yes|no`); `ms remote check` explains it.
+
 ## 1.11.1 — 2026-11-02
 
 - `ms remote check`: clear fixes for an unknown server key (accept it once), a changed server key (stop), a key the

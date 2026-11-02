@@ -44,7 +44,8 @@ CONF = "remotes.conf"
 STATE = config.STATE / "remote"
 DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": "", "qos": "", "workdir": "jobs/msq/{account}",
             "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
-            "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": ""}
+            "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
+            "slurm_mem": "auto"}
 GiB = 2**30
 
 
@@ -93,6 +94,7 @@ TEMPLATE = """# Remote servers for the my-system queue (ms remote help). Edit: m
 #offload = never
 #offload_after_min = 30
 #tools =
+#slurm_mem = auto             # auto: ask Slurm for memory only if it knows the nodes' RAM (Titan does not)
 """
 
 
@@ -208,7 +210,7 @@ def _slurm_time(seconds):
 def job_script(r, j, remote_dir):
     cores = max(1, int(round(float(j.get("cores") or 1))))
     mem = max(1, int(float(j.get("mem_gb") or 2) * 1.1 + 0.999))
-    lines = [f"#SBATCH --cpus-per-task={cores}", f"#SBATCH --mem={mem}G",
+    lines = [f"#SBATCH --cpus-per-task={cores}"] + ([f"#SBATCH --mem={mem}G"] if r.get("_slurm_mem", True) else []) + [
              f"#SBATCH --time={_slurm_time(j['timeout_s']) if isinstance(j.get('timeout_s'), (int, float)) else r['default_time']}",
              "#SBATCH --output=slurm-%j.out", "#SBATCH --error=slurm-%j.out"]
     if r.get("account"):
@@ -231,6 +233,25 @@ def job_script(r, j, remote_dir):
 
 
 # ---------------------------------------------------------------- run one job (called by the queue runner)
+def mem_supported(r):
+    """Ask Slurm for memory (--mem) only if its nodes have a memory size configured. Some clusters (e.g. Titan)
+    leave it at 0/1 MB: then every --mem request is refused and memory is limited by the container instead.
+    slurm_mem = yes | no | auto (default; result cached for a day)."""
+    v = (r.get("slurm_mem") or "auto").lower()
+    if v in ("yes", "no"):
+        return v == "yes"
+    c = _cache(r["name"] + "-mem")
+    if time.time() - c.get("t", 0) < 86400 and "max_mb" in c:
+        return c["max_mb"] >= 1024
+    rc, out, _ = ssh(r, "sinfo -h -o %m", 30)
+    vals = [int(x.rstrip("+")) for x in out.split() if x.rstrip("+").isdigit()] if rc == 0 else []
+    if not vals:
+        return True
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / f"{r['name']}-mem.json").write_text(json.dumps({"t": time.time(), "max_mb": max(vals)}))
+    return max(vals) >= 1024
+
+
 def run_job(jid):
     """Upload, sbatch, follow, download. Prints progress (it becomes the job's log); returns the job's exit code."""
     from . import queue
@@ -259,6 +280,7 @@ def run_job(jid):
     if rc != 0:
         print(f"[{r['name']}] upload failed: {(err or b'').decode(errors='replace') if isinstance(err, bytes) else err}", flush=True)
         return 3
+    r["_slurm_mem"] = mem_supported(r)
     script = job_script(r, j, rdir)
     rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120,
                        input_=script)
@@ -457,7 +479,11 @@ def check(name, test_job=False, out=print):
         nodes = [l.split() for l in o.strip().splitlines() if len(l.split()) >= 4]
         cpus = sorted({int(n[1]) for n in nodes if n[1].isdigit()})
         mems = sorted({int(n[2]) // 1024 for n in nodes if n[2].isdigit()})
-        step(True, f"{len(nodes)} node(s)", f"CPUs per node {cpus}, RAM per node {mems} GB")
+        if mems and max(mems) > 0:
+            step(True, f"{len(nodes)} node(s)", f"CPUs per node {cpus}, RAM per node {mems} GB")
+        else:
+            step(True, f"{len(nodes)} node(s)", f"CPUs per node {cpus}; Slurm does not know the nodes' RAM, so jobs do "
+                                                f"not ask for memory (set container = … to limit it per job)")
     out("  -- this server is shared: never put passwords, keys or private data in jobs sent there")
     if test_job and ok_all:
         out("  .. sending a 1-minute test job (1 CPU, 1 GB) to learn what the nodes offer …")

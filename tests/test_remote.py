@@ -31,6 +31,8 @@ exec 9>"$FAKE_SLURM/lock"; flock 9          # job numbers are unique, like real 
 n=$(( $(cat "$FAKE_SLURM/seq" 2>/dev/null || echo 100) + 1 )); echo $n > "$FAKE_SLURM/seq"
 flock -u 9
 grep -q '^#SBATCH --account=' "$script" || { echo "sbatch: error: account required" >&2; exit 1; }
+if [ "$FAKE_NOMEM" = 1 ] && grep -q '^#SBATCH --mem=' "$script"; then
+  echo "sbatch: error: Memory specification can not be satisfied" >&2; exit 1; fi
 cp "$script" "$FAKE_SLURM/$n.sh"
 echo RUNNING > "$FAKE_SLURM/$n.state"
 if [ "$FAKE_SHARED" = 1 ]; then run_in="$FAKE_HEAD"; else run_in=$(mktemp -d); fi
@@ -55,7 +57,8 @@ j=""; while [ $# -gt 0 ]; do case "$1" in -j) j="$2"; shift 2;; *) shift;; esac;
 echo "$(cat "$FAKE_SLURM/$j.state")|$(cat "$FAKE_SLURM/$j.rc" 2>/dev/null || echo 0):0"
 ''',
     "sinfo": r'''#!/bin/bash
-case "$*" in *-N*) echo "node07 16 64000 idle"; echo "node08 16 64000 mix";; *) echo "8/24/0/32";; esac
+m=64000; [ "$FAKE_NOMEM" = 1 ] && m=1
+case "$*" in *-N*) echo "node07 16 $m idle"; echo "node08 16 $m mix";; *%m*) echo $m; echo $m;; *) echo "8/24/0/32";; esac
 ''',
     "scancel": r'''#!/bin/bash
 echo CANCELLED > "$FAKE_SLURM/$1.state"; pkill -TERM -s "$(cat "$FAKE_SLURM/$1.pid")" 2>/dev/null; exit 0
@@ -209,6 +212,18 @@ def test_check_and_probe():
     (ms / "config/remotes.conf").write_text(CONF.format(offload="never").replace("ssh = titan", "ssh = newhost"))
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "check", "titan"], env=env, capture_output=True, text=True)
     assert "StrictHostKeyChecking=accept-new newhost" in r.stdout, r.stdout
+
+
+def test_cluster_without_node_memory():
+    """Like Titan: nodes report no RAM to Slurm and any --mem is refused — jobs must be sent without it."""
+    tmp, ms = fake_ms()
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never"))
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
+    env.update(cluster(tmp, shared=False))
+    env["FAKE_NOMEM"] = "1"
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "test", "titan"], env=env, capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0 and "ok  test job ran" in r.stdout and "does not know the nodes' RAM" in r.stdout, r.stdout + r.stderr
 
 
 if __name__ == "__main__":
