@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.3 — 2026-11-02
+
+Shared server safety (one Unix account for everyone on Titan)
+- my-system only touches its own work folder (must be relative, contain 'msq' and your account — anything else is
+  refused), its own temporary folder on the node, and its own Slurm jobs (`scancel --account=you JOBID`).
+- It deletes only job folders it created (`<workdir>/<id>-<attempt>`), never anything else; the node script refuses
+  to run if its temporary folder could not be created.
+- `ms remote clean NAME [--days 7]`: remove your own old job folders (kept after failed jobs).
+- Tested: other people's jobs, results and folders on a simulated shared server stay untouched.
+
 ## 1.11.2 — 2026-11-02
 
 - Remote Slurm servers whose nodes report no RAM (Titan): jobs are sent without --mem (it is refused there).

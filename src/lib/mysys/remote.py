@@ -71,7 +71,28 @@ def get(name):
     r = remotes().get(name)
     if not r:
         raise KeyError(f"no remote '{name}' in config/{CONF} (ms remote setup {name})")
+    safe_workdir(r)
     return r
+
+
+def safe_workdir(r):
+    """The server is shared by many people under one account: my-system only ever writes, and deletes, inside its
+    own folder. Refuse a work folder that could point at anyone else's files."""
+    import re as _re
+    w = r["workdir"].strip().rstrip("/")
+    parts = w.split("/")
+    if (not w or w.startswith(("/", "~")) or ".." in parts or "msq" not in " ".join(parts)
+            or not r.get("account") or r["account"] not in parts or _re.search(r"[\s$`;&|*?]", w)):
+        raise KeyError(f"unsafe workdir '{w}' for {r['name']}: it must be a relative path inside your home on the server "
+                       f"that contains 'msq' and your account, e.g. jobs/msq/{{account}}")
+    return w
+
+
+def _own_job_dir(r, d):
+    """True only for a job folder that my-system created: <workdir>/<id>-<attempt>."""
+    import re as _re
+    w = safe_workdir(r)
+    return d.startswith(w + "/") and _re.fullmatch(r"\d+-\d+", d[len(w) + 1:]) is not None
 
 
 TEMPLATE = """# Remote servers for the my-system queue (ms remote help). Edit: ms unlock -> edit -> ms lock
@@ -179,7 +200,7 @@ if [ -d "$REMOTE_DIR" ] && [ -f "$REMOTE_DIR/in.tar.gz" ]; then
   SHARED=1; W="$(cd "$REMOTE_DIR" && pwd)/run"; mkdir -p "$W"; cd "$W" || exit 90
   tar xzf ../in.tar.gz || exit 91
 else
-  SHARED=0; W=$(mktemp -d "${{TMPDIR:-/tmp}}/msq-{jid}-XXXXXX"); cd "$W" || exit 90
+  SHARED=0; W=$(mktemp -d "${{TMPDIR:-/tmp}}/msq-{jid}-XXXXXX") && [ -n "$W" ] && cd "$W" || exit 90
   copy "$HEAD:$REMOTE_DIR/in.tar.gz" in.tar.gz || {{ echo "cannot fetch the job files from $HEAD" >&2; exit 92; }}
   tar xzf in.tar.gz && rm -f in.tar.gz
 fi
@@ -197,7 +218,7 @@ echo $RC > .msq-{jid}-rc
 find . -newer .msq-{jid}-start -type f ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
 tar czf out.tar.gz -T .msq-{jid}-changed .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
 if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp msq-{jid}.log ../msq-{jid}.log
-else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; cd /; rm -rf "$W"; fi
+else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; cd /; case "$W" in */msq-{jid}-??????) rm -rf "$W";; esac; fi
 exit $RC
 """
 
@@ -300,7 +321,8 @@ def run_job(jid):
     seen, last_state, offset = 0, "", 0
     while True:
         if stop["now"]:
-            crc, _, cerr = ssh(r, f"scancel {sid}", 60)
+            # only this job, and only if it runs under your account
+            crc, _, cerr = ssh(r, f"scancel --account={shlex.quote(r['account'])} {int(sid)}", 60)
             print(f"[{r['name']}] cancelled Slurm job {sid}" + ("" if crc == 0 else f" — scancel said: {cerr.strip()[:200]}"),
                   flush=True)
             return 130
@@ -360,7 +382,8 @@ def run_job(jid):
         code = acct.split("|")[-1].split(":")[0] if "|" in acct else ""
         job_rc = int(code) if code.isdigit() and int(code) else 5
     if job_rc == 0 and os.environ.get("MSQ_REMOTE_KEEP") != "1":
-        ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
+        if _own_job_dir(r, rdir):                  # never anything but this job's own folder
+            ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
     return job_rc
 
 
@@ -529,6 +552,11 @@ HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this
   ms remote check NAME        step-by-step check: ssh, Slurm, account, work folder, nodes
   ms remote test NAME         check + a 1-minute test job that reports what the nodes offer (CPUs, RAM, tools)
   ms remote status NAME       free CPUs there and your jobs
+  ms remote clean NAME [--days 7]   remove your own old job folders there (kept after failed jobs)
+
+On a shared server my-system only touches: its own folder (workdir, e.g. ~/jobs/msq/benyamin) on the head node,
+its own temporary folder on the node while a job runs, and its own Slurm jobs (scancel --account=you JOBID).
+It never deletes outside these, never builds or removes docker images, and sends at most max_jobs jobs.
   ms q add --on NAME -- CMD   run this job there
   ms q add --on auto -- CMD   run here, or there when this machine is busy (offload = busy in remotes.conf)
   flow step key:  remote: titan | auto
@@ -576,6 +604,20 @@ def cli(a):
     if sub in ("check", "test"):
         print(f"{'Testing' if sub == 'test' else 'Checking'} remote {a[1]}:")
         return 0 if check(a[1], test_job=sub == "test") else 1
+    if sub == "clean":
+        r = get(a[1])
+        days = float(a[a.index("--days") + 1]) if "--days" in a else 7
+        w = safe_workdir(r)
+        rc, out, err = ssh(r, f"cd {shlex.quote(w)} 2>/dev/null && find . -mindepth 1 -maxdepth 1 -type d "
+                              f"-regextype posix-extended -regex './[0-9]+-[0-9]+' -mtime +{int(days)} -printf '%f\\n'", 60)
+        old_dirs = [d for d in out.split() if _own_job_dir(r, f"{w}/{d}")]
+        if not old_dirs:
+            print(f"nothing to clean in {r['ssh']}:{w} (job folders older than {days:g} days)")
+            return 0
+        for d in old_dirs:
+            ssh(r, f"rm -rf {shlex.quote(w + '/' + d)}", 120)
+        print(f"removed {len(old_dirs)} old job folder(s) from {r['ssh']}:{w} (kept after failures): {', '.join(old_dirs[:20])}")
+        return 0
     if sub == "status":
         r = get(a[1])
         st = status(r, fresh=True)

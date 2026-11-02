@@ -61,7 +61,10 @@ m=64000; [ "$FAKE_NOMEM" = 1 ] && m=1
 case "$*" in *-N*) echo "node07 16 $m idle"; echo "node08 16 $m mix";; *%m*) echo $m; echo $m;; *) echo "8/24/0/32";; esac
 ''',
     "scancel": r'''#!/bin/bash
-echo CANCELLED > "$FAKE_SLURM/$1.state"; pkill -TERM -s "$(cat "$FAKE_SLURM/$1.pid")" 2>/dev/null; exit 0
+acct=""; for a in "$@"; do case "$a" in --account=*) acct="${a#--account=}";; esac; done
+id="${@: -1}"
+grep -q "^#SBATCH --account=$acct\$" "$FAKE_SLURM/$id.sh" || { echo "scancel: not your job" >&2; exit 1; }
+echo CANCELLED > "$FAKE_SLURM/$id.state"; pkill -TERM -s "$(cat "$FAKE_SLURM/$id.pid")" 2>/dev/null; exit 0
 ''',
 }
 
@@ -212,6 +215,53 @@ def test_check_and_probe():
     (ms / "config/remotes.conf").write_text(CONF.format(offload="never").replace("ssh = titan", "ssh = newhost"))
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "check", "titan"], env=env, capture_output=True, text=True)
     assert "StrictHostKeyChecking=accept-new newhost" in r.stdout, r.stdout
+
+
+def test_other_peoples_files_are_never_touched():
+    """One shared account: my-system may only touch its own folder and its own jobs."""
+    tmp, ms = fake_ms()
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never"))
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp), WORK=str(tmp / "work"))
+    env.update(cluster(tmp, shared=True))
+    head = Path(env["FAKE_HEAD"])
+    others = [head / "jobs/submitted/job_x.sh", head / "results/results_1_1.tar.gz", head / "jobs/msq/someone/5-1/keep.txt",
+              head / "jobs/msq/bzm/notes.txt", head / "jobs/msq/bzm/old-run/data.bin"]
+    for f in others:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("not mine")
+    mine_old = head / "jobs/msq/bzm/7-1"
+    mine_old.mkdir(parents=True)
+    (mine_old / "in.tar.gz").write_text("x")
+    os.utime(mine_old, (time.time() - 30 * 86400,) * 2)
+    code = HARNESS + r'''
+from mysys import remote
+os.makedirs(os.path.join(W, "p"), exist_ok=True)
+a = queue.submit("echo hi > out.txt", cwd=os.path.join(W, "p"), name="ok", mem_gb=1, cores=1, remote="titan")
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60) and st(a["id"]) == "done"
+r = remote.get("titan")
+assert remote._own_job_dir(r, "jobs/msq/bzm/12-1") and not remote._own_job_dir(r, "jobs/msq/bzm/notes.txt")
+assert not remote._own_job_dir(r, "jobs/msq/someone/5-1") and not remote._own_job_dir(r, "results")
+for bad in ("", "/home/slurmslave", "~", "jobs", "jobs/../results", "results/bzm", "jobs/msq/*", "jobs/msq/other"):
+    r2 = dict(r, workdir=bad)
+    try:
+        remote.safe_workdir(r2)
+        raise SystemExit(f"accepted unsafe workdir {bad!r}")
+    except KeyError:
+        pass
+print("ok")
+'''
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "clean", "titan"], env=env, capture_output=True, text=True)
+    assert "removed 1 old job folder" in r.stdout and "7-1" in r.stdout, r.stdout + r.stderr
+    assert not mine_old.exists()
+    for f in others:
+        assert f.exists() and f.read_text() == "not mine", f"touched {f}"
+    # someone else's Slurm job cannot be cancelled through my-system's scancel
+    slurm = Path(env["FAKE_SLURM"])
+    (slurm / "999.sh").write_text("#SBATCH --account=someone\n")
+    r = subprocess.run(["scancel", "--account=bzm", "999"], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "not your job" in r.stderr
 
 
 def test_cluster_without_node_memory():
