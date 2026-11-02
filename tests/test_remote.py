@@ -16,6 +16,7 @@ STUBS = {
 while [ $# -gt 0 ]; do case "$1" in -o|-p|-i|-l) shift 2;; -*) shift;; *) break;; esac; done
 host="$1"; shift
 [ "$host" = "deadhost" ] && { echo "ssh: connect to host deadhost: Connection refused" >&2; exit 255; }
+[ "$host" = "newhost" ] && { echo "Host key verification failed." >&2; exit 255; }
 cd "$FAKE_HEAD" && HOME="$FAKE_HEAD" exec bash -c "$*"
 ''',
     # scp [opts] SRC DST ; host:path -> $FAKE_HEAD/path
@@ -204,7 +205,10 @@ def test_check_and_probe():
     assert "24 of 32 CPUs idle" in r.stdout, r.stdout
     (ms / "config/remotes.conf").write_text(CONF.format(offload="never").replace("ssh = titan", "ssh = deadhost"))
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "check", "titan"], env=env, capture_output=True, text=True)
-    assert r.returncode == 1 and "NO  ~/.ssh/config has 'Host deadhost'" in r.stdout and "fix:" in r.stdout, r.stdout
+    assert r.returncode == 1 and "NO  ~/.ssh/config has 'Host deadhost'" in r.stdout and "UGent VPN" in r.stdout, r.stdout
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never").replace("ssh = titan", "ssh = newhost"))
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "check", "titan"], env=env, capture_output=True, text=True)
+    assert "StrictHostKeyChecking=accept-new newhost" in r.stdout, r.stdout
 
 
 if __name__ == "__main__":

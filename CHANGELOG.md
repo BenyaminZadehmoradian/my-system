@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.1 — 2026-11-02
+
+- `ms remote check`: clear fixes for an unknown server key (accept it once), a changed server key (stop), a key the
+  server does not accept yet, and an unreachable server (UGent VPN).
+
 ## 1.11.0 — 2026-11-01
 
 - Pause parts of my-system for a while or until you turn them on again: `ms pause FEATURE|all [--for 2h | --until 08:00]`,

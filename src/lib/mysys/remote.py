@@ -430,9 +430,21 @@ def check(name, test_job=False, out=print):
     step(bool(r["account"]) and r["account"] != "YOUR_UGENT_LOGIN", "account set", r["account"] or "empty",
          "set account = <your login> in config/remotes.conf")
     rc, o, e = ssh(r, "echo ok; hostname; command -v sbatch squeue sacct scancel | wc -l", 30)
+    err = (e or "").strip()
+    if "Host key verification failed" in err:
+        fix = (f"the server is not known yet — accept its key once: ssh -o StrictHostKeyChecking=accept-new {r['ssh']} hostname"
+               " (compare the fingerprint with the one the admins publish, if any)")
+    elif "REMOTE HOST IDENTIFICATION HAS CHANGED" in err:
+        fix = ("the server's key CHANGED — do not continue until the admins confirm it (then: "
+               f"ssh-keygen -R <hostname of {r['ssh']}>)")
+    elif "Permission denied" in err:
+        fix = "the server does not accept your key yet — ask the admins to install your .pub key (or check IdentityFile)"
+    elif "Could not resolve" in err or "timed out" in err or "Connection refused" in err or "No route" in err:
+        fix = "the server cannot be reached — outside the university, turn on the UGent VPN"
+    else:
+        fix = "ssh-add your key or check the key in ~/.ssh/config; first login once by hand: ssh " + r["ssh"]
     if not step(rc == 0 and o.startswith("ok"), f"ssh {r['ssh']} works without a password",
-                o.split()[1] if rc == 0 and len(o.split()) > 1 else (e.strip()[:150] or "no answer"),
-                "ssh-add your key or check the key in ~/.ssh/config; first login once by hand: ssh " + r["ssh"]):
+                o.split()[1] if rc == 0 and len(o.split()) > 1 else (err[:150] or "no answer"), fix):
         return False
     step(o.split()[-1] == "4", "Slurm commands found (sbatch, squeue, sacct, scancel)")
     st = status(r, fresh=True)
