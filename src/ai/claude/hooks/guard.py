@@ -133,11 +133,70 @@ def strip_heredocs(cmd):
     return "\n".join(out)
 
 
+SLURM = {"sbatch", "srun", "salloc", "scancel", "scontrol", "sattach", "sbcast"}
+
+
+def remote_hosts():
+    """ssh aliases and host names of the servers in config/remotes.conf (shared clusters)."""
+    hosts = set()
+    try:
+        import configparser
+        cp = configparser.ConfigParser(inline_comment_prefixes=("#",), interpolation=None)
+        cp.read(MS / "config" / "remotes.conf")
+        for s in cp.sections():
+            for k in ("ssh", "head"):
+                v = cp[s].get(k, "").strip()
+                if v:
+                    hosts.add(v.split("@")[-1])
+            hosts.add(s)
+    except Exception:
+        pass
+    try:                                   # real host names behind the aliases (~/.ssh/config)
+        txt = open(os.path.join(HOME, ".ssh", "config")).read()
+        cur = set()
+        for line in txt.splitlines():
+            w = line.strip().split()
+            if len(w) >= 2 and w[0].lower() == "host":
+                cur = set(w[1:])
+            elif len(w) >= 2 and w[0].lower() == "hostname" and cur & hosts:
+                hosts.add(w[1])
+    except OSError:
+        pass
+    return {h for h in hosts if h and h not in ("localhost", "127.0.0.1")}
+
+
+def check_remote(c):
+    hosts = None
+    for seg in re.split(r"\|\||&&|[;|\n&()]", c):
+        w = [x.strip("'\"") for x in seg.split()]
+        while w and (re.match(r"^\w+=", w[0]) or w[0] in ("env", "nice", "nohup", "time", "command", "exec", "timeout")):
+            w.pop(0)
+            while w and (w[0].startswith("-") or w[0].isdigit()):
+                w.pop(0)
+        if not w:
+            continue
+        prog = os.path.basename(w[0])
+        if prog in SLURM:
+            return "Slurm commands are not allowed: submit with `ms q add` (the queue sends jobs to the server itself)"
+        if prog not in ("ssh", "scp", "rsync", "sftp", "mosh", "sshfs"):
+            continue
+        hosts = remote_hosts() if hosts is None else hosts
+        for a in w[1:]:
+            h = a.split("@")[-1].split(":")[0]
+            if h in hosts:
+                return (f"direct access to the shared server {h} is not allowed: submit with `ms q add` "
+                        "(status: ms remote list / ms remote status)")
+    return None
+
+
 def check_bash(cmd, prot):
     c = strip_heredocs(expand(cmd))
     for rx, why in HARD:
         if rx.search(c):
             return why
+    why = check_remote(c)
+    if why:
+        return why
     for seg in re.split(r"\|\||&&|[;|\n&]", c):
         seg = seg.strip()
         if not seg:

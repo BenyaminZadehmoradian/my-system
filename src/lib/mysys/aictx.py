@@ -95,6 +95,7 @@ def build():
     if not d.get("projects"):
         lines.append("- (none found)")
 
+    lines += remote_lines()
     lines += ["", "## Protected paths (writes are blocked automatically)"]
     lines += [f"- `{_home(p)}`" for p in config.lst("protected_paths.txt")]
     lines += ["", "## Where to look first",
@@ -105,6 +106,36 @@ def build():
               f"- Run-log format every new program must write: `{_home(config.MS / 'runlog' / 'RUNLOG_SPEC.md')}` "
               "(check with `ms log check <folder>`; list all runs with `ms log list`)"]
     return "\n".join(lines) + "\n"
+
+
+def remote_lines():
+    """The servers jobs may run on, as AI assistants need to know them (rule 12)."""
+    try:
+        from . import remote
+        rms = remote.remotes()
+    except Exception:
+        return []
+    if not rms:
+        return []
+    mode_txt = {"prefer": "**server first**: allowed queue jobs go there before this machine is tried",
+                "always": "used as soon as this machine has no room", "busy": "used when this machine stays busy",
+                "never": "only for jobs added with `--on NAME`"}
+    out = ["", "## Remote servers (the queue sends jobs there itself — never ssh/sbatch yourself)"]
+    for n, r in rms.items():
+        st = remote._cache(n)
+        node = ""
+        if st.get("total_cpus"):
+            node = f"; cluster: {st['total_cpus']} CPUs, {st.get('idle_cpus', '?')} idle at last check"
+        tools = r["tools"].strip() or "(only jobs added with --on auto)"
+        out += [f"- **{n}** ({r['type']}, via my-system only): {mode_txt.get(r['offload'], r['offload'])}. "
+                f"Jobs allowed automatically: {'all' if tools == '*' else tools}. "
+                f"At most {r['max_jobs']} of your jobs there at once{node}.",
+                f"  - Not available there (jobs using these always run on this machine): "
+                f"{r['missing_tools'] or '(none listed)'}",
+                f"  - Only the job's own folder is copied there and back (max {r['max_upload_gb']} GB, else `--inputs`); "
+                f"keep inputs inside it and use relative paths. A job that fails there runs once more here.",
+                f"  - Keep a job on this machine: `--on here`. Force the server: `--on {n}`. Status: `ms remote list`."]
+    return out
 
 
 def write():

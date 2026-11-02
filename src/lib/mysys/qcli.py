@@ -23,7 +23,7 @@ Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and
                 --approval "text" (wait for ms q approve)  --notify always|failure|never  --secret NAME  --wait
                 --group G (limit per group in config/groups.conf)  --label L  --stdin (accept ms q send)
     server      --on NAME (run on a Slurm server from config/remotes.conf)  --on auto (there only when this
-                machine is busy)  — see ms remote help
+                machine is busy)  --on here (never on a server)  — see ms remote help
   ms q [list] [--all] [--state S] [--name RE] [--label L] [--group G] [--json]   jobs
   ms q show ID | log ID | stat ID    details | output | memory/CPU over time
   ms q cancel|hold|release|suspend|resume|retry|requeue|top|approve|reject ID ...

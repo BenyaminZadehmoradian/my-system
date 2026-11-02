@@ -47,12 +47,13 @@ def _inside_home(p):
 def t_queue_submit(cmd, cwd, name=None, mem_gb=None, cores=None, after=None, retries=0, timeout=None, priority=0, on=None):
     if not _inside_home(cwd):
         raise ValueError(f"cwd must be inside your home or the data disk and not protected: {cwd}")
-    if on and on != "auto":
+    if on and on not in ("auto", "here", "local"):
         from . import remote
         remote.get(on)                       # only servers the user configured
     j = queue.submit(cmd, cwd=cwd, name=name, mem_gb=mem_gb, cores=cores, depends=after or [], retries=retries,
                      timeout_s=timeout, priority=min(int(priority or 0), 0), submitted_by="ai", remote=on or None)
-    return f"queued job {j['id']} ({j['mem_gb']} GB, {j['cores']} cores). Check with queue_list."
+    return (f"queued job {j['id']} ({j['mem_gb']} GB, {j['cores']} cores). Check with queue_list; "
+            f"where it runs (this machine or a server) is shown by queue_explain.")
 
 
 def t_queue_cancel(id):
@@ -166,7 +167,9 @@ TOOLS = {
                                      "it writes a standard run log. Use instead of starting heavy jobs directly.",
                      {"cmd": S, "cwd": S, "name": S, "mem_gb": N, "cores": N, "after": {"type": "array", "items": I},
                       "retries": I, "timeout": S, "priority": I,
-                      "on": {"type": "string", "description": "run on a configured Slurm server (name) or 'auto' = there only when this machine is busy"}},
+                      "on": {"type": "string", "description": "usually omit: the queue decides (with offload = prefer it tries the "
+                                                                 "server first by itself). NAME = force that server, 'auto' = there "
+                                                                 "only when this machine is busy, 'here' = never on a server"}},
                      ["cmd", "cwd"]),
     "queue_cancel": (t_queue_cancel, "Cancel a job that an AI assistant submitted.", {"id": I}, ["id"]),
     "runs_list": (t_runs_list, "Recent runs from standard run logs, with status, metrics and first error.",

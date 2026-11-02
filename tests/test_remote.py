@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_features import HARNESS, fake_ms  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
 
 STUBS = {
     # ssh [opts] HOST CMD  -> run CMD in the head node's home
@@ -309,6 +310,45 @@ def test_cluster_without_node_memory():
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "test", "titan"], env=env, capture_output=True,
                        text=True, timeout=120)
     assert r.returncode == 0 and "ok  test job ran" in r.stdout and "does not know the nodes' RAM" in r.stdout, r.stdout + r.stderr
+
+
+def test_ai_knows_and_obeys_the_server_rules():
+    import importlib.util
+    tmp, ms = fake_ms()
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="prefer") + "tools = *\nmissing_tools = vivado vitis\n")
+    (tmp / ".ssh").mkdir()
+    (tmp / ".ssh/config").write_text("Host titan\n  HostName bacchus.ugent.be\n  User slurmslave\n")
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    code = r"""
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
+from mysys import aictx, queue
+t = aictx.build()
+assert "## Remote servers" in t and "server first" in t and "vivado vitis" in t and "--on here" in t, t
+j = queue.submit("make", cwd=os.environ["HOME"], name="x", remote="here")
+assert j.get("remote_never") and not j.get("remote"), j
+print("ok")
+"""
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert "ok" in r.stdout, r.stdout + r.stderr
+    src = ROOT / ("src/ai" if (ROOT / "src").is_dir() else "ai") / "claude/hooks/guard.py"
+    rules = (src.parent.parent.parent / "AI_RULES.md").read_text()
+    assert "Never use ssh, scp, rsync, sbatch" in rules and "self-contained" in rules
+    code = f"""
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+bad = ["ssh titan sinfo", "ssh slurmslave@bacchus.ugent.be ls", "scp x.v titan:jobs/", "rsync -a . titan:x",
+       "sbatch job.sh", "cd x && scancel 123", "FOO=1 srun hostname", "nice -n 5 ssh titan rm -rf jobs"]
+good = ["ms q add -- make", "ms remote list", "ssh github.com", "grep sbatch notes.txt", "echo titan", "git push"]
+for c in bad:
+    assert g.check_bash(c, []), c
+for c in good:
+    assert not g.check_bash(c, []), (c, g.check_bash(c, []))
+print("ok")
+"""
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert "ok" in r.stdout, r.stdout + r.stderr
 
 
 if __name__ == "__main__":

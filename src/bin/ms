@@ -423,7 +423,13 @@ def main(argv):
     elif cmd == "accept":
         return sh("accept_changes.sh")
     elif cmd in ("lock", "unlock"):
-        return sh(f"{cmd}.sh")
+        rc = sh(f"{cmd}.sh")
+        if cmd == "lock" and not rc:
+            try:
+                aictx.write()                  # AI assistants see the new settings (e.g. remotes.conf) at once
+            except Exception:
+                pass
+        return rc
     elif cmd == "backup-setup":
         return sh("backup_setup.sh")
     elif cmd == "backup":                          # by hand: runs even while backups are paused

@@ -42,9 +42,20 @@ These rules are installed by **my-system** and are read-only. The machine-specif
 11. **Make jobs observable:** print progress with `echo PERCENT >&3`, pass results to later steps by
     writing `key=value` lines to `$MSQ_OUTPUTS`, put temporary files in `$TMPDIR`, and declare
     `inputs`/`outputs` in flow steps so unchanged work is skipped.
-12. **Remote servers** (Slurm, e.g. Titan) are configured by the user in `config/remotes.conf`. Send a job there only
-    with `ms q add --on NAME` / `--on auto` (or the `on` field of `queue_submit`), never with your own ssh/sbatch.
-    The server is shared: never put passwords, keys or private data into jobs sent there.
+12. **Remote servers (Slurm, e.g. Titan) — the queue decides where a job runs.** The servers, and whether jobs go
+    there automatically, are listed under *Remote servers* in the system map. With `offload = prefer` every allowed
+    queue job is sent to the server first and runs on this machine only when the server is full, unreachable or slower,
+    and a job that fails there is run once more here. So:
+    - Just submit with `ms q add` / a flow / `queue_submit`. Do **not** add `--on` unless the user asks:
+      `--on NAME` forces a server, `--on here` keeps a job on this machine, `--on auto` = server only when busy here.
+    - **Never use ssh, scp, rsync, sbatch, srun, salloc or scancel yourself** to reach a server (blocked). Many people
+      share it; my-system only touches its own folder there and only your jobs. Status: `ms remote list`, `ms remote status`.
+    - **Make jobs self-contained:** start each job from its own run folder; everything it reads must be inside that
+      folder (relative paths, no `$HOME/...` or `/mnt/...` paths); results are written into that folder. Only the
+      job folder is copied there and back. Big folders: declare what is needed with `--inputs GLOB` (flows: `inputs:`).
+    - Programs listed as missing on a server (e.g. Vivado, Vitis on Titan) always run here; that is expected.
+    - Never put passwords, keys, tokens or private data into a job (`--secret` jobs are never sent to a server).
+    - `ms q explain ID` shows where a job will run and why; the job log shows the node (`[remote] titan02 ...`).
 13. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
     (or the `runs_compare` MCP tool) instead of parsing logs yourself. To find out what the machine was
     doing at a given time (e.g. why a run was slow or the machine froze) use `ms replay TIME`.

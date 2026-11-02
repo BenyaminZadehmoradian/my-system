@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.1 — 2026-11-02
+- AI assistants learn the server rules: AI_RULES rule 12 rewritten (the queue decides where a job runs; never
+  ssh/sbatch yourself; self-contained job folders; `--on here` / `--on NAME`), and the system map gets a
+  "Remote servers" section built from remotes.conf (mode, allowed jobs, missing programs, limits).
+- The AI guard blocks Slurm commands (sbatch, srun, salloc, scancel, scontrol) and ssh/scp/rsync/sftp to the
+  configured servers (aliases and their real host names from ~/.ssh/config).
+- `--on here` (and `on: "here"` in queue_submit) keeps a job on this machine even with offload = prefer.
+- `ms lock` regenerates the AI system map, so changed settings reach AI assistants at once.
+
 ## 1.12.0 — 2026-11-02
 - Server first: `offload = prefer` in remotes.conf sends every allowed queue job to the server before this machine
   is tried. The job runs here instead when the server is full (no idle CPUs), unreachable, already runs `max_jobs`

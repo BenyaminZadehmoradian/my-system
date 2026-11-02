@@ -186,6 +186,8 @@ def submit(cmd, cwd=None, name=None, **opt):
     j.update({k: v for k, v in opt.items() if v is not None})
     if j.get("remote") == "auto":          # may run on a remote server when this machine is busy
         j["remote"], j["remote_ok"] = None, True
+    elif j.get("remote") in ("here", "local"):   # never on a server, even with offload = prefer
+        j["remote"], j["remote_never"] = None, True
     if j.get("mem_gb") is None:
         j["mem_gb"] = prof.get("peak_gb", 2.0)
     if j.get("cores") is None:
