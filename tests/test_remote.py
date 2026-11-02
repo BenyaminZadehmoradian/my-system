@@ -97,9 +97,9 @@ offload_after_min = 0
 """
 
 
-def run(code, shared=True, offload="never"):
+def run(code, shared=True, offload="never", extra=""):
     tmp, ms = fake_ms()
-    (ms / "config/remotes.conf").write_text(CONF.format(offload=offload))
+    (ms / "config/remotes.conf").write_text(CONF.format(offload=offload) + extra)
     env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp), WORK=str(tmp / "work"))
     env.update(cluster(tmp, shared))
     r = subprocess.run([sys.executable, "-c", HARNESS + code], env=env, capture_output=True, text=True, timeout=300)
@@ -193,6 +193,41 @@ assert st(loc["id"]) == "queued" and not queue.load(loc["id"]).get("remote"), "j
 ex = dict((c, d) for ok, c, d in queue.explain(loc["id"]))
 print("ok")
 ''', offload="busy")
+    assert "ok" in out
+
+
+def test_prefer_server_first_with_fallback():
+    out, notes, tmp, ms, env = run(r'''
+from mysys import remote as RM
+os.makedirs(os.path.join(W, "f"), exist_ok=True)
+# plenty of room here, but the server comes first
+a = queue.submit("echo ran > where.txt", cwd=os.path.join(W, "f"), name="sim", mem_gb=1, cores=1)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+ja = queue.load(a["id"])
+assert ja["state"] == "done" and ja["remote"] == "titan" and "first" in ja["start_note"], ja
+# a program the server lacks: stays here
+v = queue.submit("vivado -mode batch -source x.tcl || true", cwd=os.path.join(W, "f"), name="impl", mem_gb=1, cores=1)
+assert until(lambda: st(v["id"]) in queue.TERMINAL, 60)
+assert not queue.load(v["id"]).get("remote"), queue.load(v["id"])
+# fails there (file only on this machine) -> runs once more here and succeeds
+open(os.path.join(os.environ["HOME"], "only_here.txt"), "w").write("x")
+b = queue.submit("cat $HOME/only_here.txt", cwd=os.path.join(W, "f"), name="needs_local", mem_gb=1, cores=1)
+assert until(lambda: st(b["id"]) in queue.TERMINAL and queue.load(b["id"]).get("fell_back"), 90), queue.load(b["id"])
+assert until(lambda: st(b["id"]) in queue.TERMINAL, 60)
+jb = queue.load(b["id"])
+assert jb["state"] == "done" and not jb.get("remote") and "running it here instead" in jb["start_note"], jb
+# a real failure everywhere: only one extra try, then failed
+c = queue.submit("exit 4", cwd=os.path.join(W, "f"), name="broken", mem_gb=1, cores=1)
+assert until(lambda: st(c["id"]) in queue.TERMINAL and queue.load(c["id"]).get("fell_back"), 90)
+assert until(lambda: st(c["id"]) in queue.TERMINAL, 60)
+assert st(c["id"]) == "failed" and queue.load(c["id"])["rc"] == 4
+# measured slower there -> here
+jobs = [dict(id=900 + i, state="done", name="x", cwd="/w", started=1, ended=601 if i < 2 else 61,
+             remote="titan" if i < 2 else None) for i in range(4)]
+t, note = RM.prefer_target({"id": 1, "name": "x", "cwd": "/w", "cmd": "make", "cores": 1}, jobs)
+assert t is None and "slower" in note, note
+print("ok")
+''', shared=True, offload="prefer", extra="tools = *\nmissing_tools = vivado vitis\n")
     assert "ok" in out
 
 

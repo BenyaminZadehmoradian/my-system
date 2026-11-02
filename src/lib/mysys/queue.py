@@ -641,6 +641,16 @@ def explain(jid):
                     + " — local CPU and RAM do not matter"))
     elif j.get("remote_ok"):
         out.append((True, "may run on a server", "when this machine stays busy (offload in config/remotes.conf)"))
+    if not j.get("remote") and j["state"] == "queued":
+        try:
+            from . import remote as RM
+            for n, r in RM.remotes().items():
+                if r["offload"] == "prefer":
+                    ok_ = RM.allowed(j, r)
+                    out.append((True, f"server first ({n})", "allowed: it goes there when the server has room" if ok_ else
+                                "not for this job (missing_tools, tools, --secret, --host, GPU or it already failed there)"))
+        except Exception:
+            pass
     if j["state"] in TERMINAL | ACTIVE:
         return out
     out.append(((j.get("begin") or 0) <= now and (j.get("not_before") or 0) <= now, "start time",
@@ -836,6 +846,16 @@ class Scheduler:
         for j in jobs:
             if j["state"] not in ("failed", "timeout") or j.get("retried"):
                 continue
+            if j["state"] == "failed" and j.get("remote_auto") and not j.get("fell_back") and j.get("remote"):
+                # sent to a server automatically and failed there (missing program, file outside the folder,
+                # upload or sbatch problem...): run it here once before calling it a failure
+                srv = j["remote"]
+                update(j["id"], state="queued", attempt=j["attempt"] + 1, started=None, ended=None, rc=None,
+                       remote=None, remote_auto=False, remote_never=True, fell_back=True, remote_job=None,
+                       remote_dir=None, remote_state=None, remote_node=None, cpus=None, waiting_told=False,
+                       start_note=f"failed on {srv} (exit {j.get('rc')}: {j.get('reason') or 'failed'}); running it here instead",
+                       reason=f"failed on {srv}; running it here instead")
+                continue
             why = "oom" if j.get("oom") else "timeout" if j["state"] == "timeout" else "fail"
             on = j.get("retry_on") or ["oom"]
             codes = j.get("retry_exit_codes")
@@ -1027,6 +1047,15 @@ class Scheduler:
             if (j.get("inputs") or j.get("outputs")) and j.get("incremental", True) and not j.get("force") and up_to_date(j):
                 update(j["id"], state="cached", reason="up to date (same command, parameters and inputs)", ended=now)
                 continue
+            if (not j.get("remote") and rms and not pause.paused("remote")
+                    and any(r["offload"] == "prefer" for r in rms.values())):
+                from . import remote as RM     # offload = prefer: the server first, this machine as fallback
+                target, note = RM.prefer_target(j, all_jobs())
+                if target:
+                    update(j["id"], remote=target, remote_auto=True, start_note=note)
+                    j = load(j["id"])
+                elif note and j.get("prefer_note") != f"not sent: {note}":
+                    update(j["id"], prefer_note=f"not sent: {note}")
             if j.get("remote") and pause.paused("remote"):
                 msg = f"waiting: sending jobs to servers is paused (ms resume remote)"
                 if j.get("reason") != msg:

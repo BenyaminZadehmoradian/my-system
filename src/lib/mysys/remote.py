@@ -17,9 +17,15 @@ config/remotes.conf (INI, one section per server):
   max_jobs = 8                 # at most this many of your jobs there at once
   max_upload_gb = 2            # bigger job folders must declare their inputs (--inputs)
   exclude = .git .Xil *.jou *.backup.log .msq_shadow
-  offload = never              # never | busy | always: automatic use for allowed jobs
+  offload = never              # never | busy | always | prefer: automatic use for allowed jobs
+                               #   busy   = only when this machine had no room for offload_after_min minutes
+                               #   always = as soon as this machine has no room
+                               #   prefer = the server first; this machine when the server is full, unreachable,
+                               #            or has been slower for this kind of job
   offload_after_min = 30       # busy = waited this long here for CPU/RAM
-  tools =                      # tools that may be offloaded automatically (e.g. vitis_hls xsim); empty = only jobs added with --on auto
+  tools =                      # tools that may be offloaded automatically (e.g. vitis_hls xsim; * = every job);
+                               # empty = only jobs added with --on auto
+  missing_tools =              # programs the server does not have: jobs that use them always run here
 
 How a job runs there: its folder is packed and copied to <workdir>/<job> on the head node with a job script;
 sbatch starts it; on the node the script fetches the files (or uses them directly when the disk is shared), runs
@@ -45,7 +51,7 @@ STATE = config.STATE / "remote"
 DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": "", "qos": "", "workdir": "jobs/msq/{account}",
             "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
-            "slurm_mem": "auto"}
+            "missing_tools": "", "slurm_mem": "auto"}
 GiB = 2**30
 
 
@@ -112,9 +118,10 @@ TEMPLATE = """# Remote servers for the my-system queue (ms remote help). Edit: m
 #max_jobs = 8
 #max_upload_gb = 2
 #exclude = .git .Xil *.jou *.backup.log
-#offload = never
+#offload = never             # never | busy | always | prefer (prefer = server first, this machine as fallback)
 #offload_after_min = 30
-#tools =
+#tools =                      # * = every job may go there automatically
+#missing_tools =              # programs the server lacks (Titan: vivado vitis vitis_hls xsim xelab xvlog xvhdl)
 #slurm_mem = auto             # auto: ask Slurm for memory only if it knows the nodes' RAM (Titan does not)
 """
 
@@ -427,17 +434,81 @@ def running_here(name, jobs):
     return sum(1 for x in jobs if x.get("remote") == name and x["state"] in ("running", "suspended"))
 
 
+def _uses(j, progs):
+    """True when the job's tool or any word of its command is one of `progs` (by program name)."""
+    import re as _re
+    if not progs:
+        return False
+    if j.get("tool") in progs:
+        return True
+    words = _re.split(r"[\s;&|()<>'\"=]+", j.get("cmd") or "")
+    return any(os.path.basename(w) in progs for w in words if w)
+
+
+def allowed(j, r):
+    """May this job go to server `r` automatically? (--on auto, or its tool listed in 'tools', or tools = *)."""
+    if j.get("secrets") or j.get("container") or j.get("host") or j.get("remote_never") or int(j.get("gpus") or 0):
+        return False
+    if _uses(j, set(r["missing_tools"].split())):
+        return False
+    tools = r["tools"].split()
+    return bool(j.get("remote_ok") or "*" in tools or (j.get("tool") and j["tool"] in tools))
+
+
+def _median(xs):
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if xs else None
+
+
+def speed(j, name, jobs):
+    """(median seconds on server `name`, median here) of earlier successful runs of the same job (name and folder,
+    else the same tool); None where unknown. Server time includes upload, waiting in Slurm and download."""
+    ok = [x for x in jobs if x["state"] in ("done", "warning") and x.get("started") and x.get("ended")
+          and x["id"] != j.get("id")]
+
+    def pick(match):
+        there = [x["ended"] - x["started"] for x in ok if match(x) and x.get("remote") == name]
+        here = [x["ended"] - x["started"] for x in ok if match(x) and not x.get("remote")]
+        return there, here
+    there, here = pick(lambda x: x.get("name") == j.get("name") and x.get("cwd") == j.get("cwd"))
+    if (len(there) < 2 or len(here) < 2) and j.get("tool"):
+        there, here = pick(lambda x: x.get("tool") == j.get("tool"))
+    return (_median(there) if len(there) >= 2 else None), (_median(here) if len(here) >= 2 else None)
+
+
+def prefer_target(j, jobs):
+    """(name, note) of a server with offload = prefer that should run this job before this machine is tried,
+    or (None, why-not). The server is skipped when it is full, unreachable, at max_jobs, or measurably slower."""
+    why = None
+    for name, r in remotes().items():
+        if r["offload"] != "prefer" or not allowed(j, r):
+            continue
+        if running_here(name, jobs) >= int(r["max_jobs"]):
+            why = f"{name} already runs {r['max_jobs']} of your jobs"
+            continue
+        st = status(r)
+        if not st.get("ok"):
+            why = f"{name} not reachable"
+            continue
+        if st.get("idle_cpus", 0) < max(1, int(round(float(j.get("cores") or 1)))):
+            why = f"{name} has no free CPUs"
+            continue
+        there, here = speed(j, name, jobs)
+        if there and here and there > here * 1.1:
+            why = f"{name} was slower for this job ({there / 60:.0f} vs {here / 60:.0f} min here)"
+            continue
+        note = f"sent to {name} first (offload = prefer)" + (
+            f": usually {there / 60:.0f} min there vs {here / 60:.0f} min here" if there and here else "")
+        return name, note
+    return None, why
+
+
 def offload_target(j, jobs, waited_s, local_cap):
     """Name of a remote to run a locally blocked job on, or None. Only for jobs that allow it: added with --on auto,
-    or whose tool is listed in the remote's 'tools' while offload = busy/always."""
-    if j.get("secrets") or j.get("container") or j.get("host") or j.get("remote_never"):
-        return None
+    or whose tool is listed in the remote's 'tools' while offload = busy/always/prefer."""
     for name, r in remotes().items():
         mode = r["offload"]
-        if mode not in ("busy", "always"):
-            continue
-        allowed = j.get("remote_ok") or (j.get("tool") and j["tool"] in r["tools"].split())
-        if not allowed:
+        if mode not in ("busy", "always", "prefer") or not allowed(j, r):
             continue
         too_big = float(j.get("mem_gb") or 0) * GiB > local_cap.get("total", 0) * 0.9 or \
             float(j.get("cores") or 1) > local_cap.get("threads", 1)
@@ -559,6 +630,8 @@ its own temporary folder on the node while a job runs, and its own Slurm jobs (s
 It never deletes outside these, never builds or removes docker images, and sends at most max_jobs jobs.
   ms q add --on NAME -- CMD   run this job there
   ms q add --on auto -- CMD   run here, or there when this machine is busy (offload = busy in remotes.conf)
+  offload = prefer            every allowed job tries the server first; this machine when the server is full,
+                              unreachable or slower; a job that fails there is run once more here
   flow step key:  remote: titan | auto
 
 ~/.ssh/config needs a block like:

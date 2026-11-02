@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.0 — 2026-11-02
+- Server first: `offload = prefer` in remotes.conf sends every allowed queue job to the server before this machine
+  is tried. The job runs here instead when the server is full (no idle CPUs), unreachable, already runs `max_jobs`
+  of your jobs, or has measurably been slower for this kind of job (median of earlier runs there vs here, upload and
+  Slurm wait included).
+- `tools = *` allows every job; `missing_tools = vivado vitis ...` keeps jobs that use programs the server lacks here.
+- Safety net: a job sent to a server automatically that fails there runs once more here before it counts as failed.
+- `ms q explain` shows whether a waiting job will go to the server first.
+
 ## 1.11.3 — 2026-11-02
 
 Shared server safety (one Unix account for everyone on Titan)
