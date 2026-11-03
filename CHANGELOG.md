@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.15.0 — 2026-11-03
+- AI assistants must start Vivado, Vitis (vitis-run, v++), ISE (xtclsh, xst, par, ...) and Quartus through the
+  queue: the guard blocks running them directly, and also shell/Tcl/Python scripts and Makefiles that start them.
+  `ms q add` / `ms flow run` / queue_submit stay allowed, and so do quick `-version` / `-help` calls.
+  AI_HEAVY_VIA_QUEUE=0 turns this off.
+- The watcher tells you (once per project, at most every 6 h) when an AI assistant runs such tools outside the
+  queue. Nothing is stopped.
+- AI_RULES rule 8: sweeps that start several tool processes must declare their cores/memory or be a flow.
+
 ## 1.14.0 — 2026-11-03
 - Tool versions per project: state/tool_access.json holds a default list and per-project lists of allowed
   AMD/Xilinx versions (e.g. default 2025.2, ~/Desktop/MCGEMMA 2025.2 + ISE 14.7). A project's rule covers its

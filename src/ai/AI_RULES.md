@@ -25,7 +25,10 @@ These rules are installed by **my-system** and are read-only. The machine-specif
    `ms q add --name NAME [--mem GB] [--cores N] -- <command>` (or the `queue_submit` MCP tool).
    Sweeps and multi-step work are a flow file: `ms flow example` shows the format,
    `ms flow check FILE` must pass, then `ms flow run FILE`. Watch progress with `ms q`.
-   The queue decides when each job may start; do not try to work around it. If a job waits,
+   The queue decides when each job may start; do not try to work around it. Starting Vivado, Vitis (vitis-run,
+   v++), ISE (xtclsh, xst, par ...) or a script/Makefile that starts them directly is blocked: put it in the queue.
+   A job that runs several tool processes in parallel (a sweep script) must say so with `--cores N` / `--mem GB`
+   for the whole job, or better be a flow with one step per run, so the queue can plan around it. If a job waits,
    `ms q explain ID` says exactly which condition blocks it (RAM, CPU, licenses, group, pressure).
    For "try several variants until one meets the goal" (seeds, strategies) use `stop_when` in the
    flow step so the remaining variants are stopped automatically.

@@ -192,12 +192,74 @@ def check_remote(c):
     return None
 
 
+# heavy EDA tools: an AI may start them only through the my-system queue (ms q add / ms flow run / queue_submit)
+HEAVY = {"vivado", "vitis", "vitis-run", "vitis_hls", "vivado_hls", "v++", "xtclsh", "xst", "ngdbuild", "par", "bitgen",
+         "trce", "xsim", "xelab", "quartus_sh", "quartus_map", "quartus_fit", "quartus_sta", "ise", "planahead"}
+QUICK = {"-version", "--version", "-help", "--help", "-h", "-v"}
+SHELLS = {"bash", "sh", "zsh", "dash", "source", ".", "exec", "xvfb-run"}
+SCRIPT_INVOKE = re.compile(r"(^|[\s/\"'`(\[,])(vivado|vitis-run|vitis_hls|vivado_hls|v\+\+|xtclsh|xst|ngdbuild|bitgen|"
+                           r"quartus_sh|xelab|xsim|par)(?=[\s\"',)\]])[^\n]{0,40}?(-mode|-source|-f\b|--mode|\.tcl|"
+                           r"-intstyle|-w\b|--config|-c\b|-R\b|-runall|-tclbatch|\$|\{)", re.M)
+
+
+def _script_runs_heavy(path):
+    """True when a script file (sh/tcl/py/Makefile) the AI wants to run starts a heavy EDA tool."""
+    try:
+        p = path if os.path.isabs(path) else os.path.join(CWD or os.getcwd(), path)
+        if not os.path.isfile(p) or os.path.getsize(p) > 2_000_000:
+            return False
+        txt = open(p, errors="replace").read()
+    except OSError:
+        return False
+    return bool(SCRIPT_INVOKE.search(txt))
+
+
+def check_heavy(c):
+    try:
+        if config and str(config.get("AI_HEAVY_VIA_QUEUE") or "1") == "0":
+            return None
+    except Exception:
+        pass
+    msg = ("{what}: an AI assistant must start Vivado/Vitis/ISE runs through the my-system queue, not directly, so they "
+           "do not take the CPU other queued jobs wait for. Use: ms q add --name NAME [--cores N --mem GB] -- <command> "
+           "(add --wait to wait for the result), a flow (ms flow run), or the queue_submit tool")
+    for seg in re.split(r"\|\||&&|[;|\n&()]", c):
+        w = [x.strip("'\"") for x in seg.split()]
+        while w and (re.match(r"^\w+=", w[0]) or w[0] in ("env", "nice", "ionice", "nohup", "time", "command",
+                                                           "timeout", "stdbuf", "setsid", "taskset")):
+            w.pop(0)
+            while w and (w[0].startswith("-") or w[0].isdigit() or re.match(r"^\d+[smhd]?$", w[0])):
+                w.pop(0)
+        if not w:
+            continue
+        prog = os.path.basename(w[0])
+        if prog == "ms":                    # ms q add ... / ms flow run ...: through the queue
+            continue
+        if prog in HEAVY:
+            if any(a in QUICK for a in w[1:]) and not any(a in ("-mode", "-source", "-f") for a in w[1:]):
+                continue
+            return msg.format(what=f"running {prog} directly")
+        args = [a for a in w[1:] if not a.startswith("-")]
+        if prog in SHELLS or prog.endswith((".sh", ".tcl", ".py", ".bash")) or prog in ("python", "python3", "make",
+                                                                                         "tclsh", "perl"):
+            if any(os.path.basename(a) in HEAVY for a in args[:4]):
+                return msg.format(what=f"running {next(os.path.basename(a) for a in args if os.path.basename(a) in HEAVY)} directly")
+            scripts = ([w[0]] if prog.endswith((".sh", ".tcl", ".py", ".bash")) else []) + \
+                      [a for a in args[:3] if a.endswith((".sh", ".tcl", ".py", ".bash")) or a == "Makefile"]
+            if prog == "make":
+                scripts.append("Makefile")
+            for sc in scripts:
+                if _script_runs_heavy(sc):
+                    return msg.format(what=f"{os.path.basename(sc)} starts Vivado/Vitis/ISE")
+    return None
+
+
 def check_bash(cmd, prot):
     c = strip_heredocs(expand(cmd))
     for rx, why in HARD:
         if rx.search(c):
             return why
-    why = check_remote(c)
+    why = check_remote(c) or check_heavy(c)
     if why:
         return why
     try:

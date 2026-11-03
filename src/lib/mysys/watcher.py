@@ -320,6 +320,69 @@ def advise_parallel(cur, s, load=None):
 
 
 # ---------------- tick ----------------
+def _stat(pid):
+    try:
+        st = open(f"/proc/{pid}/stat").read()
+        f = st[st.rfind(")") + 2:].split()
+        return st[st.find("(") + 1:st.rfind(")")], int(f[1]), int(f[3])     # comm, ppid, session
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def ai_parent(pid):
+    """Name of the AI assistant process that started `pid` (claude, codex, gemini, ...), or None."""
+    seen = 0
+    while pid > 1 and seen < 40:
+        s_ = _stat(pid)
+        if not s_:
+            return None
+        comm = s_[0].lower()
+        if comm in ("claude", "codex", "gemini", "aider", "cursor-agent", "opencode") or comm.startswith("claude"):
+            return s_[0]
+        pid, seen = s_[1], seen + 1
+    return None
+
+
+def _project_root(cwd):
+    try:
+        from . import detect
+        ps = [p for p in detect.load_state().get("projects", []) if cwd == p or cwd.startswith(p.rstrip("/") + "/")]
+        if ps:
+            return max(ps, key=len)
+    except Exception:
+        pass
+    return batch_key(cwd)
+
+
+def ai_outside_queue(cur, s, now):
+    """Tell once (per project, at most every 6 h) when an AI assistant runs heavy tools directly instead of through
+    the queue. Nothing is stopped: the runs may hold hours of work."""
+    from . import queue as Q
+    qsids = {j.get("sid") for j in Q.all_jobs() if j["state"] in ("running", "suspended") and j.get("sid")}
+    found = {}
+    for j in cur:
+        pids = j.get("pids") or [j.get("pid")]
+        p0 = pids[0] if pids else None
+        st = _stat(p0) if p0 else None
+        if not st or st[2] in qsids:
+            continue
+        who = ai_parent(p0)
+        if not who:
+            continue
+        root = _project_root(j.get("cwd") or "/")
+        f = found.setdefault(root, {"n": 0, "tool": j.get("tool"), "who": who})
+        f["n"] += 1
+    told = s.setdefault("ai_outside", {})
+    for root, f in found.items():
+        if now - told.get(root, 0) < 6 * 3600:
+            continue
+        told[root] = now
+        notify("AI ran jobs outside the queue",
+               f"{f['who']} started {f['n']} {f['tool']} run(s) directly in {short(root)}. The queue cannot plan around "
+               f"them, so queued jobs wait. Nothing was stopped. Ask the assistant to use ms q add next time "
+               f"(new commands like this are now blocked).", "default", "robot")
+
+
 def tick():
     c = config.load()
     conf = {k: float(c.get(k, config.DEFAULTS.get(k, 0)) or 0) for k in
@@ -405,6 +468,12 @@ def tick():
             brief.send("default")
         elif brief.due(s, now):
             brief.send()
+    except Exception:
+        pass
+
+    # heavy tool runs an AI assistant started outside the queue (the queue cannot plan around them)
+    try:
+        ai_outside_queue(cur, s, now)
     except Exception:
         pass
 

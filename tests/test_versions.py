@@ -133,9 +133,9 @@ import importlib.util, json, io, sys
 spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 g.CWD = {str(proj)!r}
-assert not g.check_bash({inst["ise_14.7"] + "/bin/vivado"!r}, [])
+assert not g.check_bash("ls -l " + {inst["ise_14.7"] + "/bin/vivado"!r}, [])
 g.CWD = {str(other)!r}
-assert g.check_bash({inst["ise_14.7"] + "/bin/vivado"!r}, [])
+assert g.check_bash("ls -l " + {inst["ise_14.7"] + "/bin/vivado"!r}, [])
 for c in ("ms tools allow HLS_DSE 14.7", "ms tools default '*'", "ms tools reset MCGEMMA"):
     assert g.check_bash(c, []), c
 assert not g.check_bash("ms tools", [])
