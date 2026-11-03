@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.17.1 — 2026-11-03
+Second review round:
+- Path translation ends a path at any character that cannot be part of a name, so `cd /path;ls`,
+  `PATH=/path:x` and Tcl `{/path}` are translated too.
+- AI guard also catches `bash -lc` / `sh -xc`, `ms log run -- vivado`, `ms sem NAME -- vivado` (they run here, now),
+  `exec -a`, `find -exec`, `script -c`, `parallel`, `systemd-run`, and `V=vivado; $V ...`. A variable is blocked
+  in ssh/rsync only in the host position (`rsync -a $SRC/ backup/` is fine).
+- Config comments for AI_HEAVY_VIA_QUEUE / AI_PROCESS_NAMES fixed.
+
 ## 1.17.0 — 2026-11-03
 Fixes from an independent review of 1.12-1.16:
 - Server path translation is exact: a path is replaced only when followed by `/`, a quote, a space or the line

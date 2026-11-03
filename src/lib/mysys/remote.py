@@ -236,9 +236,9 @@ msq_rep() {{ printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'; }}
 msq_text() {{  # a regular text file (no NUL byte anywhere, at most 8 MB), not a link
   [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %s "$1")" -le 8388608 ] && [ "$(tr -dc '\000' < "$1" | head -c 1 | wc -c)" -eq 0 ]
 }}
-msq_sub() {{  # FILE FROM TO: FROM when followed by / " ' a space or the line end -> TO
+msq_sub() {{  # FILE FROM TO: FROM when the path ends there (next char not part of a name: / ; : " ' ) }} space ...) -> TO
   local a b; a=$(msq_esc "$2"); b=$(msq_rep "$3")
-  sed -E -i "s/${{a}}([\/\"'[:space:]]|\$)/${{b}}\1/g" "$1"
+  sed -E -i "s/${{a}}([^A-Za-z0-9_.+~-]|\$)/${{b}}\1/g" "$1"
 }}
 msq_map() {{  # job files that mention $1: replace it with $2, keep their time stamps (so they do not come back)
   grep -rlF --exclude=in.tar.gz --exclude='.msq-*' --exclude='msq-*.log' -- "$1" . 2>/dev/null | while IFS= read -r f; do

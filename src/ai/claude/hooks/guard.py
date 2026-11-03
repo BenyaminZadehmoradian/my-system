@@ -231,7 +231,7 @@ def check_remote(c):
                 if h in hosts:
                     return (f"direct access to the shared server {h} is not allowed: submit with `ms q add` "
                             "(status: ms remote list / ms remote status)")
-        if any(x.startswith("$") for x in w[1:] if not x.startswith("-")):
+        if any(x.startswith("$") and "/" not in x.split(":")[0] for x in w[1:] if not x.startswith("-")):
             return ("ssh/scp to a host given in a variable is not allowed while shared servers are configured: "
                     "submit with `ms q add`")
     return None
@@ -294,8 +294,17 @@ def check_heavy(c):
             if w and os.path.basename(w[0]) in HEAVY and not _quick(w):
                 return msg.format(what=f"running {os.path.basename(w[0])} directly")
         return None
+    assigned = {}
+    for cm in cmds:
+        assigned.update(cm.assign)
+        if cm.prog == "export":
+            assigned.update(dict(a.split("=", 1) for a in cm.argv[1:] if "=" in a))
     for cm in cmds:
         argv, prog = cm.argv, cm.prog
+        if argv and argv[0].startswith("$"):              # V=vivado; $V -mode batch
+            val = assigned.get(argv[0].lstrip("${").rstrip("}"), "")
+            if os.path.basename(val.split()[0] if val.split() else "") in HEAVY:
+                return msg.format(what=f"running {val} directly")
         if not argv or prog == "ms":                      # ms q add ... / ms flow run ...: through the queue
             continue
         if prog in HEAVY:

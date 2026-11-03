@@ -340,8 +340,10 @@ spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.
 spec.loader.exec_module(g)
 bad = ["ssh titan sinfo", "ssh slurmslave@bacchus.ugent.be ls", "scp x.v titan:jobs/", "rsync -a . titan:x",
        "sbatch job.sh", "cd x && scancel 123", "FOO=1 srun hostname", "nice -n 5 ssh titan rm -rf jobs",
-       "ssh -oProxyJump=titan other", "ssh -J titan other", "S=titan; ssh $S ls", "'ssh' titan ls", "rsync -e ssh . titan:x"]
-good = ["ms q add -- make", "ms remote list", "ssh github.com", "grep sbatch notes.txt", "echo titan", "git push"]
+       "ssh -oProxyJump=titan other", "ssh -J titan other", "S=titan; ssh $S ls", "'ssh' titan ls", "rsync -e ssh . titan:x",
+       "rsync -a . $H:x"]
+good = ["ms q add -- make", "ms remote list", "ssh github.com", "grep sbatch notes.txt", "echo titan", "git push",
+        "rsync -a $SRC/ backup/"]
 for c in bad:
     assert g.check_bash(c, []), c
 for c in good:
@@ -429,7 +431,8 @@ def test_path_translation_is_exact():
     env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
     d = Path(tempfile.mkdtemp())
     P = "/home/u/proj"
-    (d / "run.tcl").write_text(f"source {P}/a.tcl\nexec ls {P}_tmp/x\nputs '{P}/b'\nopen \"{P}\"\nset t /mnt/data/Apps/2025.2.1/Vivado\n")
+    (d / "run.tcl").write_text(f"source {P}/a.tcl\nexec ls {P}_tmp/x\nputs '{P}/b'\nopen \"{P}\"\nset t /mnt/data/Apps/2025.2.1/Vivado\n"
+                               f"cd {P};ls\nPATH=/mnt/data/Apps/2025.2.1:x\nset l {{{P}}}\n")
     os.utime(d / "run.tcl", (1_000_000_000, 1_000_000_000))
     (d / "bin.dat").write_bytes(b"head " + P.encode() + b"/x " + b"\0" * 10 + b" tail")
     code = r"""
@@ -454,6 +457,7 @@ print("\n".join(['W="$PWD"'] + lines[a:b]))
     W = str(d)
     assert f"source {W}/a.tcl" in got and f"'{W}/b'" in got and f'"{W}"' in got, got
     assert f"{P}_tmp/x" in got, "a longer folder name that starts the same is not touched: " + got
+    assert f"cd {W};ls" in got and "PATH=/nodehome/u/xilinx/2025.2.1:x" in got and f"set l {{{W}}}" in got, got
     assert "/nodehome/u/xilinx/2025.2.1/Vivado" in got, got
     assert os.path.getmtime(d / "run.tcl") == 1_000_000_000, "time stamp kept"
     assert (d / "bin.dat").read_bytes().count(P.encode()) == 1, "binary file untouched"

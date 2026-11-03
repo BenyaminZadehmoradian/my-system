@@ -39,7 +39,11 @@ bad = ["vivado -mode batch -source impl.tcl", "nohup vivado -mode batch -source 
        "$(which vivado) -mode batch -source a.tcl", "xargs -n1 vivado -mode batch -source", "eval vivado -mode batch",
        "flock /tmp/l vivado -mode batch", "unbuffer vivado -mode batch", "timeout -s KILL 10h vivado -mode batch",
        "docker run img vivado -mode batch", PYC,
-       "bash -c 'vivado -mode batch -source a.tcl'", "cd .. && cd hardware && ./run_impl.sh", "make -C . impl"]
+       "bash -c 'vivado -mode batch -source a.tcl'", "cd .. && cd hardware && ./run_impl.sh", "make -C . impl",
+       "bash -lc 'vivado -mode batch'", "sh -xc 'vivado -mode batch'", "ms log run --name x -- vivado -mode batch",
+       "ms sem lic -- vivado -mode batch", "exec -a foo vivado -mode batch", "find . -name a.tcl -exec vivado -mode batch -source {{}} ;",
+       "script -qc 'vivado -mode batch' /dev/null", "parallel -j4 vivado -mode batch -source ::: a.tcl b.tcl",
+       "systemd-run --user vivado -mode batch", "V=vivado; $V -mode batch"]
 good = ["ms q add --name impl --cores 4 -- vivado -mode batch -source impl.tcl", "vivado -version", "xsim --help",
         "python3 parse.py", "grep -i vivado impl.log", "cat vivado.log | tail", "ls /mnt/data/Apps/2025.2.1/Vivado",
         "~/My_System/bin/ms flow run sweep.yaml", "git status",

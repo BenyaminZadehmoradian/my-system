@@ -17,7 +17,9 @@ SEPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;", "{", "}"}
 WRAPPERS = {"env": set(), "nice": {"-n"}, "ionice": {"-c", "-n"}, "nohup": set(), "time": set(), "command": set(),
             "exec": set(), "stdbuf": {"-i", "-o", "-e"}, "setsid": set(), "unbuffer": set(), "xvfb-run": {"-a", "-s"},
             "timeout": {"-s", "-k", "--signal", "--kill-after"}, "flock": {"-w", "-E", "-c"}, "watch": {"-n", "-d"},
-            "xargs": {"-n", "-P", "-I", "-L", "-s", "-d", "-a", "-E"}, "taskset": set(), "chrt": set(), "nocache": set()}
+            "xargs": {"-n", "-P", "-I", "-L", "-s", "-d", "-a", "-E"}, "taskset": set(), "chrt": set(), "nocache": set(),
+            "parallel": {"-j", "-S", "--jobs"}, "systemd-run": {"-p", "-u", "--unit", "--property", "-E"},
+            }
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 
@@ -64,6 +66,8 @@ def _strip_wrappers(argv):
             i += 1                                         # the CPU mask
         elif w == "nice" and i < len(argv) and re.fullmatch(r"-?\d+", argv[i]):
             i += 1
+        if w == "exec" and len(argv) > 2 and argv[1] == "-a":
+            i = 3                                          # exec -a NAME cmd
         argv = argv[i:]
     return argv
 
@@ -86,12 +90,31 @@ def commands(text, cwd=None, depth=0):
             if prog == "cd" and len(argv) > 1 and cdir is not None:
                 cdir = os.path.normpath(os.path.join(cdir, os.path.expanduser(argv[1])))
             out.append(Cmd(argv, dict(assign), cdir))
-            if prog in SHELLS and "-c" in argv[1:]:
-                k = argv.index("-c", 1)
-                if k + 1 < len(argv):
-                    out.extend(commands(argv[k + 1], cdir, depth + 1))
+            cflag = next((k for k, a in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a)), None)
+            if prog in SHELLS and cflag and cflag + 1 < len(argv):     # bash -c / -lc / -xc STR
+                out.extend(commands(argv[cflag + 1], cdir, depth + 1))
             elif prog == "eval":
                 out.extend(commands(" ".join(argv[1:]), cdir, depth + 1))
+            elif prog == "script" and "-c" in argv[1:] and argv.index("-c") + 1 < len(argv):
+                out.extend(commands(argv[argv.index("-c") + 1], cdir, depth + 1))
+            elif prog == "script":
+                q = [a for a in argv[1:] if re.fullmatch(r"-[a-zA-Z]*c", a)]
+                if q and argv.index(q[0]) + 1 < len(argv):
+                    out.extend(commands(argv[argv.index(q[0]) + 1], cdir, depth + 1))
+            elif prog in ("find", "fd") and any(a in ("-exec", "-execdir", "-x", "--exec") for a in argv):
+                k = next(k for k, a in enumerate(argv) if a in ("-exec", "-execdir", "-x", "--exec"))
+                sub = []
+                for a in argv[k + 1:]:
+                    if a in (";", "\\;", "+"):
+                        break
+                    sub.append(a)
+                if sub:
+                    out.append(Cmd(_strip_wrappers(sub), {}, cdir))
+            elif prog == "ms" and "--" in argv and len(argv) > 2 and not (argv[1] == "q" and argv[2] in ("add", "clone")) \
+                    and not (argv[1] == "flow" and argv[2] == "run"):
+                k = argv.index("--")                       # ms log run -- CMD / ms sem NAME -- CMD run it here, now
+                if k + 1 < len(argv):
+                    out.append(Cmd(_strip_wrappers(argv[k + 1:]), {}, cdir))
         elif assign:
             out.append(Cmd([], dict(assign), cdir))
         cur, assign = [], {}

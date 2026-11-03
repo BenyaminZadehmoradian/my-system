@@ -41,8 +41,8 @@ DEFAULTS = {
     "QUEUE_CPU_PATIENCE_MIN": "60", # a job waiting this long for cores (with its RAM free) starts with half its cores free
     "QUEUE_STUCK_NOTIFY_H": "2",    # tell me when a job has waited this many hours, with what would let it start
     "QUEUE_PIN_CPUS": "0",          # 1 = give each job its own CPU cores (taskset)
-    "AI_HEAVY_VIA_QUEUE": "1",
-    "AI_PROCESS_NAMES": "claude codex gemini aider cursor-agent opencode",   # how AI assistant processes are recognised      # AI assistants may start Vivado/Vitis/ISE only through the queue (0 = allow directly)
+    "AI_HEAVY_VIA_QUEUE": "1",      # AI assistants may start Vivado/Vitis/ISE only through the queue (0 = allow directly)
+    "AI_PROCESS_NAMES": "claude codex gemini aider cursor-agent opencode",   # how AI assistant processes are recognised
     "XILINX_ALLOWED": "",           # e.g. "2025.2": only this AMD/Xilinx tool version (and its updates) may be used
     "QUEUE_OOM_SCORE_ADJ": "300",   # queue jobs are killed before your desktop / interactive tools if RAM runs out
     "QUEUE_SLOW_FACTOR": "2",       # tell me when a job runs this many times longer than usual
