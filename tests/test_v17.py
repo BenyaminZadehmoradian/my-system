@@ -174,6 +174,18 @@ def test_phone_gets_only_what_needs_you():
     assert "Finished: 3 runs" in (tmp / "curl.log").read_text(), "PHONE_MIN_PRIO=low sends successes too"
 
 
+def test_live_log_while_running():
+    out, notes, tmp = py(r'''
+a = queue.submit("echo $((40+2))-live; sleep 8; echo second", cwd=W, name="live", **small)
+assert until(lambda: st(a["id"]) == "running", 20)
+lg = queue.LOGS / f"{a['id']}.log"
+assert until(lambda: lg.exists() and "42-live" in lg.read_text(), 6), "output appears while the job runs"
+assert until(lambda: st(a["id"]) == "done", 30)
+print("LIVE-LOG-OK")
+''')
+    assert "LIVE-LOG-OK" in out, out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

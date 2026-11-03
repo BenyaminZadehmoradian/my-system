@@ -126,6 +126,9 @@ class Runner:
         with self.lock:
             self.logf.write(prefix + line)
             self.size += len(line)
+            if time.time() - getattr(self, "_flushed", 0) > 1:   # ms q log / the GUI see output live
+                self.logf.flush()
+                self._flushed = time.time()
             if self.size > self.cap:
                 self.logf.close()
                 os.replace(self.logp, str(self.logp) + ".1")
@@ -291,6 +294,11 @@ class Runner:
                 ser.write(f"{int(now)},{rss / GiB:.3f},{cores:.2f},{rd / 2**20:.0f},{wr / 2**20:.0f}\n")
                 ser.flush()
                 series_t = now
+            with self.lock:
+                try:
+                    self.logf.flush()          # the last lines of a quiet job, too
+                except (ValueError, OSError):
+                    pass
             if now - last_save > 15:
                 queue.update(self.jid, peak_rss=self.peak, rss=rss, cpu_s=self.cpu_s(), last_line=self.last_line,
                              progress=self.progress)

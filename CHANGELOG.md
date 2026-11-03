@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.2 — 2026-11-03
+- Live job logs: output is written to the log at least every second (and every few seconds for quiet jobs), so
+  `ms q log ID` and the GUI show it while the job runs. Before, short outputs stayed in a buffer until the job ended.
+
 ## 1.12.1 — 2026-11-02
 - AI assistants learn the server rules: AI_RULES rule 12 rewritten (the queue decides where a job runs; never
   ssh/sbatch yourself; self-contained job folders; `--on here` / `--on NAME`), and the system map gets a
