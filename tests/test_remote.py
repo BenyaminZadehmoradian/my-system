@@ -351,6 +351,32 @@ print("ok")
     assert "ok" in r.stdout, r.stdout + r.stderr
 
 
+def test_links_and_setup_on_the_node():
+    out, notes, tmp, ms, env = run(r'''
+from mysys import remote as RM
+tgt = os.path.join(os.environ["FAKE_HEAD"], "shared_tools")
+os.makedirs(os.path.join(tgt, "bin"), exist_ok=True)
+open(os.path.join(tgt, "bin", "fakevivado"), "w").write("#!/bin/sh\necho fake-vivado-ok\n")
+os.chmod(os.path.join(tgt, "bin", "fakevivado"), 0o755)
+with open(os.path.join(MS, "config", "remotes.conf"), "a") as f:
+    f.write(f"links = ~/bzm/xilinx -> {tgt}\nsetup = export PATH=$HOME/bzm/xilinx/bin:$PATH\n")
+os.makedirs(os.path.join(W, "L"), exist_ok=True)
+a = queue.submit("fakevivado > out.txt; readlink $HOME/bzm/xilinx >> out.txt", cwd=os.path.join(W, "L"), name="lk", remote="titan", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+assert st(a["id"]) == "done", open(queue.LOGS / f"{a['id']}.log").read()
+o = open(os.path.join(W, "L", "out.txt")).read()
+assert "fake-vivado-ok" in o and tgt in o, o
+# a link outside your own folder is refused
+open(os.path.join(MS, "config", "remotes.conf"), "w").write("[titan]\nssh = titan\naccount = bzm\nlinks = ~/other/x -> /tmp\n")
+try:
+    RM.get("titan"); raise SystemExit("should refuse")
+except KeyError as e:
+    assert "unsafe link" in str(e)
+print("ok")
+''', shared=True)
+    assert "ok" in out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

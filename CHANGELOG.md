@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.1 — 2026-11-03
+- remotes.conf `links = ~/ACCOUNT/NAME -> /target`: a link made on each node before a job (only inside your
+  home and with your account name in the path; an existing file or link is never replaced). Used for Titan, where
+  each node has its own home: ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx.
+- remotes.conf `setup =`: shell lines run before every job command on the server (e.g. source settings64.sh).
+
 ## 1.15.0 — 2026-11-03
 - AI assistants must start Vivado, Vitis (vitis-run, v++), ISE (xtclsh, xst, par, ...) and Quartus through the
   queue: the guard blocks running them directly, and also shell/Tcl/Python scripts and Makefiles that start them.

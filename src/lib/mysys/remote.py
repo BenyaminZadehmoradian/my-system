@@ -26,6 +26,10 @@ config/remotes.conf (INI, one section per server):
   tools =                      # tools that may be offloaded automatically (e.g. vitis_hls xsim; * = every job);
                                # empty = only jobs added with --on auto
   missing_tools =              # programs the server does not have: jobs that use them always run here
+  links =                      # ~/PATH -> TARGET[, ...]: links made on each node before a job, inside your home
+                               # (e.g. ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx); never replaces anything
+  setup =                      # shell lines run before every job command there, e.g.
+                               # source ~/benyamin/xilinx/2025.2.1/Vitis/settings64.sh; export XILINX_ROOT=...
 
 How a job runs there: its folder is packed and copied to <workdir>/<job> on the head node with a job script;
 sbatch starts it; on the node the script fetches the files (or uses them directly when the disk is shared), runs
@@ -51,7 +55,7 @@ STATE = config.STATE / "remote"
 DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": "", "qos": "", "workdir": "jobs/msq/{account}",
             "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
-            "missing_tools": "", "slurm_mem": "auto"}
+            "missing_tools": "", "links": "", "setup": "", "slurm_mem": "auto"}
 GiB = 2**30
 
 
@@ -78,6 +82,7 @@ def get(name):
     if not r:
         raise KeyError(f"no remote '{name}' in config/{CONF} (ms remote setup {name})")
     safe_workdir(r)
+    parse_links(r)
     return r
 
 
@@ -211,6 +216,7 @@ else
   copy "$HEAD:$REMOTE_DIR/in.tar.gz" in.tar.gz || {{ echo "cannot fetch the job files from $HEAD" >&2; exit 92; }}
   tar xzf in.tar.gz && rm -f in.tar.gz
 fi
+{link_lines}
 touch .msq-{jid}-start; sleep 1
 echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > msq-{jid}.log
 export MSQ_OUTPUTS="$W/.msq-{jid}-outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} OMP_NUM_THREADS={cores}
@@ -235,6 +241,29 @@ def _slurm_time(seconds):
     return f"{s // 86400}-{s % 86400 // 3600:02d}:{s % 3600 // 60:02d}:00" if s >= 86400 else f"{s // 3600:02d}:{s % 3600 // 60:02d}:00"
 
 
+def parse_links(r):
+    """[(link, target)] from 'links = ~/a/b -> /target, ~/c -> /t2'. A link must be inside your home on the node
+    and contain your account name, so it can never touch anyone else's files."""
+    out = []
+    for part in (r.get("links") or "").split(","):
+        if "->" not in part:
+            continue
+        a, _, b = (x.strip() for x in part.partition("->"))
+        if not a.startswith("~/") or ".." in a.split("/") or not r.get("account") or r["account"] not in a.split("/") \
+                or not b.startswith("/") or any(ch in a + b for ch in " $`;&|*?\"'"):
+            raise KeyError(f"unsafe link '{part.strip()}' for {r['name']}: use ~/{r.get('account') or 'ACCOUNT'}/NAME -> /absolute/target")
+        out.append((a, b))
+    return out
+
+
+def link_lines(r):
+    lines = []
+    for a, b in parse_links(r):
+        p = "$HOME/" + a[2:]
+        lines.append(f'if [ -L "{p}" ] || [ -e "{p}" ]; then :; else mkdir -p "$(dirname "{p}")" && ln -s "{b}" "{p}"; fi')
+    return "\n".join(lines)
+
+
 def job_script(r, j, remote_dir):
     cores = max(1, int(round(float(j.get("cores") or 1))))
     mem = max(1, int(float(j.get("mem_gb") or 2) * 1.1 + 0.999))
@@ -248,7 +277,8 @@ def job_script(r, j, remote_dir):
     if r.get("qos"):
         lines.append(f"#SBATCH --qos={r['qos']}")
     env = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (j.get("env") or {}).items())
-    inner = (env + " " if env else "") + "bash -c " + shlex.quote(j["cmd"])
+    body = (r.get("setup", "").strip() + "\n" if r.get("setup", "").strip() else "") + j["cmd"]
+    inner = (env + " " if env else "") + "bash -c " + shlex.quote(body)
     if r.get("container"):
         run = (f'docker run --rm --init -v "$W":/mnt/run -w /mnt/run -e MSQ_OUTPUTS=/mnt/run/.msq-{j["id"]}-outputs '
                f'-e OMP_NUM_THREADS={cores} --cpus={cores} --memory={mem}g {r.get("docker_args", "")} '
@@ -256,7 +286,7 @@ def job_script(r, j, remote_dir):
     else:
         run = inner
     head = r.get("head") or r["ssh"]
-    return JOB_SH.format(jid=j["id"], attempt=j.get("attempt", 1), sbatch_lines="\n".join(lines),
+    return JOB_SH.format(jid=j["id"], attempt=j.get("attempt", 1), sbatch_lines="\n".join(lines), link_lines=link_lines(r),
                          remote_dir=shlex.quote(remote_dir), head=shlex.quote(head), cores=cores, run_line=run)
 
 
