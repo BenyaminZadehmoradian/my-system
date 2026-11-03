@@ -221,6 +221,13 @@ def submit(cmd, cwd=None, name=None, **opt):
                   "depends": [int(x) for x in (opt.get("depends") or [])], "user": os.environ.get("USER", "")})
         if state == "approval":
             j["reason"] = f"waiting for your approval: {j['approval']}"
+        try:                                    # XILINX_ALLOWED: refused at once, not after waiting in the queue
+            from . import versions
+            bad = versions.check_text(cmd)
+        except Exception:
+            bad = None
+        if bad:
+            j.update(state="failed", reason=versions.message(bad), ended=time.time(), retried=True)
         save(j)
     if state == "approval":
         try:

@@ -304,6 +304,9 @@ def q_cmd(a):
         if top:
             queue.top(j["id"])
         print(f"{j['id']}")
+        if j["state"] == "failed":
+            print(f"refused: {j['reason']}", file=sys.stderr)
+            return 1
         if j.get("clamped"):
             print(f"note: memory request lowered to {j['mem_gb']} GB (what this machine can give)", file=sys.stderr)
         if queue.daemon_state()[0] != "running":

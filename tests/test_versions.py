@@ -83,6 +83,8 @@ assert jg["state"] == "done", jg
 assert jn["state"] == "failed" and "2023.2 is not allowed" in jn["reason"], jn
 assert jh["state"] == "failed" and "14.7 is not allowed" in jh["reason"], jh
 assert jh["ended"] - jh["started"] < 15, "stopped within seconds, not after the 20 s run"
+r0 = queue.submit("/opt/Xilinx/Vivado/2023.2/bin/vivado -version", cwd=W, name="at_once")
+assert r0["state"] == "failed" and "2023.2 is not allowed" in r0["reason"], r0
 from mysys import qcli
 assert qcli._ids(["named"]) == [named["id"]] and qcli._ids(["3,4"]) == [3, 4]
 print("VERSIONS-OK")

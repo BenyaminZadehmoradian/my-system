@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.2 — 2026-11-03
+- A job whose command names a tool version that is not allowed is refused at once by `ms q add` / `queue_submit`
+  (it no longer waits in the queue for CPU/RAM first). Jobs that reach the version only through a script are
+  still stopped within seconds of starting.
+
 ## 1.13.1 — 2026-11-03
 - `ms q show|log|cancel|... NAME` accepts a job name (the newest job with that name) as well as an id, with a clear
   message instead of a traceback when nothing matches.

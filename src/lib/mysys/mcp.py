@@ -52,6 +52,8 @@ def t_queue_submit(cmd, cwd, name=None, mem_gb=None, cores=None, after=None, ret
         remote.get(on)                       # only servers the user configured
     j = queue.submit(cmd, cwd=cwd, name=name, mem_gb=mem_gb, cores=cores, depends=after or [], retries=retries,
                      timeout_s=timeout, priority=min(int(priority or 0), 0), submitted_by="ai", remote=on or None)
+    if j["state"] == "failed":
+        return f"refused (job {j['id']}): {j['reason']}"
     return (f"queued job {j['id']} ({j['mem_gb']} GB, {j['cores']} cores). Check with queue_list; "
             f"where it runs (this machine or a server) is shown by queue_explain.")
 
