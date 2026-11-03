@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.17.3 — 2026-11-03
+- The job log of a server job keeps the server's real paths (it was translated back like result files, which
+  made "No such file" errors point at local paths) and starts with what was used there: each link and whether
+  its target exists, and each path translation.
+
 ## 1.17.2 — 2026-11-03
 - `ms remote check` also checks `links` and `path_map` targets on the server and shows `setup` and
   `missing_tools`.

@@ -369,6 +369,7 @@ assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
 assert st(a["id"]) == "done", open(queue.LOGS / f"{a['id']}.log").read()
 o = open(os.path.join(W, "L", "out.txt")).read()
 assert "fake-vivado-ok" in o and tgt in o, o
+assert "link ~/bzm/xilinx -> " + tgt + ": ok" in open(queue.LOGS / f"{a['id']}.log").read()
 # a link outside your own folder is refused
 open(os.path.join(MS, "config", "remotes.conf"), "w").write("[titan]\nssh = titan\naccount = bzm\nlinks = ~/other/x -> /tmp\n")
 try:
@@ -402,6 +403,7 @@ log = open(queue.LOGS / f"{a['id']}.log").read()
 assert st(a["id"]) == "done", log
 o = open(os.path.join(P, "out.txt")).read()
 assert "srv-tool" in o, o                               # the server's copy of the tool ran
+assert f"[remote] path {LT} -> " + os.environ["FAKE_HEAD"] + "/srvtools/2025.2.1" in log, log  # the log says what was translated
 assert f"dir={P}/res" in o and f"tools={LT}" in o, o      # paths in files it wrote are mapped back home
 assert f"cfg-in {P}" in o, o
 assert open(os.path.join(P, "run.sh")).read() == run_sh and os.path.getmtime(os.path.join(P, "run.sh")) == t0, "my files untouched"

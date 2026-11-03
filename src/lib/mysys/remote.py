@@ -247,7 +247,8 @@ msq_map() {{  # job files that mention $1: replace it with $2, keep their time s
   done; rm -f .msq-{jid}-ts
 }}
 msq_unmap() {{  # files the job wrote that mention $1 (a path here): back to $2 (the path at home)
-  while IFS= read -r f; do msq_text "$f" && grep -qF -- "$1" "$f" 2>/dev/null && msq_sub "$f" "$1" "$2"; done < .msq-{jid}-changed
+  while IFS= read -r f; do case "$f" in msq-*.log|.msq-*) continue;; esac  # the job log keeps the server's real paths
+    msq_text "$f" && grep -qF -- "$1" "$f" 2>/dev/null && msq_sub "$f" "$1" "$2"; done < .msq-{jid}-changed
 }}
 cat > .msq-{jid}-cmd.sh <<'MSQ_CMD_END_{jid}'
 {body}
@@ -255,6 +256,7 @@ MSQ_CMD_END_{jid}
 {map_lines}
 touch .msq-{jid}-start; sleep 1
 echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > msq-{jid}.log
+{info_lines}
 export MSQ_OUTPUTS="$W/.msq-{jid}-outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} OMP_NUM_THREADS={cores}
 : > .msq-{jid}-outputs
 ( while sleep 60; do [ "$SHARED" = 1 ] && cp msq-{jid}.log ../msq-{jid}.log || copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; done ) &
@@ -452,8 +454,16 @@ def job_script(r, j, remote_dir):
         run = (env + " " if env else "") + f"bash {cmdfile}"
     head = r.get("head") or r["ssh"]
     mlines, ulines = map_lines_for(r, j.get("cwd"), cmdfile)
+    info = []
+    for a_, b_ in parse_links(r):
+        p_ = "$HOME/" + a_[2:]
+        info.append(f'if [ -e "{p_}/" ]; then echo "[remote] link {a_} -> {b_}: ok"; else echo "[remote] link {a_} -> {b_}: '
+                    f'TARGET NOT FOUND (is it installed/copied there?)"; fi >> msq-{j["id"]}.log')
+    for a_, b_ in map_pairs(r, j.get("cwd")):
+        info.append(f'echo "[remote] path {a_} -> {b_}" >> msq-{j["id"]}.log')
     return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1),
                          sbatch_lines="\n".join(lines), link_lines=link_lines(r), jobdir=jobdir, body=body,
+                         info_lines="\n".join(info),
                          remote_dir=shlex.quote(remote_dir), head=shlex.quote(head), cores=cores, run_line=run)
 
 
