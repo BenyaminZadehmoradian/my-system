@@ -126,9 +126,20 @@ outputs     a job writes 'key=value' lines to $MSQ_OUTPUTS; progress: echo 40 >&
 
 
 def _ids(a):
+    """Job ids from arguments: numbers (12, 12,13) or a job name (the newest job with that name)."""
     out = []
     for x in a:
-        out += [int(y) for y in str(x).split(",") if y.strip()]
+        for y in str(x).split(","):
+            y = y.strip()
+            if not y:
+                continue
+            if y.isdigit():
+                out.append(int(y))
+                continue
+            hits = [j["id"] for j in queue.all_jobs() if j.get("name") == y]
+            if not hits:
+                raise SystemExit(f"no job with id or name '{y}' (ms q list --all)")
+            out.append(max(hits))
     return out
 
 

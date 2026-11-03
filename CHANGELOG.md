@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.1 — 2026-11-03
+- `ms q show|log|cancel|... NAME` accepts a job name (the newest job with that name) as well as an id, with a clear
+  message instead of a traceback when nothing matches.
+
 ## 1.13.0 — 2026-11-03
 - One AMD/Xilinx tool version: `XILINX_ALLOWED="2025.2"` in my_system.conf allows only that version and its updates
   (2025.2.1). Any other installed Vivado, Vitis, Vitis HLS, ISE or SDK version is not allowed:
