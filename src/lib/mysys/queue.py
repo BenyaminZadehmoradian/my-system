@@ -655,9 +655,9 @@ def explain(jid):
             from . import remote as RM
             for n, r in RM.remotes().items():
                 if r["offload"] == "prefer":
-                    ok_ = RM.allowed(j, r)
-                    out.append((True, f"server first ({n})", "allowed: it goes there when the server has room" if ok_ else
-                                "not for this job (missing_tools, tools, --secret, --host, GPU or it already failed there)"))
+                    wn = RM.why_not(j, r)
+                    out.append((True, f"server first ({n})", "allowed: it goes there when the server has room"
+                                if not wn else f"not for this job: {wn}"))
         except Exception:
             pass
     if j["state"] in TERMINAL | ACTIVE:

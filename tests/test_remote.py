@@ -377,6 +377,50 @@ print("ok")
     assert "ok" in out
 
 
+def test_path_map_on_the_node():
+    out, notes, tmp, ms, env = run(r"""
+from mysys import remote as RM
+LT = os.path.join(os.path.dirname(W), "localtools", "2025.2.1")        # the tool's path on this machine
+SRV = os.path.join(os.environ["FAKE_HEAD"], "srvtools", "2025.2.1")    # where it is on the server
+os.makedirs(os.path.join(SRV, "bin")); os.makedirs(os.path.join(LT, "bin"))
+open(os.path.join(SRV, "bin", "tool"), "w").write("#!/bin/sh\necho srv-tool\n"); os.chmod(os.path.join(SRV, "bin", "tool"), 0o755)
+open(os.path.join(LT, "bin", "tool"), "w").write("#!/bin/sh\necho local-tool\n"); os.chmod(os.path.join(LT, "bin", "tool"), 0o755)
+with open(os.path.join(MS, "config", "remotes.conf"), "a") as f:
+    f.write(f"path_map = {LT} => ~/srvtools/2025.2.1\n")
+P = os.path.join(W, "pm")
+os.makedirs(P)
+run_sh = f"#!/bin/sh\n{LT}/bin/tool > out.txt\necho dir={P}/res >> out.txt\necho tools={LT} >> out.txt\ncat {P}/cfg.txt >> out.txt\n"
+open(os.path.join(P, "run.sh"), "w").write(run_sh)
+open(os.path.join(P, "cfg.txt"), "w").write(f"cfg-in {P}\n")
+t0 = os.path.getmtime(os.path.join(P, "run.sh"))
+a = queue.submit(f"sh {P}/run.sh", cwd=P, name="pm", remote="titan", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+log = open(queue.LOGS / f"{a['id']}.log").read()
+assert st(a["id"]) == "done", log
+o = open(os.path.join(P, "out.txt")).read()
+assert "srv-tool" in o, o                               # the server's copy of the tool ran
+assert f"dir={P}/res" in o and f"tools={LT}" in o, o      # paths in files it wrote are mapped back home
+assert f"cfg-in {P}" in o, o
+assert open(os.path.join(P, "run.sh")).read() == run_sh and os.path.getmtime(os.path.join(P, "run.sh")) == t0, "my files untouched"
+# a job that needs files that exist only here is not sent automatically, and explain says why
+r = RM.get("titan")
+Q = os.path.join(W, "needs_local"); os.makedirs(Q)
+open(os.path.join(Q, "go.tcl"), "w").write("source /home/someone/only_here/lib.tcl\n")
+j = {"cwd": Q, "cmd": "tclsh go.tcl", "name": "x"}
+r["tools"] = "*"
+wn = RM.why_not(j, r)
+assert wn and "/home/someone/only_here/lib.tcl" in wn, wn
+j2 = {"cwd": P, "cmd": f"sh {P}/run.sh", "name": "y"}
+assert RM.why_not(j2, r) is None, RM.why_not(j2, r)     # mapped paths and its own folder are fine
+try:
+    RM.parse_path_map(dict(r, path_map="relative => /x")); raise SystemExit("should refuse")
+except KeyError as e:
+    assert "bad path_map" in str(e)
+print("ok")
+""", shared=False)
+    assert "ok" in out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

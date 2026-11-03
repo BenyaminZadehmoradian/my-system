@@ -53,10 +53,20 @@ These rules are installed by **my-system** and are read-only. The machine-specif
       `--on NAME` forces a server, `--on here` keeps a job on this machine, `--on auto` = server only when busy here.
     - **Never use ssh, scp, rsync, sbatch, srun, salloc or scancel yourself** to reach a server (blocked). Many people
       share it; my-system only touches its own folder there and only your jobs. Status: `ms remote list`, `ms remote status`.
-    - **Make jobs self-contained:** start each job from its own run folder; everything it reads must be inside that
-      folder (relative paths, no `$HOME/...` or `/mnt/...` paths); results are written into that folder. Only the
-      job folder is copied there and back. Big folders: declare what is needed with `--inputs GLOB` (flows: `inputs:`).
-    - Programs listed as missing on a server (e.g. Vivado, Vitis on Titan) always run here; that is expected.
+    - **Make jobs self-contained:** start each job from its own run folder (`cwd`); everything it reads must be inside
+      that folder; results are written into it. Only the job folder is copied there and back. Big folders: declare
+      what is needed with `--inputs GLOB` (flows: `inputs:`).
+    - **Paths are translated for you — do not work around it.** On the server my-system rewrites, in the command and
+      in the job folder's text files: the job folder's own absolute path -> its folder on the node, and every
+      `path_map` entry (system map, e.g. `/mnt/data/Apps/2025.2.1` -> the server's Vivado). Your files here are not
+      changed, and paths in files the job writes are translated back. So scripts may keep using the normal local
+      Vivado path and the project's own absolute paths. What does NOT work there: absolute paths to anything else on
+      this machine (another project, `~/Downloads`, `/mnt/data/...` data, `/opt/...` tools). Such a job is kept here
+      automatically (`ms q explain ID` names the path). If a job should run on the server, keep its inputs inside its
+      folder or ask the user to add the path to `path_map`; never copy files to the server yourself.
+    - Write new scripts so they work anywhere: relative paths inside the run folder, tools from the allowed Vivado
+      path (or `$XILINX_VIVADO` after `settings64.sh`), thread counts from `$MSQ_THREADS`.
+    - Programs listed as missing on a server always run here; that is expected.
     - Never put passwords, keys, tokens or private data into a job (`--secret` jobs are never sent to a server).
     - `ms q explain ID` shows where a job will run and why; the job log shows the node (`[remote] titan02 ...`).
 13. **Only the AMD/Xilinx tool versions allowed for the project.** The system map section *AMD/Xilinx tool versions

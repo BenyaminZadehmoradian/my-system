@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.16.0 — 2026-11-03
+- Paths on the server: `path_map = LOCAL => SERVER` and `map_job_dir = yes` in remotes.conf. On the node the
+  command and the job folder's text files are rewritten (the job folder's absolute path -> its folder there,
+  path_map entries -> their server paths) with time stamps kept, so nothing comes back changed; files the job
+  writes are translated back before they are copied home. Your files here are never modified.
+- Jobs that use absolute paths that exist only here (scripts/configs pointing to other folders under /home, /mnt,
+  /data, /tools, /opt ...) are not sent automatically; `ms q explain` names the path and the fix.
+- `ms q explain` says exactly why a job is not sent to a server (secret, missing program, tools, paths, ...).
+- AI_RULES rule 12 and the system map explain the translation and how to write jobs that run anywhere.
+- docs/remote-servers.md: everything learned connecting Titan and installing Vivado/Vitis there (SMB share is
+  case-insensitive, per-node homes, Java ignores HOME, checksum retries, success line, timing, cleanup);
+  docs/install_retry.sh: the batch installer with retries.
+
 ## 1.15.1 — 2026-11-03
 - remotes.conf `links = ~/ACCOUNT/NAME -> /target`: a link made on each node before a job (only inside your
   home and with your account name in the path; an existing file or link is never replaced). Used for Titan, where

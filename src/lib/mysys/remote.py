@@ -28,13 +28,23 @@ config/remotes.conf (INI, one section per server):
   missing_tools =              # programs the server does not have: jobs that use them always run here
   links =                      # ~/PATH -> TARGET[, ...]: links made on each node before a job, inside your home
                                # (e.g. ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx); never replaces anything
+  path_map =                   # LOCAL => SERVER[, ...]: paths that are elsewhere on the server, e.g.
+                               # /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1
+                               # (rewritten in the command and in the job's text files there; see "Paths" below)
+  map_job_dir = yes            # the job folder's own absolute path is rewritten to its folder on the node
   setup =                      # shell lines run before every job command there, e.g.
                                # source ~/benyamin/xilinx/2025.2.1/Vitis/settings64.sh; export XILINX_ROOT=...
 
 How a job runs there: its folder is packed and copied to <workdir>/<job> on the head node with a job script;
 sbatch starts it; on the node the script fetches the files (or uses them directly when the disk is shared), runs
 the command (inside the container if one is set), copies the output log back every minute and the changed files at
-the end. Here, the job looks like any other queue job: live log, run log, notifications, results copied back into
+the end. Paths: only the job folder travels. Absolute paths in the command and in the folder's text files (scripts, Tcl,
+Makefiles, configs) are rewritten on the node: the job folder's own path -> its folder there (map_job_dir), and each
+path_map entry LOCAL -> SERVER. Your files here are never changed: rewritten files keep their time stamps so they do
+not come back, and files the job writes are mapped back (SERVER -> LOCAL) before they are copied home. A job that
+uses other absolute paths under /home, /mnt, /data, /tools, /opt ... (files that exist only here) is not sent
+automatically; ms q explain names the path.
+Here, the job looks like any other queue job: live log, run log, notifications, results copied back into
 its folder. Nothing secret is sent: jobs with --secret are refused, and no password is ever stored or used.
 """
 import configparser
@@ -55,7 +65,8 @@ STATE = config.STATE / "remote"
 DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": "", "qos": "", "workdir": "jobs/msq/{account}",
             "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
-            "missing_tools": "", "links": "", "setup": "", "slurm_mem": "auto"}
+            "missing_tools": "", "links": "", "setup": "", "path_map": "", "map_job_dir": "yes",
+            "slurm_mem": "auto"}
 GiB = 2**30
 
 
@@ -83,6 +94,7 @@ def get(name):
         raise KeyError(f"no remote '{name}' in config/{CONF} (ms remote setup {name})")
     safe_workdir(r)
     parse_links(r)
+    parse_path_map(r)
     return r
 
 
@@ -217,6 +229,20 @@ else
   tar xzf in.tar.gz && rm -f in.tar.gz
 fi
 {link_lines}
+export MSQ_WORKDIR="$W"
+msq_esc() {{ printf '%s' "$1" | sed -e 's/[]\/$*.^[]/\\&/g'; }}
+msq_rep() {{ printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'; }}
+msq_map() {{  # text files that mention $1: replace it with $2, keep their time stamps (so they do not come back)
+  local a b; a=$(msq_esc "$1"); b=$(msq_rep "$2")
+  grep -rlIF --exclude=in.tar.gz --exclude='.msq-*' --exclude='msq-*.log' -- "$1" . 2>/dev/null | while IFS= read -r f; do
+    [ -L "$f" ] && continue; touch -r "$f" .msq-{jid}-ts && sed -i "s/$a/$b/g" "$f" && touch -r .msq-{jid}-ts "$f"
+  done; rm -f .msq-{jid}-ts
+}}
+msq_unmap() {{  # files the job wrote that mention $1 (a path here): back to $2 (the path at home)
+  local a b; a=$(msq_esc "$1"); b=$(msq_rep "$2")
+  while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && grep -qIF -- "$1" "$f" 2>/dev/null && sed -i "s/$a/$b/g" "$f"; done < .msq-{jid}-changed
+}}
+{map_lines}
 touch .msq-{jid}-start; sleep 1
 echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > msq-{jid}.log
 export MSQ_OUTPUTS="$W/.msq-{jid}-outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} OMP_NUM_THREADS={cores}
@@ -229,6 +255,7 @@ kill $SYNC 2>/dev/null
 echo "[remote] finished $(date '+%F %T') rc=$RC" >> msq-{jid}.log
 echo $RC > .msq-{jid}-rc
 find . -newer .msq-{jid}-start -type f ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
+{unmap_lines}
 tar czf out.tar.gz -T .msq-{jid}-changed .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
 if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp msq-{jid}.log ../msq-{jid}.log
 else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; cd /; case "$W" in */msq-{jid}-??????) rm -rf "$W";; esac; fi
@@ -256,6 +283,126 @@ def parse_links(r):
     return out
 
 
+def parse_path_map(r):
+    """[(local, server)] from 'path_map = /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1, ...'."""
+    out = []
+    for part in (r.get("path_map") or "").split(","):
+        if "=>" not in part:
+            continue
+        a, _, b = (x.strip().rstrip("/") for x in part.partition("=>"))
+        bad = any(ch in a + b for ch in " $`;&|*?\"'\\")
+        if bad or not a.startswith("/") or not (b.startswith("/") or b.startswith("~/")) or len(a) < 4:
+            raise KeyError(f"bad path_map entry '{part.strip()}' for {r['name']}: use /local/path => /server/path "
+                           f"(or ~/path on the server)")
+        out.append((a, b))
+    return sorted(out, key=lambda ab: -len(ab[0]))
+
+
+def _srv(path):
+    """Server path for shell use: ~/x -> $HOME/x (expanded on the node)."""
+    return "$HOME/" + path[2:] if path.startswith("~/") else path
+
+
+def _sq(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def map_pairs(r, cwd):
+    """[(local, server-shell-expr)] longest first: the job folder (map_job_dir) and path_map entries."""
+    pairs = [(a, _srv(b)) for a, b in parse_path_map(r)]
+    if (r.get("map_job_dir") or "yes").lower() in ("yes", "1", "true", "on") and cwd and len(cwd) > 1:
+        pairs.append((cwd.rstrip("/"), "$MSQ_WORKDIR"))
+    return sorted(pairs, key=lambda ab: -len(ab[0]))
+
+
+def map_cmd(r, cmd, cwd):
+    for a, b in map_pairs(r, cwd):
+        cmd = cmd.replace(a, b)
+    return cmd
+
+
+def map_lines_for(r, cwd):
+    """Shell lines: rewrite paths in the job's text files on the node (and back, for files it wrote)."""
+    m, u = [], []
+    for a, b in map_pairs(r, cwd):
+        m.append(f'msq_map {_sq(a)} "{b}"')
+        u.append(f'msq_unmap "{b}" {_sq(a)}')
+    return "\n".join(m), "\n".join(u)
+
+
+SOURCE_EXT = {".sh", ".bash", ".zsh", ".tcl", ".py", ".pl", ".mk", ".make", ".cfg", ".ini", ".json", ".yaml", ".yml",
+              ".toml", ".conf", ".env", ".f", ".do", ".xdc", ".sdc", ".prj", ".flist", ".cmake"}
+
+
+def _is_source(fn, full):
+    """Scripts and configs a job reads (not logs, reports or results, which mention many paths of earlier runs)."""
+    ext = os.path.splitext(fn)[1].lower()
+    if ext in SOURCE_EXT or fn in ("Makefile", "makefile", "GNUmakefile", "CMakeLists.txt"):
+        return True
+    return not ext and os.access(full, os.X_OK)        # executable without extension: a script
+
+
+OUTSIDE_RX = None
+_OUT_CACHE = {}
+
+
+def outside_paths(j, r, limit=3):
+    """Absolute paths that the job (its command or the text files in its folder) uses and that exist only on this
+    machine: under /home /mnt /data /tools /opt /scratch /media /srv, outside the job folder and not in path_map.
+    Such a job would fail on the server, so it is not sent automatically. Cached for 10 minutes per folder."""
+    import re as _re
+    global OUTSIDE_RX
+    if OUTSIDE_RX is None:
+        OUTSIDE_RX = _re.compile(r"(?<![\w.~$/])(/(?:home|mnt|data|tools|opt|scratch|media|srv)/[^\s\"'<>|;:,)\]}*?=]+)")
+    cwd = (j.get("cwd") or "").rstrip("/")
+    skip = [a for a, _ in parse_path_map(r)] + [cwd]
+    key = (cwd, r["name"], j.get("cmd"), tuple(j.get("inputs") or []))
+    c = _OUT_CACHE.get(key)
+    if c and time.time() - c[0] < 600:
+        return c[1]
+    found = []
+
+    def scan(text):
+        for m in OUTSIDE_RX.finditer(text):
+            pth = m.group(1).rstrip(".")
+            if any(pth == s or pth.startswith(s + "/") for s in skip if s):
+                continue
+            if pth not in found:
+                found.append(pth)
+            if len(found) >= limit:
+                return True
+        return False
+    done = scan(j.get("cmd") or "")
+    pats = r["exclude"].split()
+    n = 0
+    if not done and cwd and os.path.isdir(cwd):
+        for dp, dns, fns in os.walk(cwd):
+            rel_dp = os.path.relpath(dp, cwd)
+            dns[:] = [d for d in dns if not _excluded(os.path.normpath(os.path.join(rel_dp, d)), pats)]
+            for fn in fns:
+                if n >= 4000 or done:
+                    break
+                rel = os.path.normpath(os.path.join(rel_dp, fn))
+                if _excluded(rel, pats) or fn.startswith(("msq-", ".msq-", "slurm-")) or not _is_source(fn, os.path.join(dp, fn)):
+                    continue
+                full = os.path.join(dp, fn)
+                try:
+                    if os.path.islink(full) or os.path.getsize(full) > 512 * 1024:
+                        continue
+                    with open(full, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    continue
+                if b"\0" in data[:4096]:
+                    continue                    # binary
+                n += 1
+                done = scan(data.decode(errors="replace"))
+            if n >= 4000 or done:
+                break
+    _OUT_CACHE[key] = (time.time(), found)
+    return found
+
+
 def link_lines(r):
     lines = []
     for a, b in parse_links(r):
@@ -277,7 +424,7 @@ def job_script(r, j, remote_dir):
     if r.get("qos"):
         lines.append(f"#SBATCH --qos={r['qos']}")
     env = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (j.get("env") or {}).items())
-    body = (r.get("setup", "").strip() + "\n" if r.get("setup", "").strip() else "") + j["cmd"]
+    body = (r.get("setup", "").strip() + "\n" if r.get("setup", "").strip() else "") + map_cmd(r, j["cmd"], j.get("cwd"))
     inner = (env + " " if env else "") + "bash -c " + shlex.quote(body)
     if r.get("container"):
         run = (f'docker run --rm --init -v "$W":/mnt/run -w /mnt/run -e MSQ_OUTPUTS=/mnt/run/.msq-{j["id"]}-outputs '
@@ -286,7 +433,8 @@ def job_script(r, j, remote_dir):
     else:
         run = inner
     head = r.get("head") or r["ssh"]
-    return JOB_SH.format(jid=j["id"], attempt=j.get("attempt", 1), sbatch_lines="\n".join(lines), link_lines=link_lines(r),
+    mlines, ulines = map_lines_for(r, j.get("cwd"))
+    return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1), sbatch_lines="\n".join(lines), link_lines=link_lines(r),
                          remote_dir=shlex.quote(remote_dir), head=shlex.quote(head), cores=cores, run_line=run)
 
 
@@ -475,14 +623,34 @@ def _uses(j, progs):
     return any(os.path.basename(w) in progs for w in words if w)
 
 
+def why_not(j, r):
+    """Why this job may not go to server `r` automatically, or None when it may."""
+    if j.get("secrets"):
+        return "it uses --secret (never sent to a shared server)"
+    if j.get("container") or j.get("host"):
+        return "it has its own --container/--host"
+    if j.get("remote_never"):
+        return "it stays here (--on here, or it already failed on a server)"
+    if int(j.get("gpus") or 0):
+        return "it needs a GPU"
+    miss = set(r["missing_tools"].split())
+    if _uses(j, miss):
+        return f"it uses a program the server lacks (missing_tools: {' '.join(sorted(miss))})"
+    tools = r["tools"].split()
+    if not (j.get("remote_ok") or "*" in tools or (j.get("tool") and j["tool"] in tools)):
+        return "its tool is not in 'tools' (add it, or tools = *, or use --on auto)"
+    try:
+        out = outside_paths(j, r)
+    except Exception:
+        out = []
+    if out:
+        return "it uses paths that exist only here: " + ", ".join(out[:3]) + " (add them to path_map, or keep the files inside the job folder)"
+    return None
+
+
 def allowed(j, r):
     """May this job go to server `r` automatically? (--on auto, or its tool listed in 'tools', or tools = *)."""
-    if j.get("secrets") or j.get("container") or j.get("host") or j.get("remote_never") or int(j.get("gpus") or 0):
-        return False
-    if _uses(j, set(r["missing_tools"].split())):
-        return False
-    tools = r["tools"].split()
-    return bool(j.get("remote_ok") or "*" in tools or (j.get("tool") and j["tool"] in tools))
+    return why_not(j, r) is None
 
 
 def _median(xs):
@@ -511,7 +679,11 @@ def prefer_target(j, jobs):
     or (None, why-not). The server is skipped when it is full, unreachable, at max_jobs, or measurably slower."""
     why = None
     for name, r in remotes().items():
-        if r["offload"] != "prefer" or not allowed(j, r):
+        if r["offload"] != "prefer":
+            continue
+        wn = why_not(j, r)
+        if wn:
+            why = f"{name}: {wn}"
             continue
         if running_here(name, jobs) >= int(r["max_jobs"]):
             why = f"{name} already runs {r['max_jobs']} of your jobs"

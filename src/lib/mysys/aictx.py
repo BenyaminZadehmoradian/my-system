@@ -137,8 +137,11 @@ def remote_lines():
                 f"At most {r['max_jobs']} of your jobs there at once{node}.",
                 f"  - Not available there (jobs using these always run on this machine): "
                 f"{r['missing_tools'] or '(none listed)'}",
-                f"  - Only the job's own folder is copied there and back (max {r['max_upload_gb']} GB, else `--inputs`); "
-                f"keep inputs inside it and use relative paths. A job that fails there runs once more here.",
+                f"  - Only the job's own folder is copied there and back (max {r['max_upload_gb']} GB, else `--inputs`). "
+                f"A job that fails there runs once more here.",
+                "  - Paths rewritten there automatically (your files here stay unchanged): the job folder"
+                + ("".join(f"; `{a}` -> `{b}`" for a, b in remote.parse_path_map(r)) if r.get("path_map") else "")
+                + ". Jobs that use other absolute paths of this machine stay here (rule 12).",
                 f"  - Keep a job on this machine: `--on here`. Force the server: `--on {n}`. Status: `ms remote list`."]
     return out
 
