@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.17.2 — 2026-11-03
+- `ms remote check` also checks `links` and `path_map` targets on the server and shows `setup` and
+  `missing_tools`.
+
 ## 1.17.1 — 2026-11-03
 Second review round:
 - Path translation ends a path at any character that cannot be part of a name, so `cd /path;ls`,

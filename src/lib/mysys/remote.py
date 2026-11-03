@@ -806,6 +806,21 @@ def check(name, test_job=False, out=print):
         else:
             step(True, f"{len(nodes)} node(s)", f"CPUs per node {cpus}; Slurm does not know the nodes' RAM, so jobs do "
                                                 f"not ask for memory (set container = … to limit it per job)")
+    # tools on the server: links, path_map, setup
+    for a, b in parse_links(r):
+        rc, o, _ = ssh(r, f"test -e {shlex.quote(b)} && echo yes || echo no", 30)
+        step(rc == 0 and o.strip() == "yes", f"link {a} -> {b}", "target exists" if o.strip() == "yes" else
+             "target not found on the server (yet)", "copy the tools there first, or fix the path")
+    for a, b in parse_path_map(r):
+        tgt = ("$HOME/" + b[2:]) if b.startswith("~/") else shlex.quote(b)
+        rc, o, _ = ssh(r, f"test -e {tgt} && echo yes || echo no", 30)
+        step(rc == 0 and o.strip() == "yes", f"path_map {a} => {b}",
+             "exists on the server" + (" (on the nodes through the link)" if r.get("links") else "")
+             if o.strip() == "yes" else "not found on the server", "check the path, or install/copy it there")
+    if r.get("setup", "").strip():
+        out(f"  ..  setup before each job: {r['setup'].strip()}")
+    if r.get("missing_tools", "").strip():
+        out(f"  ..  kept here (missing_tools): {r['missing_tools'].strip()}")
     out("  -- this server is shared: never put passwords, keys or private data in jobs sent there")
     if test_job and ok_all:
         out("  .. sending a 1-minute test job (1 CPU, 1 GB) to learn what the nodes offer …")
