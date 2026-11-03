@@ -266,6 +266,7 @@ KEEP_MONTHLY=6
 # QUEUE_CPU_PATIENCE_MIN=60    # waited this long for cores (RAM free): start once half of its cores are free
 # QUEUE_STUCK_NOTIFY_H=2       # tell me when a job has waited this many hours, and what would let it start
 # QUEUE_PIN_CPUS=0             # 1 = each job gets its own physical cores (taskset)
+# AI_PROCESS_NAMES="claude codex gemini aider cursor-agent opencode"   # programs that count as AI assistants
 # AI_HEAVY_VIA_QUEUE=1         # AI assistants may start Vivado/Vitis/ISE only through the queue
 # XILINX_ALLOWED="2025.2"      # only this Vivado/Vitis version (and 2025.2.1 etc.) for queue jobs and AI
 # QUEUE_OOM_SCORE_ADJ=300      # if RAM runs out, the kernel kills queue jobs before your desktop

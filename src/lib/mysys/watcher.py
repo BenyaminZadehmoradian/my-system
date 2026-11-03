@@ -331,13 +331,16 @@ def _stat(pid):
 
 def ai_parent(pid):
     """Name of the AI assistant process that started `pid` (claude, codex, gemini, ...), or None."""
+    names = {n.lower() for n in config.words("AI_PROCESS_NAMES")}
+    if not names:
+        return None
     seen = 0
     while pid > 1 and seen < 40:
         s_ = _stat(pid)
         if not s_:
             return None
         comm = s_[0].lower()
-        if comm in ("claude", "codex", "gemini", "aider", "cursor-agent", "opencode") or comm.startswith("claude"):
+        if comm in names:
             return s_[0]
         pid, seen = s_[1], seen + 1
     return None

@@ -229,7 +229,7 @@ def submit(cmd, cwd=None, name=None, **opt):
         if bad:
             j.update(state="failed", reason=versions.message(bad, cwd), ended=time.time(), retried=True)
         save(j)
-    if state == "approval":
+    if j["state"] == "approval":
         try:
             subprocess.Popen([str(config.MS / "bin" / "notify.sh"), f"Approval needed: {nm}",
                               f"#{jid} {j['approval']} — approve with: ms q approve {jid}", "high", "raising_hand"],

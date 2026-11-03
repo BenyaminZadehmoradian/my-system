@@ -6,6 +6,7 @@ state/paused/<feature> holds the end time (epoch seconds; 0 = until resumed). Sh
 Only you can do this: the AI guard blocks `ms pause` / `ms resume` for assistants. The AI guard itself cannot be
 paused here (it is a root-owned policy; remove it with uninstall.sh if you really want to).
 """
+import os
 import time
 
 from . import config
@@ -61,7 +62,18 @@ def parse_end(args):
     return 0
 
 
+def _refuse_ai():
+    try:
+        from . import watcher
+        who = watcher.ai_parent(os.getpid())
+    except Exception:
+        who = None
+    if who:
+        raise ValueError(f"refused: {who} (an AI assistant) may not pause or resume my-system; only the user can")
+
+
 def set_pause(feature, end=0):
+    _refuse_ai()
     if feature != "all" and feature not in FEATURES:
         raise ValueError(f"unknown feature '{feature}' (one of: all, {', '.join(FEATURES)})")
     DIR.mkdir(parents=True, exist_ok=True)
@@ -69,6 +81,7 @@ def set_pause(feature, end=0):
 
 
 def resume(feature):
+    _refuse_ai()
     if feature == "all":
         for f in DIR.glob("*") if DIR.exists() else []:
             f.unlink()

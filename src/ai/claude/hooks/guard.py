@@ -168,27 +168,72 @@ def remote_hosts():
     return {h for h in hosts if h and h not in ("localhost", "127.0.0.1")}
 
 
+def _cmds(c):
+    try:
+        from mysys import cmdparse
+        return cmdparse.commands(c, CWD or os.getcwd())
+    except Exception:
+        return None
+
+
+def check_user_only(c):
+    """Settings only the user may change, also when the program name is quoted or run through python -m."""
+    for cm in _cmds(c) or []:
+        a = cm.argv
+        if cm.prog == "ms" and len(a) > 1:
+            if a[1] in ("pause", "resume", "unlock", "lock"):
+                return "only the user may pause, resume, unlock or lock my-system"
+            if a[1] == "tools" and len(a) > 2 and a[2] in ("allow", "deny", "default", "reset"):
+                return "only the user may change which tool versions a project may use"
+        if cm.prog.startswith("python") and "-m" in a[1:]:
+            k = a.index("-m")
+            if k + 1 < len(a) and re.match(r"mysys\.(versions|pause|config)\b", a[k + 1]):
+                return "only the user may change my-system settings"
+    return None
+
+
+SSH_FAMILY = ("ssh", "scp", "rsync", "sftp", "mosh", "sshfs")
+
+
 def check_remote(c):
     hosts = None
-    for seg in re.split(r"\|\||&&|[;|\n&()]", c):
-        w = [x.strip("'\"") for x in seg.split()]
-        while w and (re.match(r"^\w+=", w[0]) or w[0] in ("env", "nice", "nohup", "time", "command", "exec", "timeout")):
-            w.pop(0)
-            while w and (w[0].startswith("-") or w[0].isdigit()):
-                w.pop(0)
+    cmds = _cmds(c)
+    if cmds is None:
+        cmds = []
+        for seg in re.split(r"\|\||&&|[;|\n&()]", c):
+            w = [x.strip("'\"") for x in seg.split()]
+            if w:
+                cmds.append(type("C", (), {"argv": w, "prog": os.path.basename(w[0])})())
+    for cm in cmds:
+        w, prog = cm.argv, cm.prog
         if not w:
             continue
-        prog = os.path.basename(w[0])
         if prog in SLURM:
             return "Slurm commands are not allowed: submit with `ms q add` (the queue sends jobs to the server itself)"
-        if prog not in ("ssh", "scp", "rsync", "sftp", "mosh", "sshfs"):
+        rsh = prog == "rsync" and any(x.startswith(("-e", "--rsh")) for x in w[1:])
+        if prog not in SSH_FAMILY and not rsh:
             continue
         hosts = remote_hosts() if hosts is None else hosts
-        for a in w[1:]:
-            h = a.split("@")[-1].split(":")[0]
-            if h in hosts:
-                return (f"direct access to the shared server {h} is not allowed: submit with `ms q add` "
-                        "(status: ms remote list / ms remote status)")
+        if not hosts:
+            continue
+        cand = []
+        for k, a in enumerate(w[1:], 1):
+            cand.append(a)
+            if a.startswith("-o") and "=" in a:           # -oProxyJump=titan, -o HostName=bacchus
+                cand.append(a.split("=", 1)[1])
+            if a in ("-J", "-o") and k + 1 < len(w):
+                cand.append(w[k + 1].split("=", 1)[-1])
+            if a.startswith("-J") and len(a) > 2:
+                cand.append(a[2:])
+        for a in cand:
+            for part in a.split(","):
+                h = part.split("@")[-1].split(":")[0]
+                if h in hosts:
+                    return (f"direct access to the shared server {h} is not allowed: submit with `ms q add` "
+                            "(status: ms remote list / ms remote status)")
+        if any(x.startswith("$") for x in w[1:] if not x.startswith("-")):
+            return ("ssh/scp to a host given in a variable is not allowed while shared servers are configured: "
+                    "submit with `ms q add`")
     return None
 
 
@@ -202,16 +247,28 @@ SCRIPT_INVOKE = re.compile(r"(^|[\s/\"'`(\[,])(vivado|vitis-run|vitis_hls|vivado
                            r"-intstyle|-w\b|--config|-c\b|-R\b|-runall|-tclbatch|\$|\{)", re.M)
 
 
-def _script_runs_heavy(path):
-    """True when a script file (sh/tcl/py/Makefile) the AI wants to run starts a heavy EDA tool."""
+QUEUE_LINE = re.compile(r"(^|[\s;&|(/])ms\s+(q\s+add|flow\s+run|q\s+clone)\b|queue_submit")
+PY_INVOKE = re.compile(r"""['"](vivado|vitis-run|vitis_hls|vivado_hls|v\+\+|xtclsh|xst|ngdbuild|bitgen|par|xelab|xsim|quartus_sh)['"\s]""")
+WHICH_RX = re.compile(r"(\$\(|`)\s*(which|command\s+-v|type\s+-p)\s+(\S+)")
+CONTAINERS = {"docker", "podman", "singularity", "apptainer"}
+
+
+def _script_runs_heavy(path, cwd=None):
+    """True when a script file (sh/tcl/py/Makefile) the AI wants to run starts a heavy EDA tool itself (lines that
+    hand the work to the queue - ms q add / ms flow run - do not count)."""
     try:
-        p = path if os.path.isabs(path) else os.path.join(CWD or os.getcwd(), path)
+        p = path if os.path.isabs(path) else os.path.join(cwd or CWD or os.getcwd(), path)
         if not os.path.isfile(p) or os.path.getsize(p) > 2_000_000:
             return False
         txt = open(p, errors="replace").read()
     except OSError:
         return False
-    return bool(SCRIPT_INVOKE.search(txt))
+    txt = "\n".join(l for l in txt.splitlines() if not QUEUE_LINE.search(l))
+    return bool(SCRIPT_INVOKE.search(txt) or (path.endswith(".py") and PY_INVOKE.search(txt)))
+
+
+def _quick(argv):
+    return any(a in QUICK for a in argv[1:]) and not any(a in ("-mode", "-source", "-f", "-c") for a in argv[1:])
 
 
 def check_heavy(c):
@@ -223,33 +280,55 @@ def check_heavy(c):
     msg = ("{what}: an AI assistant must start Vivado/Vitis/ISE runs through the my-system queue, not directly, so they "
            "do not take the CPU other queued jobs wait for. Use: ms q add --name NAME [--cores N --mem GB] -- <command> "
            "(add --wait to wait for the result), a flow (ms flow run), or the queue_submit tool")
-    for seg in re.split(r"\|\||&&|[;|\n&()]", c):
-        w = [x.strip("'\"") for x in seg.split()]
-        while w and (re.match(r"^\w+=", w[0]) or w[0] in ("env", "nice", "ionice", "nohup", "time", "command",
-                                                           "timeout", "stdbuf", "setsid", "taskset")):
-            w.pop(0)
-            while w and (w[0].startswith("-") or w[0].isdigit() or re.match(r"^\d+[smhd]?$", w[0])):
-                w.pop(0)
-        if not w:
-            continue
-        prog = os.path.basename(w[0])
-        if prog == "ms":                    # ms q add ... / ms flow run ...: through the queue
+    for m in WHICH_RX.finditer(c):                        # $(which vivado) -mode batch
+        if os.path.basename(m.group(3).strip("'\")")) in HEAVY:
+            return msg.format(what=f"running {m.group(3)} directly")
+    try:
+        from mysys import cmdparse
+        cmds = cmdparse.commands(c, CWD or os.getcwd())
+    except Exception:
+        cmds = None
+    if cmds is None:                                      # library unavailable: simple fallback
+        for seg in re.split(r"\|\||&&|[;|\n&()]", c):
+            w = [x.strip("'\"") for x in seg.split()]
+            if w and os.path.basename(w[0]) in HEAVY and not _quick(w):
+                return msg.format(what=f"running {os.path.basename(w[0])} directly")
+        return None
+    for cm in cmds:
+        argv, prog = cm.argv, cm.prog
+        if not argv or prog == "ms":                      # ms q add ... / ms flow run ...: through the queue
             continue
         if prog in HEAVY:
-            if any(a in QUICK for a in w[1:]) and not any(a in ("-mode", "-source", "-f") for a in w[1:]):
+            if _quick(argv):
                 continue
             return msg.format(what=f"running {prog} directly")
-        args = [a for a in w[1:] if not a.startswith("-")]
+        names = [os.path.basename(a) for a in argv[1:]]
+        if prog in CONTAINERS and any(n in HEAVY for n in names):
+            return msg.format(what=f"running {next(n for n in names if n in HEAVY)} in {prog} directly")
+        if prog.startswith("python") and "-c" in argv[1:]:
+            k = argv.index("-c")
+            if k + 1 < len(argv) and PY_INVOKE.search(argv[k + 1]):
+                return msg.format(what="python -c starting a Vivado/Vitis/ISE tool")
+        args = [a for a in argv[1:] if not a.startswith("-")]
         if prog in SHELLS or prog.endswith((".sh", ".tcl", ".py", ".bash")) or prog in ("python", "python3", "make",
-                                                                                         "tclsh", "perl"):
-            if any(os.path.basename(a) in HEAVY for a in args[:4]):
+                                                                                         "tclsh", "perl", "source", "."):
+            if prog not in ("make",) and any(os.path.basename(a) in HEAVY for a in args[:4]):
                 return msg.format(what=f"running {next(os.path.basename(a) for a in args if os.path.basename(a) in HEAVY)} directly")
-            scripts = ([w[0]] if prog.endswith((".sh", ".tcl", ".py", ".bash")) else []) + \
+            scripts = ([argv[0]] if prog.endswith((".sh", ".tcl", ".py", ".bash")) else []) + \
                       [a for a in args[:3] if a.endswith((".sh", ".tcl", ".py", ".bash")) or a == "Makefile"]
+            d = cm.cwd
             if prog == "make":
+                if "-C" in argv[1:]:
+                    k = argv.index("-C")
+                    if k + 1 < len(argv):
+                        d = os.path.join(d or "", argv[k + 1])
+                elif "-f" in argv[1:]:
+                    k = argv.index("-f")
+                    if k + 1 < len(argv):
+                        scripts.append(argv[k + 1])
                 scripts.append("Makefile")
             for sc in scripts:
-                if _script_runs_heavy(sc):
+                if _script_runs_heavy(sc, d):
                     return msg.format(what=f"{os.path.basename(sc)} starts Vivado/Vitis/ISE")
     return None
 
@@ -259,7 +338,7 @@ def check_bash(cmd, prot):
     for rx, why in HARD:
         if rx.search(c):
             return why
-    why = check_remote(c) or check_heavy(c)
+    why = check_user_only(c) or check_remote(c) or check_heavy(c)
     if why:
         return why
     try:

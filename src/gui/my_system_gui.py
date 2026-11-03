@@ -1106,8 +1106,13 @@ class ToolAccessPage(Page):
     def save(self):
         V = self.vmod()
         allf = [fam for fam, _ in self.cols]
+        old = V.rules()
+
+        def keep(prev):                  # versions in a rule that are not installed (no column) stay as they were
+            return [v for v in prev if v != "*" and V.family(v) not in allf]
         d = self.ticks(0)
-        r = {"default": ["*"] if allf and set(d) == set(allf) and V.rules()["default"] == ["*"] else d, "projects": {}}
+        r = {"default": ["*"] if allf and set(d) == set(allf) and old["default"] == ["*"] else d + keep(old["default"]),
+             "projects": {}}
         last = self.tab.columnCount() - 1
         for i in range(1, self.tab.rowCount()):
             p = self.tab.item(i, 0).data(Qt.ItemDataRole.UserRole)
@@ -1115,12 +1120,16 @@ class ToolAccessPage(Page):
             t = self.ticks(i)
             if rule.startswith("follows default") or (set(t) == set(d) and rule != "own rule"):
                 continue
-            r["projects"][p] = t
+            r["projects"][p] = t + keep(old["projects"].get(p, []))
         if not d and QMessageBox.question(self, "Save", "No version is ticked in the default row: every project without "
                                           "its own rule will be blocked from all AMD/Xilinx tools. Save anyway?") \
                 != QMessageBox.StandardButton.Yes:
             return
-        V.save(r)
+        try:
+            V.save(r)
+        except PermissionError as e:
+            QMessageBox.warning(self, "Tool access", str(e))
+            return
         try:
             from mysys import aictx
             aictx.write()

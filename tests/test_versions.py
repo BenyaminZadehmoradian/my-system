@@ -133,14 +133,45 @@ import importlib.util, json, io, sys
 spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 g.CWD = {str(proj)!r}
-assert not g.check_bash("ls -l " + {inst["ise_14.7"] + "/bin/vivado"!r}, [])
+assert not g.check_bash("source " + {inst["ise_14.7"] + "/settings64.sh"!r}, [])
 g.CWD = {str(other)!r}
-assert g.check_bash("ls -l " + {inst["ise_14.7"] + "/bin/vivado"!r}, [])
+assert g.check_bash("source " + {inst["ise_14.7"] + "/settings64.sh"!r}, [])
+assert not g.check_bash("ls -l " + {inst["ise_14.7"] + "/bin/vivado"!r}, []), "only listing is fine"
+assert g.check_bash(\'"ms" tools allow HLS_DSE 14.7\', []) and g.check_bash("python3 -m mysys.versions allow X 14.7", [])
 for c in ("ms tools allow HLS_DSE 14.7", "ms tools default '*'", "ms tools reset MCGEMMA"):
     assert g.check_bash(c, []), c
 assert not g.check_bash("ms tools", [])
 print("ok")
 '''
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert "ok" in r.stdout, r.stdout + r.stderr
+
+
+def test_only_the_user_changes_rules():
+    import tempfile
+    tmp, ms, inst = setup()
+    with open(ms / "config/my_system.conf", "a") as f:
+        f.write('\nAI_PROCESS_NAMES="fakeai"\n')
+    d = Path(tempfile.mkdtemp())
+    ai = d / "fakeai"                                  # stands in for an AI assistant process
+    ai.write_text('#!/bin/sh\n"$@"\n')
+    ai.chmod(0o755)
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    m = [sys.executable, str(ms / "bin/ms")]
+    r = subprocess.run([str(ai)] + m + ["tools", "default", "*"], env=env, capture_output=True, text=True)
+    assert r.returncode == 1 and "may not change tool access" in r.stdout, r.stdout + r.stderr
+    r = subprocess.run([str(ai)] + m + ["pause", "queue"], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "may not pause" in r.stdout + r.stderr, r.stdout + r.stderr
+    r = subprocess.run(m + ["tools", "default", "2025.2"], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    code = r"""
+import os, sys, json
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
+from mysys import versions as V
+json.dump({"default": [], "projects": {}}, open(V.FILE, "w"))
+assert V.rules()["default"] == [] and not V.allowed("2025.2.1"), "an empty default allows nothing"
+print("ok")
+"""
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
     assert "ok" in r.stdout, r.stdout + r.stderr
 

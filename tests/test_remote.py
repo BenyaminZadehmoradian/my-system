@@ -339,7 +339,8 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 bad = ["ssh titan sinfo", "ssh slurmslave@bacchus.ugent.be ls", "scp x.v titan:jobs/", "rsync -a . titan:x",
-       "sbatch job.sh", "cd x && scancel 123", "FOO=1 srun hostname", "nice -n 5 ssh titan rm -rf jobs"]
+       "sbatch job.sh", "cd x && scancel 123", "FOO=1 srun hostname", "nice -n 5 ssh titan rm -rf jobs",
+       "ssh -oProxyJump=titan other", "ssh -J titan other", "S=titan; ssh $S ls", "'ssh' titan ls", "rsync -e ssh . titan:x"]
 good = ["ms q add -- make", "ms remote list", "ssh github.com", "grep sbatch notes.txt", "echo titan", "git push"]
 for c in bad:
     assert g.check_bash(c, []), c
@@ -419,6 +420,46 @@ except KeyError as e:
 print("ok")
 """, shared=False)
     assert "ok" in out
+
+
+def test_path_translation_is_exact():
+    """Shell-level check of the node-side translation: path boundaries, quotes, binary files, time stamps."""
+    import tempfile, shutil
+    tmp, ms = fake_ms()
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    d = Path(tempfile.mkdtemp())
+    P = "/home/u/proj"
+    (d / "run.tcl").write_text(f"source {P}/a.tcl\nexec ls {P}_tmp/x\nputs '{P}/b'\nopen \"{P}\"\nset t /mnt/data/Apps/2025.2.1/Vivado\n")
+    os.utime(d / "run.tcl", (1_000_000_000, 1_000_000_000))
+    (d / "bin.dat").write_bytes(b"head " + P.encode() + b"/x " + b"\0" * 10 + b" tail")
+    code = r"""
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
+from mysys import remote as RM
+r = dict(RM.DEFAULTS, name="t", account="u", path_map="/mnt/data/Apps/2025.2.1 => ~/u/xilinx/2025.2.1")
+j = {"id": 7, "cmd": "rm -rf %s_tmp/* && vivado -source '%s/a.tcl'", "cwd": "%s", "attempt": 1}
+txt = RM.job_script(r, j, "jobs/msq/u/7-1")
+lines = txt.splitlines()
+a = next(i for i, l in enumerate(lines) if l.startswith("JD="))
+b = next(i for i, l in enumerate(lines) if l.startswith("touch .msq-7-start"))
+print("\n".join(['W="$PWD"'] + lines[a:b]))
+""" % (P, P, P)
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    sh = d / "part.sh"
+    sh.write_text(r.stdout)
+    rr = subprocess.run(["bash", str(sh)], cwd=d, capture_output=True, text=True, env=dict(env, HOME="/nodehome"))
+    assert rr.returncode == 0, rr.stdout + rr.stderr
+    got = (d / "run.tcl").read_text()
+    W = str(d)
+    assert f"source {W}/a.tcl" in got and f"'{W}/b'" in got and f'"{W}"' in got, got
+    assert f"{P}_tmp/x" in got, "a longer folder name that starts the same is not touched: " + got
+    assert "/nodehome/u/xilinx/2025.2.1/Vivado" in got, got
+    assert os.path.getmtime(d / "run.tcl") == 1_000_000_000, "time stamp kept"
+    assert (d / "bin.dat").read_bytes().count(P.encode()) == 1, "binary file untouched"
+    c = (d / ".msq-7-cmd.sh").read_text()
+    assert f"rm -rf {P}_tmp/*" in c and f"vivado -source '{W}/a.tcl'" in c, c
+    shutil.rmtree(d)
 
 
 if __name__ == "__main__":

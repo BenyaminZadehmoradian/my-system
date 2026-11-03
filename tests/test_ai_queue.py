@@ -23,18 +23,29 @@ def test_guard_blocks_direct_heavy_runs():
     (proj / "parse.py").write_text('import re\nfor l in open("vivado.log"): print(l)\n')
     (proj / "run_impl.sh").write_text('#!/bin/sh\nvivado -mode batch -source impl.tcl\n')
     (proj / "Makefile").write_text('impl:\n\tvivado -mode batch -source impl.tcl\n')
+    (proj / "submit.sh").write_text('#!/bin/sh\nms q add --name impl -- vivado -mode batch -source impl.tcl\n')
+    for f in ("run_impl.sh", "submit.sh"):
+        (proj / f).chmod(0o755)
     env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
     code = f'''
 import importlib.util
 spec = importlib.util.spec_from_file_location("g", {str(SRC)!r}); g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 g.CWD = {str(proj)!r}
+PYC = "python3 -c " + repr("import subprocess; subprocess.run(['vivado','-mode','batch'])")
 bad = ["vivado -mode batch -source impl.tcl", "nohup vivado -mode batch -source x.tcl &",
        "bash runners/ise_env.sh xtclsh full_sweep.tcl", "./run_impl.sh", "make impl", "cd x && vitis-run --mode hls --csim",
-       "timeout 2h xtclsh full_sweep.tcl", "/mnt/data/Apps/2025.2.1/Vivado/bin/vivado -mode tcl -source a.tcl"]
+       "timeout 2h xtclsh full_sweep.tcl", "/mnt/data/Apps/2025.2.1/Vivado/bin/vivado -mode tcl -source a.tcl",
+       "$(which vivado) -mode batch -source a.tcl", "xargs -n1 vivado -mode batch -source", "eval vivado -mode batch",
+       "flock /tmp/l vivado -mode batch", "unbuffer vivado -mode batch", "timeout -s KILL 10h vivado -mode batch",
+       "docker run img vivado -mode batch", PYC,
+       "bash -c 'vivado -mode batch -source a.tcl'", "cd .. && cd hardware && ./run_impl.sh", "make -C . impl"]
 good = ["ms q add --name impl --cores 4 -- vivado -mode batch -source impl.tcl", "vivado -version", "xsim --help",
         "python3 parse.py", "grep -i vivado impl.log", "cat vivado.log | tail", "ls /mnt/data/Apps/2025.2.1/Vivado",
-        "~/My_System/bin/ms flow run sweep.yaml", "git status"]
+        "~/My_System/bin/ms flow run sweep.yaml", "git status",
+        "ms q add --name x -- " + chr(34) + "cd hw && vivado -mode batch -source a.tcl" + chr(34),
+        "ms q add -- sh -c 'cd hw; vivado -mode batch'",
+        "git commit -m " + chr(34) + "(vivado -mode batch)" + chr(34), "./submit.sh", "echo 'run vivado -mode batch later'"]
 for c in bad:
     assert g.check_bash(c, []), c
 for c in good:
@@ -56,6 +67,8 @@ def test_watcher_tells_when_ai_ran_outside_queue():
     fake = d / "claude"                      # a process named "claude" that starts a long tool run
     fake.write_text("#!/bin/sh\nsleep 30\n")
     fake.chmod(0o755)
+    with open(ms / "config/my_system.conf", "a") as f:
+        f.write('\nAI_PROCESS_NAMES="claude"\n')
     env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
     code = f'''
 import os, sys, subprocess, time

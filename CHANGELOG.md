@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.17.0 — 2026-11-03
+Fixes from an independent review of 1.12-1.16:
+- Server path translation is exact: a path is replaced only when followed by `/`, a quote, a space or the line
+  end (`/home/u/proj` no longer touches `/home/u/proj_tmp`; before, `rm -rf /home/u/proj_tmp/*` could become
+  `rm -rf /*` on the node). The command is written to a file in the job folder and translated there, so quoted
+  paths work and the real node path is used (no shell variable in the command).
+- Only real text files are translated (no NUL byte anywhere, at most 8 MB, not links); binary results are never
+  changed. With a container the job folder maps to /mnt/run (MSQ_WORKDIR passed in); `~/` path_map entries are
+  refused there.
+- `links` must start with your own folder (`~/ACCOUNT/...`).
+- The folder scan before sending a job skips build/result trees and stops after 30 000 entries; the cheap checks
+  (max_jobs, server status) run first.
+- AI guard: a quote-aware command parser (new mysys/cmdparse.py) follows `bash -c`, `eval`, `$(...)`, wrappers
+  (timeout -s, flock, xargs, unbuffer, env, nice ...), docker/podman, `python -c`, `cd dir && ./script`, `make -C`.
+  No more false blocks for `ms q add -- "cd hw && vivado ..."`, quoted text, or scripts that only call `ms q add`.
+  ssh checks also see `-oProxyJump=`, `-J` and hosts in variables.
+- Only the user changes settings: `"ms" tools ...` and `python3 -m mysys.versions|pause` are blocked, and
+  saving tool access or pausing refuses when an AI assistant started the process (AI_PROCESS_NAMES).
+- Tool versions: a saved empty default now means "nothing allowed" (was "all"); `ms tools deny` works on a
+  project that allowed everything; the GUI keeps rule entries for versions that are not installed.
+- Version checks judge what runs (programs, sourced settings files, PATH/XILINX values, the script a shell runs),
+  not every file name: `ls .../2023.2` or `python3 cmp.py vivado_2023.2_ref/` are no longer refused or stopped.
+- A job refused for its tool version no longer sends an "approval needed" message.
+
 ## 1.16.0 — 2026-11-03
 - Paths on the server: `path_map = LOCAL => SERVER` and `map_job_dir = yes` in remotes.conf. On the node the
   command and the job folder's text files are rewritten (the job folder's absolute path -> its folder there,

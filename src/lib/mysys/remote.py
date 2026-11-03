@@ -229,19 +229,29 @@ else
   tar xzf in.tar.gz && rm -f in.tar.gz
 fi
 {link_lines}
-export MSQ_WORKDIR="$W"
-msq_esc() {{ printf '%s' "$1" | sed -e 's/[]\/$*.^[]/\\&/g'; }}
+JD={jobdir}
+export MSQ_WORKDIR="$JD"
+msq_esc() {{ printf '%s' "$1" | sed -e 's/[][\/.^$*+?(){{}}|]/\\&/g'; }}
 msq_rep() {{ printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'; }}
-msq_map() {{  # text files that mention $1: replace it with $2, keep their time stamps (so they do not come back)
-  local a b; a=$(msq_esc "$1"); b=$(msq_rep "$2")
-  grep -rlIF --exclude=in.tar.gz --exclude='.msq-*' --exclude='msq-*.log' -- "$1" . 2>/dev/null | while IFS= read -r f; do
-    [ -L "$f" ] && continue; touch -r "$f" .msq-{jid}-ts && sed -i "s/$a/$b/g" "$f" && touch -r .msq-{jid}-ts "$f"
+msq_text() {{  # a regular text file (no NUL byte anywhere, at most 8 MB), not a link
+  [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %s "$1")" -le 8388608 ] && [ "$(tr -dc '\000' < "$1" | head -c 1 | wc -c)" -eq 0 ]
+}}
+msq_sub() {{  # FILE FROM TO: FROM when followed by / " ' a space or the line end -> TO
+  local a b; a=$(msq_esc "$2"); b=$(msq_rep "$3")
+  sed -E -i "s/${{a}}([\/\"'[:space:]]|\$)/${{b}}\1/g" "$1"
+}}
+msq_map() {{  # job files that mention $1: replace it with $2, keep their time stamps (so they do not come back)
+  grep -rlF --exclude=in.tar.gz --exclude='.msq-*' --exclude='msq-*.log' -- "$1" . 2>/dev/null | while IFS= read -r f; do
+    msq_text "$f" || continue
+    touch -r "$f" .msq-{jid}-ts && msq_sub "$f" "$1" "$2" && touch -r .msq-{jid}-ts "$f"
   done; rm -f .msq-{jid}-ts
 }}
 msq_unmap() {{  # files the job wrote that mention $1 (a path here): back to $2 (the path at home)
-  local a b; a=$(msq_esc "$1"); b=$(msq_rep "$2")
-  while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && grep -qIF -- "$1" "$f" 2>/dev/null && sed -i "s/$a/$b/g" "$f"; done < .msq-{jid}-changed
+  while IFS= read -r f; do msq_text "$f" && grep -qF -- "$1" "$f" 2>/dev/null && msq_sub "$f" "$1" "$2"; done < .msq-{jid}-changed
 }}
+cat > .msq-{jid}-cmd.sh <<'MSQ_CMD_END_{jid}'
+{body}
+MSQ_CMD_END_{jid}
 {map_lines}
 touch .msq-{jid}-start; sleep 1
 echo "[remote] $(hostname) · $(nproc) cpus · started $(date '+%F %T')" > msq-{jid}.log
@@ -276,7 +286,7 @@ def parse_links(r):
         if "->" not in part:
             continue
         a, _, b = (x.strip() for x in part.partition("->"))
-        if not a.startswith("~/") or ".." in a.split("/") or not r.get("account") or r["account"] not in a.split("/") \
+        if not a.startswith("~/") or ".." in a.split("/") or not r.get("account") or a.split("/")[1] != r["account"] \
                 or not b.startswith("/") or any(ch in a + b for ch in " $`;&|*?\"'"):
             raise KeyError(f"unsafe link '{part.strip()}' for {r['name']}: use ~/{r.get('account') or 'ACCOUNT'}/NAME -> /absolute/target")
         out.append((a, b))
@@ -294,6 +304,9 @@ def parse_path_map(r):
         if bad or not a.startswith("/") or not (b.startswith("/") or b.startswith("~/")) or len(a) < 4:
             raise KeyError(f"bad path_map entry '{part.strip()}' for {r['name']}: use /local/path => /server/path "
                            f"(or ~/path on the server)")
+        if r.get("container") and b.startswith("~/"):
+            raise KeyError(f"path_map entry '{part.strip()}' for {r['name']}: with a container, give the absolute "
+                           f"path inside the container (and mount it with docker_args)")
         out.append((a, b))
     return sorted(out, key=lambda ab: -len(ab[0]))
 
@@ -310,22 +323,17 @@ def _sq(s):
 def map_pairs(r, cwd):
     """[(local, server-shell-expr)] longest first: the job folder (map_job_dir) and path_map entries."""
     pairs = [(a, _srv(b)) for a, b in parse_path_map(r)]
-    if (r.get("map_job_dir") or "yes").lower() in ("yes", "1", "true", "on") and cwd and len(cwd) > 1:
-        pairs.append((cwd.rstrip("/"), "$MSQ_WORKDIR"))
+    if (r.get("map_job_dir") or "yes").lower() in ("yes", "1", "true", "on") and cwd and len(cwd.rstrip("/")) > 1:
+        pairs.append((cwd.rstrip("/"), "$JD"))
     return sorted(pairs, key=lambda ab: -len(ab[0]))
 
 
-def map_cmd(r, cmd, cwd):
-    for a, b in map_pairs(r, cwd):
-        cmd = cmd.replace(a, b)
-    return cmd
-
-
-def map_lines_for(r, cwd):
-    """Shell lines: rewrite paths in the job's text files on the node (and back, for files it wrote)."""
+def map_lines_for(r, cwd, cmdfile):
+    """Shell lines: translate paths in the command file and the job's text files on the node, and back for
+    files the job wrote."""
     m, u = [], []
     for a, b in map_pairs(r, cwd):
-        m.append(f'msq_map {_sq(a)} "{b}"')
+        m.append(f'msq_sub {cmdfile} {_sq(a)} "{b}"; msq_map {_sq(a)} "{b}"')
         u.append(f'msq_unmap "{b}" {_sq(a)}')
     return "\n".join(m), "\n".join(u)
 
@@ -342,6 +350,8 @@ def _is_source(fn, full):
     return not ext and os.access(full, os.X_OK)        # executable without extension: a script
 
 
+SKIP_DIRS = {".git", ".Xil", "__pycache__", "node_modules", ".venv", "venv", "ip_user_files", ".runs", ".cache", ".sim",
+             "xsim.dir", ".hbs", "logs", "reports"}
 OUTSIDE_RX = None
 _OUT_CACHE = {}
 
@@ -374,11 +384,15 @@ def outside_paths(j, r, limit=3):
         return False
     done = scan(j.get("cmd") or "")
     pats = r["exclude"].split()
-    n = 0
+    n = walked = 0
     if not done and cwd and os.path.isdir(cwd):
         for dp, dns, fns in os.walk(cwd):
             rel_dp = os.path.relpath(dp, cwd)
-            dns[:] = [d for d in dns if not _excluded(os.path.normpath(os.path.join(rel_dp, d)), pats)]
+            dns[:] = [d for d in dns if d not in SKIP_DIRS and not d.endswith((".runs", ".cache", ".sim", ".hw", ".ip_user_files"))
+                      and not _excluded(os.path.normpath(os.path.join(rel_dp, d)), pats)]
+            walked += len(fns) + len(dns)
+            if walked > 30000:                     # huge result trees: what was seen is enough to decide
+                break
             for fn in fns:
                 if n >= 4000 or done:
                     break
@@ -424,17 +438,22 @@ def job_script(r, j, remote_dir):
     if r.get("qos"):
         lines.append(f"#SBATCH --qos={r['qos']}")
     env = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (j.get("env") or {}).items())
-    body = (r.get("setup", "").strip() + "\n" if r.get("setup", "").strip() else "") + map_cmd(r, j["cmd"], j.get("cwd"))
-    inner = (env + " " if env else "") + "bash -c " + shlex.quote(body)
+    # the command goes into a file in the job folder, so paths in it are translated like in any other job file
+    body = (r.get("setup", "").strip() + "\n" if r.get("setup", "").strip() else "") + j["cmd"]
+    cmdfile = f".msq-{j['id']}-cmd.sh"
     if r.get("container"):
+        jobdir = "/mnt/run"
+        inner = (env + " " if env else "") + f"bash /mnt/run/{cmdfile}"
         run = (f'docker run --rm --init -v "$W":/mnt/run -w /mnt/run -e MSQ_OUTPUTS=/mnt/run/.msq-{j["id"]}-outputs '
-               f'-e OMP_NUM_THREADS={cores} --cpus={cores} --memory={mem}g {r.get("docker_args", "")} '
+               f'-e MSQ_WORKDIR=/mnt/run -e OMP_NUM_THREADS={cores} --cpus={cores} --memory={mem}g {r.get("docker_args", "")} '
                f'{shlex.quote(r["container"])} bash -c {shlex.quote(inner)}')
     else:
-        run = inner
+        jobdir = '"$W"'
+        run = (env + " " if env else "") + f"bash {cmdfile}"
     head = r.get("head") or r["ssh"]
-    mlines, ulines = map_lines_for(r, j.get("cwd"))
-    return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1), sbatch_lines="\n".join(lines), link_lines=link_lines(r),
+    mlines, ulines = map_lines_for(r, j.get("cwd"), cmdfile)
+    return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1),
+                         sbatch_lines="\n".join(lines), link_lines=link_lines(r), jobdir=jobdir, body=body,
                          remote_dir=shlex.quote(remote_dir), head=shlex.quote(head), cores=cores, run_line=run)
 
 
@@ -623,8 +642,9 @@ def _uses(j, progs):
     return any(os.path.basename(w) in progs for w in words if w)
 
 
-def why_not(j, r):
-    """Why this job may not go to server `r` automatically, or None when it may."""
+def why_not(j, r, scan=True):
+    """Why this job may not go to server `r` automatically, or None when it may. scan=False skips the (slower)
+    look into the job folder for paths that exist only here."""
     if j.get("secrets"):
         return "it uses --secret (never sent to a shared server)"
     if j.get("container") or j.get("host"):
@@ -639,6 +659,8 @@ def why_not(j, r):
     tools = r["tools"].split()
     if not (j.get("remote_ok") or "*" in tools or (j.get("tool") and j["tool"] in tools)):
         return "its tool is not in 'tools' (add it, or tools = *, or use --on auto)"
+    if not scan:
+        return None
     try:
         out = outside_paths(j, r)
     except Exception:
@@ -681,7 +703,7 @@ def prefer_target(j, jobs):
     for name, r in remotes().items():
         if r["offload"] != "prefer":
             continue
-        wn = why_not(j, r)
+        wn = why_not(j, r, scan=False)           # cheap checks first; the folder scan only when the server has room
         if wn:
             why = f"{name}: {wn}"
             continue
@@ -694,6 +716,10 @@ def prefer_target(j, jobs):
             continue
         if st.get("idle_cpus", 0) < max(1, int(round(float(j.get("cores") or 1)))):
             why = f"{name} has no free CPUs"
+            continue
+        wn = why_not(j, r)
+        if wn:
+            why = f"{name}: {wn}"
             continue
         there, here = speed(j, name, jobs)
         if there and here and there > here * 1.1:

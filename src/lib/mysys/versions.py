@@ -35,12 +35,26 @@ NAME_VER = re.compile(r"\b(?:vivado|vitis|vitis_hls|ise|sdk)[_-](\d{4}\.\d(?:\.\
 def rules():
     try:
         r = json.loads(FILE.read_text())
-        return {"default": list(r.get("default") or ["*"]), "projects": dict(r.get("projects") or {})}
+        d = r["default"] if isinstance(r.get("default"), list) else ["*"]      # [] = nothing allowed (not "all")
+        return {"default": list(d), "projects": {k: list(v) for k, v in (r.get("projects") or {}).items()}}
     except (OSError, ValueError):
         return {"default": config.words("XILINX_ALLOWED") or ["*"], "projects": {}}
 
 
+def _from_ai():
+    try:
+        from . import watcher
+        return watcher.ai_parent(os.getpid())
+    except Exception:
+        return None
+
+
 def save(r):
+    """Write the rules. Refused when an AI assistant started this process: only the user changes them."""
+    who = _from_ai()
+    if who:
+        raise PermissionError(f"refused: {who} (an AI assistant) may not change tool access; the user does this in "
+                              "My System > Tool access or with ms tools in their own terminal")
     FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(r, indent=1, sort_keys=True))
@@ -140,14 +154,49 @@ def _check(text, pre, roots):
     return None
 
 
+RUN_VARS = re.compile(r"^(PATH|LD_LIBRARY_PATH|XILINX\w*|VIVADO\w*|VITIS\w*)$")
+SETTINGS = re.compile(r"settings(32|64)?\.(c?sh)\b|\.settings64-")
+
+
+def run_strings(text, cwd=None):
+    """The parts of a command line that decide which tool runs: programs, `source`d files, settings64 scripts,
+    and PATH / XILINX* values. File names that are only read or listed (ls, cat, diff, python x.py DIR) do not count."""
+    try:
+        from . import cmdparse
+        cmds = cmdparse.commands(text, cwd)
+    except Exception:
+        return [text]
+    out = []
+    for cm in cmds:
+        out += [v for k, v in cm.assign.items() if RUN_VARS.match(k)]
+        a = cm.argv
+        if not a:
+            continue
+        out.append(a[0])
+        if cm.prog in ("source", ".") and len(a) > 1:
+            out.append(a[1])
+        elif cm.prog == "export":
+            out += [x.split("=", 1)[1] for x in a[1:] if "=" in x and RUN_VARS.match(x.split("=", 1)[0])]
+        elif cm.prog in ("bash", "sh", "zsh", "dash", "tclsh", "python", "python3", "perl") and len(a) > 1 \
+                and not a[1].startswith("-"):
+            out.append(a[1])                                # the script it runs
+        out += [x for x in a[1:] if SETTINGS.search(x)]
+    return out
+
+
 def check_text(text, cwd=None):
-    """Version that `text` (a command line or script) uses and that is not allowed in folder `cwd`, or None."""
+    """Version that `text` (a command line) runs and that is not allowed in folder `cwd`, or None."""
     if not text or not active():
         return None
     pre = allowed_for(cwd)
     if "*" in pre:
         return None
-    return _check(text, pre, [(root, ver) for _, root, ver in installs() if ver])
+    roots = [(root, ver) for _, root, ver in installs() if ver]
+    for part in run_strings(text, cwd):
+        v = _check(part, pre, roots)
+        if v:
+            return v
+    return None
 
 
 def check_proc(pid, cwd=None):
@@ -160,11 +209,25 @@ def check_proc(pid, cwd=None):
     except OSError:
         pass
     try:
-        args = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[:3]
-        parts += [a.decode(errors="replace") for a in args if a]
+        args = [a.decode(errors="replace") for a in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[:3] if a]
     except OSError:
-        pass
-    return check_text(" ".join(parts), cwd)
+        args = []
+    if args:
+        parts.append(args[0])                               # the program
+        if os.path.basename(args[0]) in ("sh", "bash", "dash", "zsh", "tclsh", "wish", "python", "python3", "perl") \
+                and len(args) > 1 and not args[1].startswith("-"):
+            parts.append(args[1])                           # the script it runs (Xilinx wrappers are shell scripts)
+    if not parts:
+        return None
+    pre = allowed_for(cwd)
+    if "*" in pre:
+        return None
+    roots = [(root, ver) for _, root, ver in installs() if ver]
+    for part in parts:
+        v = _check(part, pre, roots)
+        if v:
+            return v
+    return None
 
 
 def _show(pre):
@@ -242,7 +305,9 @@ def cli(a):
             else:
                 if len(rest) < 2:
                     raise ValueError(f"usage: ms tools {cmd} PROJECT VER [VER ...]")
-                cur = list(r["projects"].get(p) or r["default"])
+                cur = list(r["projects"][p] if p in r["projects"] else r["default"])
+                if "*" in cur and cmd == "deny":                # "everything except ..." = all installed versions
+                    cur = sorted({family(v) for _, _, v in installs() if v})
                 vs = [family(v) for v in rest[1:]]
                 if cmd == "allow":
                     cur = ["*"] if "*" in vs else [x for x in cur if x != "*"] + [v for v in vs if v not in cur]
@@ -255,7 +320,11 @@ def cli(a):
     except ValueError as e:
         print(e)
         return 2
-    save(r)
+    try:
+        save(r)
+    except PermissionError as e:
+        print(e)
+        return 1
     try:
         from . import aictx
         aictx.write()                          # AI assistants see the new rules at once
