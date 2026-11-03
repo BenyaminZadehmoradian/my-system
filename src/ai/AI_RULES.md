@@ -56,10 +56,12 @@ These rules are installed by **my-system** and are read-only. The machine-specif
     - Programs listed as missing on a server (e.g. Vivado, Vitis on Titan) always run here; that is expected.
     - Never put passwords, keys, tokens or private data into a job (`--secret` jobs are never sent to a server).
     - `ms q explain ID` shows where a job will run and why; the job log shows the node (`[remote] titan02 ...`).
-13. **Only the allowed AMD/Xilinx tool version.** If the system map has a section *AMD/Xilinx tool version*, use only
-    that version (Vivado, Vitis, vitis-run). Do not run, source (`settings64.sh`) or write scripts for any other installed
-    version, even if a project's old scripts mention one; update such scripts to the allowed version instead (ask first).
-    Commands that name another version are blocked, and queue jobs that run one are stopped.
+13. **Only the AMD/Xilinx tool versions allowed for the project.** The system map section *AMD/Xilinx tool versions
+    per project* says which Vivado/Vitis/ISE versions each project folder may use (and the default for all others).
+    In a project use only its allowed versions: do not run, source (`settings64.sh`) or write scripts for any other
+    installed version, even if old scripts mention one; propose updating such scripts instead (ask first). Commands
+    that name a version not allowed in the folder you work in are blocked, and queue jobs that run one are stopped.
+    Never try to change these rules (`ms tools ...` is the user's).
 14. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
     (or the `runs_compare` MCP tool) instead of parsing logs yourself. To find out what the machine was
     doing at a given time (e.g. why a run was slow or the machine froze) use `ms replay TIME`.

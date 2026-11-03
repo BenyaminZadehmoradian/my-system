@@ -36,6 +36,7 @@
   ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, status (ms remote help)
   ms pause FEATURE|all [--for 2h|--until 08:00]   turn a part of my-system off for a while (ms pause help)
   ms resume FEATURE|all  turn it on again;  ms paused  what is off
+  ms tools [allow|deny|default|reset ...]   which Vivado/Vitis/ISE versions each project may use
   ms brief [--send]      status report: system, running, waiting, last 3 finished (--send: to the phone now)
 """
 import os
@@ -500,6 +501,9 @@ def main(argv):
     elif cmd == "remote":
         from mysys import remote
         return remote.cli(rest)
+    elif cmd == "tools":
+        from mysys import versions
+        return versions.cli(rest)
     elif cmd in ("pause", "resume", "paused"):
         from mysys import pause
         return pause.cli(cmd, rest)

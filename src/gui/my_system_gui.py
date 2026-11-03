@@ -607,7 +607,7 @@ class RunsPage(Page):
             self.live.setItem(i, 1, it)
             self.live.setItem(i, 2, cell(time.strftime("%a %H:%M", time.localtime(j["start"]))))
             self.live.setItem(i, 3, cell(dur(now - j["start"])))
-            c_ = cores.get(j["key"])
+            c_ = cores.get(j.get("key"))
             self.live.setItem(i, 4, cell("–" if c_ is None else f"{c_:.1f}"))
             self.live.setItem(i, 5, cell(human(j["rss"])))
             self.live.setItem(i, 6, cell(", ".join(map(str, j["pids"][:3]))))
@@ -963,6 +963,182 @@ class GuardPage(Page):
         if not locked:
             return "unlocked", "bad"
         return (f"{n} blocked today" if n else "protected"), ("bad" if n else "ok")
+
+
+class ToolAccessPage(Page):
+    """Which Vivado / Vitis / ISE versions each project may use (queue jobs and AI assistants)."""
+    title, icon, fallback = "Tool access", "applications-engineering", "preferences-system"
+    NICE = {"ise": "ISE", "vitis_hls": "Vitis HLS", "vivado": "Vivado/Vitis", "xilinx_sdk": "SDK"}
+
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("Tool access", "Which AMD/Xilinx tool versions each project may use. A queue job or an "
+                                            "AI command that uses a version not ticked for its project is refused "
+                                            "or stopped. The first row is the default for every project without its "
+                                            "own ticks. A version like 2025.2 includes its updates (2025.2.1)."))
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("find project…")
+        self.search.setMaximumWidth(240)
+        self.search.textChanged.connect(self.filter)
+        row.addWidget(self.search)
+        self.only_own = QCheckBox("only projects with their own rule")
+        self.only_own.toggled.connect(self.filter)
+        row.addWidget(self.only_own)
+        row.addStretch()
+        row.addWidget(btn("Follow default", self.follow_default))
+        row.addWidget(btn("Undo changes", self.refresh))
+        row.addWidget(btn("Save", self.save, "primary"))
+        lay.addLayout(row)
+        self.state = _lab("", "muted")
+        lay.addWidget(self.state)
+        self.tab = QTableWidget(0, 1)
+        self.tab.verticalHeader().hide()
+        self.tab.setAlternatingRowColors(True)
+        self.tab.setShowGrid(False)
+        self.tab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tab.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tab.verticalHeader().setDefaultSectionSize(30)
+        self.tab.itemChanged.connect(self.changed)
+        lay.addWidget(self.tab, 1)
+        self.dirty = False
+        self.loading = False
+
+    def vmod(self):
+        from mysys import versions as V
+        return V
+
+    def columns(self):
+        V = self.vmod()
+        cols = {}
+        for label, root, ver in V.installs():
+            if not ver:
+                continue
+            fam = V.family(ver)
+            base = re.sub(r"[_-]?\d.*$", "", label)
+            name = f"{self.NICE.get(base, base)} {ver}"
+            cols.setdefault(fam, []).append((name, root))
+        return sorted(cols.items(), key=lambda kv: [int(x) for x in re.findall(r"\d+", kv[0])], reverse=True)
+
+    def refresh(self):
+        if self.dirty and self.sender() is None:      # periodic refresh: keep unsaved ticks
+            return
+        V = self.vmod()
+        self.loading = True
+        r = V.rules()
+        self.cols = self.columns()
+        heads = ["Project"] + [" / ".join(n for n, _ in names) for _, names in self.cols] + ["Rule"]
+        self.tab.setColumnCount(len(heads))
+        self.tab.setHorizontalHeaderLabels(heads)
+        h = self.tab.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, len(heads)):
+            h.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        for i, (fam, names) in enumerate(self.cols):
+            self.tab.horizontalHeaderItem(i + 1).setToolTip("\n".join(root for _, root in names))
+        projs = sorted(V.projects(), key=lambda p: (p not in r["projects"], os.path.basename(p.rstrip("/")).lower()))
+        self.tab.setRowCount(1 + len(projs))
+        rows = [(None, r["default"], True)] + [(p, r["projects"][p] if p in r["projects"] else r["default"], p in r["projects"])
+                                               for p in projs]
+        hm = str(HOME)
+        for i, (p, pre, own) in enumerate(rows):
+            it = cell("All other projects (default)" if p is None else p.replace(hm, "~", 1), None, p is None or own)
+            it.setData(Qt.ItemDataRole.UserRole, p)
+            it.setToolTip(p or "every project without its own rule")
+            self.tab.setItem(i, 0, it)
+            for c, (fam, _) in enumerate(self.cols):
+                ck = QTableWidgetItem()
+                ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                ck.setCheckState(Qt.CheckState.Checked if V.allowed(fam, prefixes=pre) else Qt.CheckState.Unchecked)
+                self.tab.setItem(i, c + 1, ck)
+            self.tab.setItem(i, len(self.cols) + 1, cell("default" if p is None else ("own rule" if own else "follows default"),
+                                                         "info" if own and p else None))
+        self.loading = False
+        self.dirty = False
+        self.filter()
+        self.state.setText(f"{len(r['projects'])} project(s) with their own rule · saved in {V.FILE}")
+
+    def filter(self):
+        q = self.search.text().strip().lower()
+        own = self.only_own.isChecked()
+        last = self.tab.columnCount() - 1
+        for i in range(1, self.tab.rowCount()):
+            name = (self.tab.item(i, 0).text() if self.tab.item(i, 0) else "").lower()
+            rule = self.tab.item(i, last).text() if self.tab.item(i, last) else ""
+            self.tab.setRowHidden(i, bool(q and q not in name) or (own and rule == "follows default"))
+
+    def ticks(self, i):
+        return [fam for c, (fam, _) in enumerate(self.cols)
+                if self.tab.item(i, c + 1) and self.tab.item(i, c + 1).checkState() == Qt.CheckState.Checked]
+
+    def changed(self, it):
+        if self.loading or it.column() == 0:
+            return
+        self.dirty = True
+        last = self.tab.columnCount() - 1
+        self.loading = True
+        if it.row() > 0:
+            self.tab.setItem(it.row(), last, cell("own rule (unsaved)", "warn"))
+        else:                                     # default changed: rows that follow it change too
+            d = self.ticks(0)
+            for i in range(1, self.tab.rowCount()):
+                if self.tab.item(i, last).text() == "follows default":
+                    for c, (fam, _) in enumerate(self.cols):
+                        self.tab.item(i, c + 1).setCheckState(Qt.CheckState.Checked if fam in d else Qt.CheckState.Unchecked)
+            self.tab.setItem(0, last, cell("default (unsaved)", "warn"))
+        self.loading = False
+        self.state.setText("Unsaved changes — press Save.")
+
+    def follow_default(self):
+        i = self.tab.currentRow()
+        if i <= 0:
+            return
+        last = self.tab.columnCount() - 1
+        self.loading = True
+        d = self.ticks(0)
+        for c, (fam, _) in enumerate(self.cols):
+            self.tab.item(i, c + 1).setCheckState(Qt.CheckState.Checked if fam in d else Qt.CheckState.Unchecked)
+        self.tab.setItem(i, last, cell("follows default (unsaved)", "warn"))
+        self.loading = False
+        self.dirty = True
+
+    def save(self):
+        V = self.vmod()
+        allf = [fam for fam, _ in self.cols]
+        d = self.ticks(0)
+        r = {"default": ["*"] if allf and set(d) == set(allf) and V.rules()["default"] == ["*"] else d, "projects": {}}
+        last = self.tab.columnCount() - 1
+        for i in range(1, self.tab.rowCount()):
+            p = self.tab.item(i, 0).data(Qt.ItemDataRole.UserRole)
+            rule = self.tab.item(i, last).text()
+            t = self.ticks(i)
+            if rule.startswith("follows default") or (set(t) == set(d) and rule != "own rule"):
+                continue
+            r["projects"][p] = t
+        if not d and QMessageBox.question(self, "Save", "No version is ticked in the default row: every project without "
+                                          "its own rule will be blocked from all AMD/Xilinx tools. Save anyway?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        V.save(r)
+        try:
+            from mysys import aictx
+            aictx.write()
+        except Exception:
+            pass
+        self.dirty = False
+        self.refresh()
+        self.state.setText(f"Saved · {len(r['projects'])} project(s) with their own rule")
+
+    def nav_status(self):
+        try:
+            V = self.vmod()
+            r = V.rules()
+            if not V.active():
+                return "no limits", None
+            return f"default {'/'.join(r['default'])}" + (f" · {len(r['projects'])} own" if r["projects"] else ""), None
+        except Exception:
+            return "", None
 
 
 class ReportsPage(Page):
@@ -2505,7 +2681,7 @@ class NavItem(QWidget):
 class Main(QMainWindow):
     GROUPS = [("WORK", [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, HistoryPage]),
               ("THIS COMPUTER", [SystemPage, StoragePage, SoftwarePage, InventoryPage, ProjectsPage]),
-              ("PROTECTION", [BackupPage, GuardPage]),
+              ("PROTECTION", [BackupPage, GuardPage, ToolAccessPage]),
               ("MESSAGES & SETTINGS", [ReportsPage, NotifyPage, SettingsPage])]
     PAGES = [c for _, cs in GROUPS for c in cs]
 

@@ -32,6 +32,8 @@ HARD = [
     (re.compile(r"(^|[;&|(\s])(reboot|shutdown|poweroff|halt)(\s|$)"), "rebooting is not allowed"),
     (re.compile(r"\bcrontab\s+(-r|-e|\S+\s*$)"), "changing crontab is not allowed"),
     (re.compile(r"(^|[;&|(\s/])ms\s+(pause|resume|unlock|lock)\b"), "only the user may pause, resume, unlock or lock my-system"),
+    (re.compile(r"(^|[;&|(\s/])ms\s+tools\s+(allow|deny|default|reset)\b"),
+     "only the user may change which tool versions a project may use"),
     (re.compile(r"\bpip3?\s+install\b.*--break-system-packages"), "installing into system Python is not allowed"),
     (re.compile(r"(^|[;&|(\s])(mkfs\S*|fdisk|parted|wipefs|dd\s+.*of=/dev/)"), "disk tools are not allowed"),
 ]
@@ -133,6 +135,7 @@ def strip_heredocs(cmd):
     return "\n".join(out)
 
 
+CWD = None                     # the folder the AI works in (from the hook input): per-project tool rules
 SLURM = {"sbatch", "srun", "salloc", "scancel", "scontrol", "sattach", "sbcast"}
 
 
@@ -199,9 +202,9 @@ def check_bash(cmd, prot):
         return why
     try:
         from mysys import versions
-        v = versions.check_text(c)
+        v = versions.check_text(c, CWD)
         if v:
-            return versions.message(v)
+            return versions.message(v, CWD)
     except Exception:
         pass
     for seg in re.split(r"\|\||&&|[;|\n&]", c):
@@ -270,6 +273,8 @@ def main():
         data = json.load(sys.stdin)
     except Exception:
         return 0
+    global CWD
+    CWD = data.get("cwd") or os.getcwd()
     tool = data.get("tool_name", "")
     ti = data.get("tool_input", {}) or {}
     reason = None

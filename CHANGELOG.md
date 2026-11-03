@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.0 — 2026-11-03
+- Tool versions per project: state/tool_access.json holds a default list and per-project lists of allowed
+  AMD/Xilinx versions (e.g. default 2025.2, ~/Desktop/MCGEMMA 2025.2 + ISE 14.7). A project's rule covers its
+  subfolders. Before the file exists, XILINX_ALLOWED is the default.
+- New GUI page Protection > Tool access: one row per project, one tick box per installed version, "Follow default",
+  "Undo changes", "Save"; projects with their own rule are listed first.
+- `ms tools` shows the rules; `ms tools allow|deny|default|reset` change them (AI assistants are blocked from it).
+- Queue jobs, the job runner and the AI guard judge versions by the job's / the AI's folder; the system map lists
+  the rules per project.
+
 ## 1.13.2 — 2026-11-03
 - A job whose command names a tool version that is not allowed is refused at once by `ms q add` / `queue_submit`
   (it no longer waits in the queue for CPU/RAM first). Jobs that reach the version only through a script are

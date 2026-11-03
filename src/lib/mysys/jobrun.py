@@ -339,11 +339,11 @@ class Runner:
                 ver_t = now
                 from . import versions
                 for pid, _, _ in self.procs():
-                    bad = versions.check_proc(pid)
+                    bad = versions.check_proc(pid, j["cwd"])
                     if bad:
                         why, self.version_bad = "version", bad
-                        self.write_out(versions.message(bad) + " — stopping the job\n")
-                        self.run.log("ERROR", versions.message(bad))
+                        self.write_out(versions.message(bad, j["cwd"]) + " — stopping the job\n")
+                        self.run.log("ERROR", versions.message(bad, j["cwd"]))
                         self.kill(j.get("kill_seq"))
                         break
             if (queue.load(self.jid) or {}).get("state") == "cancelled" and not why:
@@ -422,12 +422,12 @@ class Runner:
         self.logf.flush()
         status, state, reason, rc = "ok", "done", "", 0
         from . import versions
-        bad_ver = versions.check_text(j["cmd"])
+        bad_ver = versions.check_text(j["cmd"], j["cwd"])
         try:
             if bad_ver:                          # XILINX_ALLOWED: another tool version may not be used
                 rc, why = 126, "version"
                 self.version_bad = bad_ver
-                self.write_out(versions.message(bad_ver) + "\n")
+                self.write_out(versions.message(bad_ver, j["cwd"]) + "\n")
             elif j.get("wait"):
                 rc, why = self.do_wait(j["wait"])
             else:
@@ -455,7 +455,7 @@ class Runner:
             status, state, reason = "failed", "timeout", f"no output for {int(j['idle_timeout_s'])} s"
         elif why == "version":
             from . import versions
-            status, state, reason = "failed", "failed", versions.message(getattr(self, "version_bad", "?"))
+            status, state, reason = "failed", "failed", versions.message(getattr(self, "version_bad", "?"), j["cwd"])
         elif why == "wait-timeout":
             status, state, reason = "failed", "timeout", "waited too long"
         elif (rc == 0 and not self.errs) or mapped in ("ok", "success", "done"):

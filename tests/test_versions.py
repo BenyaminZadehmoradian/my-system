@@ -47,7 +47,7 @@ assert versions.check_text("/tools/Xilinx/SDK/2019.1/bin/xsdk") == "2019.1"
 assert versions.check_text("source /opt/Xilinx/14.7/ISE_DS/settings64.sh") == "14.7"
 assert versions.check_text("make sim; python3 run.py --seed 2023") is None
 t = aictx.build()
-assert "only 2025.2" in t and "NOT allowed" in t and "2023.2" in t, t
+assert "tool versions per project" in t and "**2025.2**" in t and "Do not run" in t and "2023.2" in t, t
 print("ok")
 ''' % (inst,)
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
@@ -91,6 +91,58 @@ print("VERSIONS-OK")
 ''' % (inst,)
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=300)
     assert "VERSIONS-OK" in r.stdout, r.stdout[-3000:] + r.stderr[-3000:]
+
+
+def test_per_project_rules():
+    tmp, ms, inst = setup()
+    proj = tmp / "Desktop" / "MCGEMMA"
+    (proj / "sub").mkdir(parents=True)
+    other = tmp / "Desktop" / "HLS_DSE"
+    other.mkdir(parents=True)
+    d = json.loads((ms / "state/detected.json").read_text())
+    d["projects"] = [str(proj), str(other)]
+    (ms / "state/detected.json").write_text(json.dumps(d))
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp), WORK=str(tmp / "work"))
+    m = [sys.executable, str(ms / "bin/ms")]
+    r = subprocess.run(m + ["tools", "allow", "mcgemma", "14.7"], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and "MCGEMMA: 2025.2 / 14.7" in r.stdout, r.stdout + r.stderr
+    r = subprocess.run(m + ["tools", "allow", "nosuch", "14.7"], env=env, capture_output=True, text=True)
+    assert r.returncode == 2 and "no project named" in r.stdout
+    code = HARNESS + r'''
+I = %r
+P, O = %r, %r
+from mysys import versions, aictx
+ise = I["ise_14.7"] + "/bin/vivado"
+assert versions.check_text(ise, os.path.join(P, "sub")) is None, "MCGEMMA (and its subfolders) may use ISE"
+assert versions.check_text(ise, O) == "14.7", "other projects may not"
+assert versions.check_text(I["vivado_2025.2.1"] + "/bin/vivado", O) is None
+a = queue.submit(ise + " & sleep 1; kill %%1; echo ok", cwd=P, name="ise_ok", **small)
+b = queue.submit(ise, cwd=O, name="ise_no", **small)
+assert b["state"] == "failed" and "not allowed for this project" in b["reason"] and "2025.2" in b["reason"], b
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 40)
+assert st(a["id"]) == "done", queue.load(a["id"])
+t = aictx.build()
+assert "MCGEMMA" in t and "2025.2 / 14.7" in t, t
+print("PER-PROJECT-OK")
+''' % (inst, str(proj), str(other))
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=300)
+    assert "PER-PROJECT-OK" in r.stdout, r.stdout[-3000:] + r.stderr[-3000:]
+    src = ROOT / ("src/ai" if (ROOT / "src").is_dir() else "ai") / "claude/hooks/guard.py"
+    code = f'''
+import importlib.util, json, io, sys
+spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+g.CWD = {str(proj)!r}
+assert not g.check_bash({inst["ise_14.7"] + "/bin/vivado"!r}, [])
+g.CWD = {str(other)!r}
+assert g.check_bash({inst["ise_14.7"] + "/bin/vivado"!r}, [])
+for c in ("ms tools allow HLS_DSE 14.7", "ms tools default '*'", "ms tools reset MCGEMMA"):
+    assert g.check_bash(c, []), c
+assert not g.check_bash("ms tools", [])
+print("ok")
+'''
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert "ok" in r.stdout, r.stdout + r.stderr
 
 
 if __name__ == "__main__":
