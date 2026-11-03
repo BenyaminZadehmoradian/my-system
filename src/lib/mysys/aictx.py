@@ -96,6 +96,11 @@ def build():
         lines.append("- (none found)")
 
     lines += remote_lines()
+    try:
+        from . import versions
+        lines += versions.map_lines()
+    except Exception:
+        pass
     lines += ["", "## Protected paths (writes are blocked automatically)"]
     lines += [f"- `{_home(p)}`" for p in config.lst("protected_paths.txt")]
     lines += ["", "## Where to look first",

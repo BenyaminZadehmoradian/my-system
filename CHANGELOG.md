@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0 — 2026-11-03
+- One AMD/Xilinx tool version: `XILINX_ALLOWED="2025.2"` in my_system.conf allows only that version and its updates
+  (2025.2.1). Any other installed Vivado, Vitis, Vitis HLS, ISE or SDK version is not allowed:
+  - a queue job whose command names it does not start; a job that runs it anyway (e.g. from a script) is stopped
+    within seconds, with the reason in `ms q show`;
+  - the AI guard blocks shell commands that name it;
+  - AI_RULES rule 13 and the system map tell AI assistants which version to use.
+
 ## 1.12.2 — 2026-11-03
 - Live job logs: output is written to the log at least every second (and every few seconds for quiet jobs), so
   `ms q log ID` and the GUI show it while the job runs. Before, short outputs stayed in a buffer until the job ended.

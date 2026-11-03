@@ -197,6 +197,13 @@ def check_bash(cmd, prot):
     why = check_remote(c)
     if why:
         return why
+    try:
+        from mysys import versions
+        v = versions.check_text(c)
+        if v:
+            return versions.message(v)
+    except Exception:
+        pass
     for seg in re.split(r"\|\||&&|[;|\n&]", c):
         seg = seg.strip()
         if not seg:

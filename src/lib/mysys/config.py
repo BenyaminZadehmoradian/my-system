@@ -41,6 +41,7 @@ DEFAULTS = {
     "QUEUE_CPU_PATIENCE_MIN": "60", # a job waiting this long for cores (with its RAM free) starts with half its cores free
     "QUEUE_STUCK_NOTIFY_H": "2",    # tell me when a job has waited this many hours, with what would let it start
     "QUEUE_PIN_CPUS": "0",          # 1 = give each job its own CPU cores (taskset)
+    "XILINX_ALLOWED": "",           # e.g. "2025.2": only this AMD/Xilinx tool version (and its updates) may be used
     "QUEUE_OOM_SCORE_ADJ": "300",   # queue jobs are killed before your desktop / interactive tools if RAM runs out
     "QUEUE_SLOW_FACTOR": "2",       # tell me when a job runs this many times longer than usual
     "LOW_MEM_PCT": "5",             # urgent warning when available RAM drops below this
