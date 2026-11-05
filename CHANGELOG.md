@@ -26,8 +26,9 @@ Server (Titan) fixes and a tool check:
   `titan_diagnose.sh` (standalone: one Slurm job that checks the node, share, link, settings, libraries, locale and
   really synthesizes with Vivado and HLS) and `live_titan.py` (check, tools, a Vivado and an HLS job through the
   queue with path translation). Neither is run automatically: they use the shared cluster.
-- docs/remote-servers.md: `setup` must source Vitis' settings64.sh (Vivado's leaves HLS off the PATH); copy with
-  `rsync -rltp`; a troubleshooting table.
+- docs/remote-servers.md: verified Titan configuration (Vivado and HLS jobs pass on titan02; in 2025.2.1 Vivado's
+  settings64.sh also sets up Vitis; no vitis_hls command); copy with `rsync -rltp`; a troubleshooting table.
+- Tests that use the fake cluster no longer see this machine's own AMD tools (PATH, XILINX_*).
 
 ## 1.17.3 — 2026-11-03
 - The job log of a server job keeps the server's real paths (it was translated back like result files, which

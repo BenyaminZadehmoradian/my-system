@@ -78,6 +78,15 @@ print("ok")
     assert "ok" in out
 
 
+def _hermetic(env):
+    """No AMD tools of this machine in a test: only the fake cluster's stubs and the system's own programs."""
+    stubs = env["PATH"].split(":")[0]
+    env["PATH"] = f"{stubs}:/usr/local/bin:/usr/bin:/bin"
+    for k in [k for k in env if k.startswith(("XILINX", "LD_LIBRARY_PATH"))]:
+        del env[k]
+    return env
+
+
 FAKE_SETTINGS = r'''#!/bin/bash
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export XILINX_VIVADO=$R/Vivado XILINX_VITIS=$R/Vitis
@@ -106,6 +115,7 @@ def _fake_install(head, with_vitis=True, broken_vivado=False):
 def _tools(ms, tmp, extra, shared=True, **inst):
     env = dict(__import__("os").environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
     env.update(cluster(tmp, shared=shared))
+    _hermetic(env)
     root = _fake_install(env["FAKE_HEAD"], **inst)
     (ms / "config/remotes.conf").write_text(CONF.format(offload="never") + extra.format(root=root))
     return subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "tools", "titan"], env=env,
@@ -222,8 +232,8 @@ def test_titan_diagnose_script_against_fake_cluster():
     for p, body in ((root / "Vivado/bin/vivado", FAKE_VIVADO), (root / "Vitis/bin/vitis-run", FAKE_VITIS_RUN)):
         p.write_text(body)
         p.chmod(0o755)
-    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", FAKE_HEAD=str(head), ACCOUNT="bzm", SHARE=str(share),
-               HOME=str(tmp))
+    env = _hermetic(dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", FAKE_HEAD=str(head), ACCOUNT="bzm",
+                         SHARE=str(share), HOME=str(tmp)))
     script = Path(__file__).resolve().parent / "live" / "titan_diagnose.sh"
     r = subprocess.run(["bash", str(script), "titan"], env=env, capture_output=True, text=True, timeout=120, cwd=tmp)
     o = r.stdout
@@ -262,6 +272,7 @@ def test_live_titan_script_against_fake_cluster():
     (ms / "tests").mkdir(exist_ok=True)
     env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
     env.update(cluster(tmp, shared=False))
+    _hermetic(env)
     root = _fake_install(env["FAKE_HEAD"])
     (root / "Vivado/bin/vivado").write_text(FAKE_VIVADO_TCL)
     (root / "Vitis/bin/vitis-run").write_text(FAKE_VITIS_RUN)
