@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.18.3 — 2026-11-05
+- `ms remote tools` asks Vivado itself which devices are installed (`get_parts`); the old list of folder names
+  showed every family (virtex7 too) even when only Zynq-7000 was installed. The list is saved per server.
+- The queue does not send a job to a server whose installation lacks a part the job uses (found in its command
+  and the Tcl/project/config files of its folder); `ms q explain` names the part. Seen on Titan: a Virtex-7 job
+  failed with "Part 'xc7vx330tffg1157-1' is not installed".
+- tests/live/titan_diagnose.sh: the same device query, and `PART=…` is checked directly.
+
 ## 1.18.2 — 2026-11-05
 - HLS with Vitis 2025+ (`vitis-run`, `v++`) gets a real starting estimate (4 GB / 1.5 cores, v++ 8 GB / 2 cores)
   instead of the 2 GB / 1 core of an unknown program, here and in the cores asked from Slurm.

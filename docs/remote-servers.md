@@ -95,6 +95,16 @@ ssh titan "ls -la --time-style=full-iso /home/slurmslave/.Xilinx"   # then remov
 Mind `A && B && C &` in a shell: the `&` puts the **whole chain** in the background (a slow `rm -rf` on the
 share then delays the copy behind it, and `rsync.log` appears only later).
 
+### Adding devices later
+
+The first install chose only Zynq-7000. A job for another part fails there with
+`ERROR: [HLS 200-1023] Part '…' is not installed` (seen 5 Nov 2026 with xc7vx330tffg1157-1, Virtex-7).
+Since 1.18.3 `ms remote tools titan` asks Vivado which devices it has, and the queue keeps jobs whose Tcl files
+use another part here. To add devices: list the parts your projects use, check that the installer offers batch
+`Add` (`./xsetup -h`), make a new token (step 2), generate a config (step 3) with the extra families set to `:1`,
+run `xsetup -b Add` into the same Destination, copy again with `rsync -rltp` (only new files are copied), then
+run `ms remote tools titan` so the queue learns the new list.
+
 ### Making the nodes find it (remotes.conf)
 
 ```

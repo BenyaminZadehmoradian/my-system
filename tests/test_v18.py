@@ -94,6 +94,12 @@ export PATH=$R/Vivado/bin:$R/Vitis/bin:$PATH
 '''
 
 
+FAKE_VIVADO_PARTS = """#!/bin/sh
+case "$*" in *-source*) grep -q get_parts p.tcl 2>/dev/null && { echo 'T devices=xc7z010 xc7z020'; echo 'T families=zynq'; }; exit 0;; esac
+echo 'vivado v2025.2.1 (64-bit)'
+"""
+
+
 def _fake_install(head, with_vitis=True, broken_vivado=False):
     root = Path(head) / "xil" / "2025.2.1"
     for prod in ("Vivado", "Vitis"):
@@ -102,7 +108,7 @@ def _fake_install(head, with_vitis=True, broken_vivado=False):
     (root / "Vivado/data/parts/xilinx/zynq").mkdir(parents=True, exist_ok=True)
     viv = root / "Vivado/bin/vivado"
     viv.write_text("#!/bin/sh\necho 'vivado: error while loading shared libraries: libtinfo.so.5: cannot open shared "
-                   "object file' >&2; exit 127\n" if broken_vivado else "#!/bin/sh\necho 'vivado v2025.2.1 (64-bit)'\n")
+                   "object file' >&2; exit 127\n" if broken_vivado else FAKE_VIVADO_PARTS)
     viv.chmod(0o755)
     if with_vitis:
         for t in ("vitis-run", "v++"):
@@ -127,7 +133,7 @@ def test_remote_tools_all_good():
     r = _tools(ms, tmp, "setup = source {root}/Vitis/settings64.sh\nmissing_tools = vivado vitis vitis_hls xsim\n")
     assert r.returncode == 0, r.stdout + r.stderr
     for want in ("ok  setup loads the AMD tools", "ok  vivado starts — vivado v2025.2.1", "ok  vitis-run starts",
-                 "no 'vitis_hls' command there", "device families installed there: zynq",
+                 "no 'vitis_hls' command there", "devices installed there (2), families: zynq",
                  "take them out of missing_tools", "missing_tools = vitis_hls xsim"):
         assert want in r.stdout, (want, r.stdout)
 
@@ -325,6 +331,26 @@ print("ok")
 """
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+
+
+
+def test_job_for_a_part_the_server_lacks_stays_here():
+    out, *_ = run(r"""
+import json
+from mysys import remote as RM
+RM.save_devices("titan", ["xc7z010", "xc7z020"])
+for d, part in (("v7", "xc7vx330tffg1157-1"), ("z7", "xc7z020clg400-1")):
+    os.makedirs(os.path.join(W, d), exist_ok=True)
+    open(os.path.join(W, d, "build.tcl"), "w").write(f"set PART {part}\nsynth_design -part $PART\n")
+v7 = queue.submit("echo v7 > out.txt", cwd=os.path.join(W, "v7"), name="v7", remote="auto", **small)
+z7 = queue.submit("echo z7 > out.txt", cwd=os.path.join(W, "z7"), name="z7", remote="auto", **small)
+assert until(lambda: st(v7["id"]) in queue.TERMINAL and st(z7["id"]) in queue.TERMINAL, 90)
+a, b = queue.load(v7["id"]), queue.load(z7["id"])
+assert not a.get("remote") and "xc7vx330tffg1157-1" in (a.get("prefer_note") or ""), a
+assert b.get("remote") == "titan", b
+print("ok")
+""", offload="prefer", extra="tools = *\n")
+    assert "ok" in out
 
 
 if __name__ == "__main__":                # ms selftest runs each test file as a script (no pytest needed)

@@ -49,6 +49,7 @@ its folder. Nothing secret is sent: jobs with --secret are refused, and no passw
 """
 import configparser
 import json
+import re
 import os
 import shlex
 import signal
@@ -764,6 +765,75 @@ def _uses(j, progs):
     return any(os.path.basename(w) in progs for w in words if w)
 
 
+PART_RX = re.compile(r"\b(x[ca][a-z]{0,3}\d[0-9a-z]*(?:-[0-9a-z]+){0,3})\b", re.I)   # xc7z020clg400-1, xczu9eg-…
+_PARTS_CACHE = {}
+PART_FILES = (".tcl", ".xpr", ".cfg", ".ini", ".sh", ".mk", ".json", ".yaml", ".yml")
+
+
+def save_devices(name, devices):
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / f"{name}-devices.json").write_text(json.dumps({"t": time.time(), "devices": sorted(set(devices))}))
+    except OSError:
+        pass
+
+
+def devices(name):
+    """Devices installed on server `name` (lower case, e.g. 'xc7z020'), or None when not known yet."""
+    try:
+        d = json.loads((STATE / f"{name}-devices.json").read_text()).get("devices")
+        return [x.lower() for x in d] if d else None
+    except (OSError, ValueError):
+        return None
+
+
+def job_parts(j, limit_files=300, max_bytes=262144):
+    """FPGA part names a job uses: in its command and in the Tcl/project/config files of its folder (cached 10 min)."""
+    key = (j.get("cwd"), j.get("cmd"))
+    hit = _PARTS_CACHE.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    found = _scan_parts(j, limit_files, max_bytes)
+    _PARTS_CACHE[key] = (time.time(), found)
+    return found
+
+
+def _scan_parts(j, limit_files, max_bytes):
+    found = set(m.lower() for m in PART_RX.findall(j.get("cmd") or ""))
+    cwd = Path(j.get("cwd") or ".")
+    n = 0
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in (".Xil", "__pycache__")]
+        if Path(root) != cwd and len(Path(root).relative_to(cwd).parts) > 2:
+            dirs[:] = []
+            continue
+        for f in files:
+            if not f.endswith(PART_FILES):
+                continue
+            n += 1
+            if n > limit_files:
+                return found
+            try:
+                with open(os.path.join(root, f), "rb") as fh:
+                    found |= set(m.lower() for m in PART_RX.findall(fh.read(max_bytes).decode(errors="replace")))
+            except OSError:
+                pass
+    return found
+
+
+def missing_parts(j, name):
+    """Parts the job uses that server `name` does not have (empty when unknown or all there)."""
+    devs = devices(name)
+    if not devs:
+        return []
+    out = []
+    for p in sorted(job_parts(j)):
+        q = p.replace("-", "")
+        if not any(q.startswith(d.replace("-", "")) for d in devs):
+            out.append(p)
+    return out
+
+
 def why_not(j, r, scan=True):
     """Why this job may not go to server `r` automatically, or None when it may. scan=False skips the (slower)
     look into the job folder for paths that exist only here."""
@@ -789,6 +859,12 @@ def why_not(j, r, scan=True):
         out = []
     if out:
         return "it uses paths that exist only here: " + ", ".join(out[:3]) + " (add them to path_map, or keep the files inside the job folder)"
+    try:
+        mp = missing_parts(j, r["name"])
+    except Exception:
+        mp = []
+    if mp:
+        return f"it uses a part not installed there: {', '.join(mp[:3])} (add the devices on the server, then ms remote tools {r['name']})"
     return None
 
 
@@ -1010,8 +1086,11 @@ for t in vivado vitis vitis-run v++ vitis_hls xsim xelab xvlog; do
 done
 [ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && echo "T crt1=yes" || echo "T crt1=no"
 [ -e /usr/include/stdio.h ] && echo "T libc_headers=yes" || echo "T libc_headers=no"
-if [ -n "$XILINX_VIVADO" ] && [ -d "$XILINX_VIVADO/data/parts/xilinx" ]; then
-  echo "T parts=$(ls "$XILINX_VIVADO/data/parts/xilinx" 2>/dev/null | tr '\n' ' ')"
+if command -v vivado >/dev/null 2>&1; then   # the devices Vivado can really use (folder names list every family)
+  mkdir -p tooltest/parts && ( cd tooltest/parts && printf '%s\n' \
+    'puts "T devices=[join [lsort -unique [get_property DEVICE [get_parts]]] { }]"' \
+    'puts "T families=[join [lsort -unique [get_property ARCHITECTURE [get_parts]]] { }]"' 'exit' > p.tcl && \
+    timeout 900 vivado -mode batch -nojournal -nolog -notrace -source p.tcl 2>/dev/null | grep '^T ' )
 fi
 run() {  # NAME CMD...: run with a time limit, show the first lines and the exit code
   local n=$1; shift
@@ -1135,9 +1214,13 @@ def tools_check(name, out=print):
     if (have["vitis-run"] or have["v++"] or have["vitis_hls"]) and (facts.get("crt1") == "no" or facts.get("libc_headers") == "no"):
         step(False, "C compiler files for HLS C simulation (csim)", "the node has no libc6-dev (crt1.o / stdio.h)",
              "csynth and cosim-free flows work; for csim ask the admins for: apt install libc6-dev")
-    if facts.get("parts"):
-        out(f"  ..  device families installed there: {facts['parts']}")
-        out("       (a job for a part that is not installed there fails with 'part not found')")
+    if facts.get("devices"):
+        devs = facts["devices"].split()
+        out(f"  ..  devices installed there ({len(devs)}), families: {facts.get('families', '?')}")
+        out("       jobs whose Tcl files use another part stay here (ms remote tools again after adding devices)")
+        save_devices(r["name"], devs)
+    elif have["vivado"]:
+        out("  ..  could not ask Vivado for its installed devices")
     # what can be taken out of missing_tools
     miss = r["missing_tools"].split()
     alias = {"vitis": ("vitis-run", "v++"), "xsim": ("xelab",), "xvlog": ("xelab",), "xvhdl": ("xelab",),

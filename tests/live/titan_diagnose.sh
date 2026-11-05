@@ -123,8 +123,7 @@ ST="$L/$V/Vitis/settings64.sh"; [ -f "$ST" ] || ST="$L/$V/Vivado/settings64.sh"
 if [ ! -f "$ST" ]; then r settings none; echo "no settings64.sh: stop"; exit 0; fi
 sec "C library files and installed devices ($ST)"
 ( source "$ST" >/dev/null 2>&1
-  [ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && [ -e /usr/include/stdio.h ] && echo "R libc_dev=yes" || echo "R libc_dev=no"
-  ls "${XILINX_VIVADO:-/nonexistent}/data/parts/xilinx" 2>/dev/null | tr '\n' ' ' | sed 's/^/parts: /'; echo )
+  [ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && [ -e /usr/include/stdio.h ] && echo "R libc_dev=yes" || echo "R libc_dev=no" )
 if [ -n "${ORIG_LANG+x}" ]; then
   sec "vivado with the ORIGINAL (broken) locale — shows whether the locale is the problem"
   ( export LANG="$ORIG_LANG"; [ -n "$ORIG_LC_ALL" ] && export LC_ALL="$ORIG_LC_ALL"
@@ -141,6 +140,14 @@ run vitis-run vitis-run --version
 run v++ v++ --version
 run vitis_hls vitis_hls -version
 run xelab xelab -version
+sec "devices Vivado can use (get_parts)"
+if command -v vivado >/dev/null; then
+  mkdir -p "$WD/parts" && ( cd "$WD/parts" && printf '%s\n' \
+    'puts "R families=[join [lsort -unique [get_property ARCHITECTURE [get_parts]]] { }]"' \
+    'puts "R devices=[join [lsort -unique [get_property DEVICE [get_parts]]] { }]"' \
+    "puts \"R part_installed=[expr {[llength [get_parts -quiet $P]] ? {yes} : {no}}]\"" 'exit' > p.tcl && \
+    timeout 900 vivado -mode batch -nojournal -nolog -notrace -source p.tcl 2>/dev/null | grep '^R ' )
+fi
 sec "real Vivado synthesis ($P)"
 mkdir -p "$WD/syn" && cd "$WD/syn" && cat > top.v <<'V'
 module top(input clk, input rst, output reg [7:0] q);
@@ -241,6 +248,12 @@ chk() { if [ "$1" = ok ]; then say "ok  $2"; else say "NO  $2"; [ -n "${3:-}" ] 
          [ -n "$m" ] && say "    -> $m: ask the admins, or put it in ~/$ACCOUNT/lib and add LD_LIBRARY_PATH to setup";;
     esac
   done
+  if [ -n "$(val families)" ]; then say "..  device families installed: $(val families)"
+  else say "..  could not ask Vivado for its installed devices"; fi
+  case "$(val part_installed)" in
+    yes) say "ok  part $PART is installed";;
+    no)  say "NO  part $PART is NOT installed -> add its devices on the server (docs/remote-servers.md, adding devices)";;
+  esac
   chk "$( [ "$(val vivado_synth)" = ok ] && echo ok)" "Vivado synthesizes a design for $PART ($(val vivado_synth))" "see 'real Vivado synthesis' in the report"
   case "$(val hls_synth)" in ok*) say "ok  HLS C synthesis works ($(val hls_synth))";; *) say "NO  HLS C synthesis: $(val hls_synth) -> see 'real HLS' in the report";; esac
   [ "$(val libc_dev)" = no ] && say "..  no libc6-dev on the node: HLS C simulation (csim) cannot link; csynth is fine"
