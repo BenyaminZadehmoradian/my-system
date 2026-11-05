@@ -182,3 +182,103 @@ assert st(a["id"]) == "done" and "submitting without it" in log, log
 print("ok")
 ''', shared=True)
     assert "ok" in out
+
+
+
+DIAG_STUBS = {
+    "ssh": "#!/bin/bash\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2;; -*) shift;; *) break;; esac; done\nshift\n"
+           "cd \"$FAKE_HEAD\" && HOME=\"$FAKE_HEAD\" exec bash -c \"$*\"\n",
+    "sbatch": "#!/bin/bash\nout=; for a in \"$@\"; do case \"$a\" in --output=*) out=\"${a#--output=}\";; esac; done\n"
+              "script=\"${@: -1}\"; out=\"${out//\\'/}\"; script=\"${script//\\'/}\"\n"
+              "(cd /tmp && LANG=xx_YY.UTF-8 bash \"$script\" > \"$out\" 2>&1; echo done > \"$FAKE_HEAD/.diag_done\") &\necho 555\n",
+    "squeue": "#!/bin/bash\n[ -f \"$FAKE_HEAD/.diag_done\" ] || echo 'RUNNING node03 None'\n",
+    "sacct": "#!/bin/bash\necho 'COMPLETED|0:0|node03'\n",
+    "scancel": "#!/bin/bash\nexit 0\n",
+    "sleep": "#!/bin/sh\nexit 0\n",
+}
+FAKE_VIVADO = "#!/bin/sh\ncase \"$*\" in *-source*) echo util > util.rpt; echo 'synth_design completed successfully';; " \
+              "*) echo 'vivado v2025.2.1 (64-bit)';; esac\n"
+FAKE_VITIS_RUN = "#!/bin/sh\ncase \"$*\" in *--tcl*) mkdir -p p/s/syn/report; echo x > p/s/syn/report/csynth.xml; " \
+                 "echo 'Finished C synthesis';; *) echo 'vitis-run v2025.2.1';; esac\n"
+
+
+def test_titan_diagnose_script_against_fake_cluster():
+    """tests/live/titan_diagnose.sh, end to end against a fake head node, share and node."""
+    import os
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    stubs, head, share = tmp / "stubs", tmp / "head", tmp / "share"
+    for d in (stubs, head, share):
+        d.mkdir()
+    for n, body in DIAG_STUBS.items():
+        (stubs / n).write_text(body)
+        (stubs / n).chmod(0o755)
+    root = share / "bzm/xilinx/2025.2.1"
+    for prod in ("Vivado", "Vitis"):
+        (root / prod / "bin").mkdir(parents=True)
+    (root / "Vivado/settings64.sh").write_text(f"export XILINX_VIVADO={root}/Vivado PATH={root}/Vivado/bin:$PATH\n")
+    (root / "Vitis/settings64.sh").write_text(f"export XILINX_VIVADO={root}/Vivado XILINX_VITIS={root}/Vitis "
+                                              f"PATH={root}/Vitis/bin:{root}/Vivado/bin:$PATH\n")
+    for p, body in ((root / "Vivado/bin/vivado", FAKE_VIVADO), (root / "Vitis/bin/vitis-run", FAKE_VITIS_RUN)):
+        p.write_text(body)
+        p.chmod(0o755)
+    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", FAKE_HEAD=str(head), ACCOUNT="bzm", SHARE=str(share),
+               HOME=str(tmp))
+    script = Path(__file__).resolve().parent / "live" / "titan_diagnose.sh"
+    r = subprocess.run(["bash", str(script), "titan"], env=env, capture_output=True, text=True, timeout=120, cwd=tmp)
+    o = r.stdout
+    for want in ("ok  ssh titan", "copy on the share", "submitted Slurm job 555", "ok  share mounted on the node",
+                 "ok  link ~/bzm/xilinx on the node", "ok  the tools (2025.2.1) are visible", "ok  the node can ssh/scp",
+                 "the locale sent from here does not exist", "ok  vivado starts", "ok  vitis-run starts",
+                 "ok  Vivado synthesizes a design", "ok  HLS C synthesis works (ok(vitis-run))", "full report:"):
+        assert want in o, (want, o, r.stderr)
+    assert not list(share.glob("bzm/diag-*")), "the result folder on the share is removed"
+    assert list(tmp.glob("titan-diagnose-*.txt")), "report saved here"
+    # Vivado's settings only, and the copy lost the execute bit
+    (root / "Vitis/settings64.sh").unlink()
+    (root / "Vivado/bin/vivado").chmod(0o644)
+    (head / ".diag_done").unlink()
+    r = subprocess.run(["bash", str(script), "titan"], env=env, capture_output=True, text=True, timeout=120, cwd=tmp)
+    assert "Vitis/settings64.sh missing on the share" in r.stdout, r.stdout
+    assert "vivado is not executable" in r.stdout and "NO  Vivado synthesizes" in r.stdout, r.stdout
+    assert "NO  libraries" not in r.stdout, r.stdout
+
+
+
+FAKE_VIVADO_TCL = r"""#!/bin/bash
+# a fake vivado: with -source, read the Tcl like Vivado would (paths must exist on the node)
+case "$*" in *-source*) ;; *) echo 'vivado v2025.2.1 (64-bit)'; exit 0;; esac
+tcl=$(echo "$*" | sed -E 's/.*-source ([^ ]+).*/\1/')
+src=$(sed -n 's/^read_verilog //p' "$tcl"); rpt=$(sed -n 's/.*report_utilization -file //p' "$tcl")
+[ -f "$src" ] || { echo "ERROR: [Common 17-69] File not found: $src"; exit 1; }
+echo util > "$rpt" && echo 'synth_design completed successfully'
+"""
+
+
+def test_live_titan_script_against_fake_cluster():
+    """tests/live/live_titan.py runs all four steps against the simulated cluster (as on Titan: no shared disk)."""
+    import os
+    tmp, ms = fake_ms()
+    (ms / "tests").mkdir(exist_ok=True)
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
+    env.update(cluster(tmp, shared=False))
+    root = _fake_install(env["FAKE_HEAD"])
+    (root / "Vivado/bin/vivado").write_text(FAKE_VIVADO_TCL)
+    (root / "Vitis/bin/vitis-run").write_text(FAKE_VITIS_RUN)
+    (ms / "config/remotes.conf").write_text(CONF.format(offload="never") + f"setup = source {root}/Vitis/settings64.sh\n")
+    script = Path(__file__).resolve().parent / "live" / "live_titan.py"
+    r = subprocess.run([sys.executable, str(script), "titan"], env=env, capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
+    for want in ("PASS  server and plain job", "PASS  Vivado starts on a node", "PASS  Vivado synthesis job",
+                 "PASS  HLS synthesis job", "your Tcl file here was not changed"):
+        assert want in r.stdout, (want, r.stdout)
+
+
+if __name__ == "__main__":                # ms selftest runs each test file as a script (no pytest needed)
+    import time
+    t0 = time.time()
+    for k, fn in list(globals().items()):
+        if k.startswith("test_") and callable(fn):
+            fn()
+            print("ok", k)
+    print(f"all passed in {time.time() - t0:.1f}s")

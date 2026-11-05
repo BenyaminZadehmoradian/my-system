@@ -111,7 +111,12 @@ setup = source ~/benyamin/xilinx/2025.2.1/Vitis/settings64.sh
 - Remove `vivado vitis vitis_hls ...` from `missing_tools` only after `ms remote tools titan` says they work on a
   node (it prints the new `missing_tools` line).
 
-### When the tools do not work there: `ms remote tools titan`
+### When the tools do not work there
+
+First run `bash tests/live/titan_diagnose.sh titan` (works without my-system 1.18; really synthesizes with Vivado and
+HLS on a node), then, with 1.18 installed, `python3 tests/live/live_titan.py titan`. See tests/live/README.md.
+
+#### `ms remote tools titan`
 
 It sends a job that starts Vivado/Vitis on a node exactly like a real job (setup, links, path_map) and reports:
 

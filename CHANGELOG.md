@@ -21,6 +21,11 @@ Server (Titan) fixes and a tool check:
   device families) and which `missing_tools` can be removed.
 - All command helpers decode output with `errors="replace"`: a non-UTF-8 file name (e.g. on the SMB share) no
   longer crashes the daily check, system report or software page (UnicodeDecodeError is not an OSError).
+- Tests: `tests/run_tests.sh` runs every test file without pytest; `tests/test_v18.py` (11 tests) can run as a
+  script too, so `ms selftest` really runs it. Live tests for the real server in `tests/live/`:
+  `titan_diagnose.sh` (standalone: one Slurm job that checks the node, share, link, settings, libraries, locale and
+  really synthesizes with Vivado and HLS) and `live_titan.py` (check, tools, a Vivado and an HLS job through the
+  queue with path translation). Neither is run automatically: they use the shared cluster.
 - docs/remote-servers.md: `setup` must source Vitis' settings64.sh (Vivado's leaves HLS off the PATH); copy with
   `rsync -rltp`; a troubleshooting table.
 
