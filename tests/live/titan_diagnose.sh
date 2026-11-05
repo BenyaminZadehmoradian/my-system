@@ -121,18 +121,8 @@ for p in Vivado Vitis; do
 done
 ST="$L/$V/Vitis/settings64.sh"; [ -f "$ST" ] || ST="$L/$V/Vivado/settings64.sh"
 if [ ! -f "$ST" ]; then r settings none; echo "no settings64.sh: stop"; exit 0; fi
-sec "libraries ($ST)"
+sec "C library files and installed devices ($ST)"
 ( source "$ST" >/dev/null 2>&1
-  miss=""
-  for d in "${XILINX_VIVADO:-}" "${XILINX_VITIS:-}" "${XILINX_HLS:-}"; do
-    [ -n "$d" ] || continue
-    for b in "$d"/bin/unwrapped/lnx64.o/*; do
-      [ -f "$b" ] && [ -x "$b" ] || continue
-      m=$(ldd "$b" 2>/dev/null | awk '/not found/{print $1}'); [ -n "$m" ] && miss="$miss $m"
-    done
-  done
-  miss=$(echo $miss | tr ' ' '\n' | sort -u | xargs)
-  if [ -n "$miss" ]; then echo "missing: $miss"; echo "R libs=missing:$miss"; else echo "none missing"; echo "R libs=ok"; fi
   [ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && [ -e /usr/include/stdio.h ] && echo "R libc_dev=yes" || echo "R libc_dev=no"
   ls "${XILINX_VIVADO:-/nonexistent}/data/parts/xilinx" 2>/dev/null | tr '\n' ' ' | sed 's/^/parts: /'; echo )
 if [ -n "${ORIG_LANG+x}" ]; then
@@ -244,10 +234,12 @@ chk() { if [ "$1" = ok ]; then say "ok  $2"; else say "NO  $2"; [ -n "${3:-}" ] 
   done
   [ "$(val path_Vivado_vivado)" = exec ] && [ "$(val path_Vivado_vitis-run)" = no ] && [ "$(val path_Vitis_vitis-run)" = exec ] && \
     say "!!  Vivado/settings64.sh has no HLS: use  setup = source ~/$ACCOUNT/xilinx/$VER/Vitis/settings64.sh"
-  l=$(val libs); [ "$l" = ok ] && say "ok  no missing libraries" || say "NO  libraries: ${l#missing:} -> ask the admins (installLibs.sh), or LD_LIBRARY_PATH in setup"
   for t in vivado vitis-run v++ vitis_hls xelab; do
     s=$(val "start_$t"); case "$s" in 0) say "ok  $t starts";; absent|"") say "..  $t not available";;
-      124) say "NO  $t did not answer within 15 min (share too slow?)";; *) say "NO  $t exits with $s (see the report)";; esac
+      124) say "NO  $t did not answer within 15 min (share too slow?)";;
+      *) say "NO  $t exits with $s"; m=$(echo "$LOG" | grep -o 'error while loading shared libraries: [^:]*' | head -1)
+         [ -n "$m" ] && say "    -> $m: ask the admins, or put it in ~/$ACCOUNT/lib and add LD_LIBRARY_PATH to setup";;
+    esac
   done
   chk "$( [ "$(val vivado_synth)" = ok ] && echo ok)" "Vivado synthesizes a design for $PART ($(val vivado_synth))" "see 'real Vivado synthesis' in the report"
   case "$(val hls_synth)" in ok*) say "ok  HLS C synthesis works ($(val hls_synth))";; *) say "NO  HLS C synthesis: $(val hls_synth) -> see 'real HLS' in the report";; esac

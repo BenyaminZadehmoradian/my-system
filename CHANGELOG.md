@@ -17,7 +17,7 @@ Server (Titan) fixes and a tool check:
 - `sbatch` refused `--mem` (Titan) after sinfo could not answer: retried once without it, and remembered.
 - Free CPUs are counted in the configured partition only.
 - New `ms remote tools NAME`: starts Vivado, vitis-run, v++, vitis_hls and xelab on a node exactly like a job and
-  explains what is missing (settings, execute bits, libraries, locale, HLS on PATH, libc6-dev for csim, installed
+  explains what is missing (settings, execute bits, a library named in a failed start, locale, HLS on PATH, libc6-dev for csim, installed
   device families) and which `missing_tools` can be removed.
 - All command helpers decode output with `errors="replace"`: a non-UTF-8 file name (e.g. on the SMB share) no
   longer crashes the daily check, system report or software page (UnicodeDecodeError is not an OSError).

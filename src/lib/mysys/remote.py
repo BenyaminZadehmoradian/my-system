@@ -1008,16 +1008,6 @@ for t in vivado vitis vitis-run v++ vitis_hls xsim xelab xvlog; do
   [ -n "$p" ] || continue
   rp=$(readlink -f "$p"); [ -x "$rp" ] && echo "T exec.$t=yes" || echo "T exec.$t=no"
 done
-miss=""
-for d in "$XILINX_VIVADO/bin/unwrapped/lnx64.o" "$XILINX_VITIS/bin/unwrapped/lnx64.o" "$XILINX_HLS/bin/unwrapped/lnx64.o"; do
-  [ -d "$d" ] || continue
-  for b in "$d"/vivado "$d"/xelab "$d"/xsim "$d"/vitis-run "$d"/v++ "$d"/vitis_hls; do
-    [ -f "$b" ] || continue
-    miss="$miss $(ldd "$b" 2>/dev/null | awk '/not found/{print $1}')"
-  done
-done
-miss=$(echo $miss | tr ' ' '\n' | sort -u | tr '\n' ' ')
-echo "T missing_libs=$miss"
 [ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && echo "T crt1=yes" || echo "T crt1=no"
 [ -e /usr/include/stdio.h ] && echo "T libc_headers=yes" || echo "T libc_headers=no"
 if [ -n "$XILINX_VIVADO" ] && [ -d "$XILINX_VIVADO/data/parts/xilinx" ]; then
@@ -1114,15 +1104,6 @@ def tools_check(name, out=print):
                  "the files lost their execute permission when they were copied to the share (rsync -rlt does\n"
                  "not keep permissions). Copy again with: rsync -rltp …  — or ask for the share to be mounted\n"
                  "with file_mode=0755 / 'noperm'")
-    libs = facts.get("missing_libs", "").split()
-    if libs:
-        ok["v"] = False
-        step(False, "all libraries the tools need are on the node", "missing: " + " ".join(libs),
-             "ask the admins to install them on the nodes (AMD: <install>/Vitis/scripts/installLibs.sh lists\n"
-             "the packages), or copy the .so files into ~/ACCOUNT/lib on the share and add to setup:\n"
-             "export LD_LIBRARY_PATH=~/ACCOUNT/lib:$LD_LIBRARY_PATH")
-    elif facts.get("XILINX_VIVADO") or facts.get("XILINX_VITIS"):
-        step(True, "all libraries the tools need are on the node")
     works = {}
     for t in ("vivado", "vitis-run", "v++", "vitis_hls", "xelab"):
         if not have.get(t):
@@ -1137,7 +1118,7 @@ def tools_check(name, out=print):
             ok["v"] = ok["v"] and t != "vivado"
         elif trc == "0":
             step(True, f"{t} starts", first)
-        else:
+        else:              # (ldd on AMD's internal binaries is meaningless: their wrapper sets LD_LIBRARY_PATH)
             step(False, f"{t} starts", f"exit {trc}: " + " / ".join(vers.get(t, [])[-3:]),
                  _tool_fix(vers.get(t, [])))
             ok["v"] = ok["v"] and t != "vivado"
