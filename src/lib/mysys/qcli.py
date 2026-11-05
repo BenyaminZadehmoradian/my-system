@@ -10,7 +10,9 @@ from . import flow, queue
 
 Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and other resources are free
 
-  ms q add [options] -- CMD ...      queue a command (run in the current folder); prints the job id
+  ms q add [options] -- CMD ...      queue a command (run in the current folder); prints the job id. It is checked
+                                     first: the scripts/Tcl files it names must exist, and not in ~ or ~/My_System
+                                     (--anyway adds it all the same). AMD_SETUP in my_system.conf sets up Vivado/Vitis.
     resources   --mem GB  --cores N  --res NAME=N (license seats, boards; config/resources.conf)
                 --disk-gb N [--disk-path P]  --gpus N  --tool vivado
     order       --priority P  --after ID,..  --after-any ID,..  --after-fail ID,..  --top
@@ -255,6 +257,9 @@ def parse_add(a):
         elif k == "--wait":
             wait = True
             i += 1
+        elif k == "--anyway":                     # add it even when the pre-check finds a problem
+            opt["_anyway"] = True
+            i += 1
         elif k == "--top":
             top = True
             i += 1
@@ -300,7 +305,16 @@ def q_cmd(a):
         if not cmd:
             print("usage: ms q add [options] -- CMD ...")
             return 2
-        j = queue.submit(" ".join(shlex.quote(c) for c in cmd) if len(cmd) > 1 else cmd[0], **opt)
+        line = " ".join(shlex.quote(c) for c in cmd) if len(cmd) > 1 else cmd[0]
+        anyway = opt.pop("_anyway", False)
+        probs = queue.preflight(line, os.getcwd())
+        if probs and not anyway:
+            print("not added — it would fail or leave its files in the wrong place:", file=sys.stderr)
+            for p_ in probs:
+                print(f"  - {p_}", file=sys.stderr)
+            print("(add it anyway with: ms q add --anyway ...)", file=sys.stderr)
+            return 2
+        j = queue.submit(line, **opt)
         if top:
             queue.top(j["id"])
         print(f"{j['id']}")
@@ -322,7 +336,7 @@ def q_cmd(a):
                 print(f"no job {jid}")
                 continue
             e = queue.efficiency(j)
-            for k in ("id", "name", "state", "reason", "cmd", "cwd", "tool", "priority", "attempt", "retries", "depends",
+            for k in ("id", "name", "state", "reason", "cmd_typed", "cmd", "cwd", "tool", "priority", "attempt", "retries", "depends",
                       "timeout_s", "resources", "run_id", "outputs", "last_line", "start_note", "group", "labels"):
                 if j.get(k) not in (None, "", [], {}):
                     print(f"{k:>10}: {j.get(k)}")

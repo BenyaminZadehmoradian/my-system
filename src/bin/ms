@@ -33,7 +33,8 @@
   ms replay TIME         what the machine was doing then (load, RAM, biggest programs, jobs); ms replay crashes
   ms ping NAME [start|fail|CODE]   dead-man's-switch ping to PING_<NAME> in my_system.conf
   ms housekeeping        rotate / trim my-system's own logs (daily job does this)
-  ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, tools, status (ms remote help)
+  ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, tools, licenses, status
+  ms thermal [setup 80]  CPU temperature: limits in force, highest today; keep the CPU below a limit (ms thermal help)
   ms pause FEATURE|all [--for 2h|--until 08:00]   turn a part of my-system off for a while (ms pause help)
   ms resume FEATURE|all  turn it on again;  ms paused  what is off
   ms tools [allow|deny|default|reset ...]   which Vivado/Vitis/ISE versions each project may use
@@ -386,7 +387,7 @@ def main(argv):
     elif cmd == "status":
         status()
     elif cmd == "gui":
-        os.execv("/usr/bin/python3", ["/usr/bin/python3", str(MS / "gui" / "my_system_gui.py")])
+        os.execv("/usr/bin/python3", ["/usr/bin/python3", str(MS / "gui" / "my_system_gui.py"), *rest])   # --profile
     elif cmd == "check":
         return sh("run_daily.sh")
     elif cmd == "watch":
@@ -498,6 +499,9 @@ def main(argv):
             print("usage: ms ping NAME [start|fail|EXIT_CODE]   (URL from PING_<NAME> in my_system.conf)")
             return 2
         return 0 if config.ping(rest[0], rest[1] if len(rest) > 1 else "") else 1
+    elif cmd == "thermal":
+        from mysys import thermal
+        return thermal.cli(rest)
     elif cmd == "remote":
         from mysys import remote
         return remote.cli(rest)

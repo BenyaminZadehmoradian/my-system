@@ -245,9 +245,11 @@ def test_mcp():
 def test_cli():
     tmp, ms = fake_ms()
     env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp), MS_NO_CGROUP="1")
+    (tmp / "work").mkdir(exist_ok=True)
 
     def ms_(*a):
-        return subprocess.run([sys.executable, str(ms / "bin/ms"), *a], cwd=tmp, env=env, capture_output=True, text=True)
+        # a project folder: ms q add refuses jobs that would run in the home folder (1.19)
+        return subprocess.run([sys.executable, str(ms / "bin/ms"), *a], cwd=tmp / "work", env=env, capture_output=True, text=True)
     r = ms_("q", "add", "--name", "t1", "--mem", "1", "--cores", "1", "--priority", "3", "--", "echo", "a b")
     assert r.returncode == 0 and r.stdout.strip() == "1", r.stdout + r.stderr
     j = json.loads((ms / "state/queue/jobs/1.json").read_text())

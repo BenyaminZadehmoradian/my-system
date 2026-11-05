@@ -23,6 +23,9 @@ SEV = {"CRITICAL WARNING": "critical", "WARNING": "warning", "ERROR": "error", "
 BUILTIN_KB = [
     {"name": "Out of memory", "pattern": r"(Killed|Out of memory|std::bad_alloc|Cannot allocate memory|oom-kill)",
      "fix": "Run fewer jobs in parallel or raise mem_gb; check `ms q report` for the real peak."},
+    {"name": "Device needs a license", "pattern": r"valid license was not found for feature '[^']*' and/or device",
+     "fix": "This device is not in the free edition and this machine (or server) has no license for it: run it where "
+            "the license is (ms remote licenses NAME shows a server's), or get a license server (XILINXD_LICENSE_FILE)."},
     {"name": "License not available", "pattern": r"(License checkout failed|No license|FLEXnet Licensing error|Common 17-345|license.*(not available|expired))",
      "fix": "All seats are in use or the license server is unreachable; define the license in config/resources.conf so the queue waits for a seat."},
     {"name": "Disk full", "pattern": r"(No space left on device|Disk quota exceeded)",

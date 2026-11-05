@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -145,8 +146,37 @@ def _alive(pid, host):
     return os.path.exists(f"/proc/{pid}")
 
 
+_CACHE = {}                      # path -> (mtime_ns, size, parsed runs): a file is parsed again only when it changed
+_CACHE_LOCK = threading.Lock()
+
+
 def read(path):
-    """{run_id: summary} for one file (invalid lines are skipped)."""
+    """{run_id: summary} for one file (invalid lines are skipped). Parsing is cached per file (mtime and size), so
+    reading hundreds of unchanged run logs is cheap; whether a run still lives is checked fresh every time."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    with _CACHE_LOCK:
+        hit = _CACHE.get(str(path))
+    if hit and hit[0] == key:
+        parsed = hit[1]
+    else:
+        parsed = _parse(path)
+        with _CACHE_LOCK:
+            _CACHE[str(path)] = (key, parsed)
+    runs = {k: dict(v) for k, v in parsed.items()}     # the live check below must not change the cached copy
+    for r in runs.values():
+        if r["status"] == "running":
+            alive = _alive(r["pid"], r["host"])
+            if alive is False or (alive is None and r["last_ts"] and time.time() - r["last_ts"] > 48 * 3600):
+                r["status"] = "died"
+            r["seconds"] = (time.time() if r["status"] == "running" else (r["last_ts"] or time.time())) - (r["start_ts"] or time.time())
+    return runs
+
+
+def _parse(path):
     runs = {}
     try:
         f = open(path, encoding="utf-8", errors="replace")
@@ -199,12 +229,6 @@ def read(path):
                 r.update(status=d.get("status", "?"), end_ts=t, seconds=d.get("seconds"))
                 if d.get("error") and not r["first_error"]:
                     r["first_error"] = str(d["error"])[:300]
-    for r in runs.values():
-        if r["status"] == "running":
-            alive = _alive(r["pid"], r["host"])
-            if alive is False or (alive is None and r["last_ts"] and time.time() - r["last_ts"] > 48 * 3600):
-                r["status"] = "died"
-            r["seconds"] = (time.time() if r["status"] == "running" else (r["last_ts"] or time.time())) - (r["start_ts"] or time.time())
     return runs
 
 

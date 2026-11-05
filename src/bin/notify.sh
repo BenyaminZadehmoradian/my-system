@@ -4,7 +4,7 @@
 # and state/ntfy_off does not. Messages carry status text only, never file contents.
 # shellcheck source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
-title="${1:-my-system}"; msg="${2:-}"; prio="${3:-default}"; tag="${4:-computer}"
+title="${1:-my-system}"; msg="${2:-}"; prio="${3:-default}"   # $4 (tag): accepted, deliberately not sent (below)
 case "$prio" in high|urgent) urg=critical;; min|low) urg=low;; *) urg=normal;; esac
 mkdir -p "$MS/reports"
 echo "$(date '+%F %T')|$prio|$title|${msg//$'\n'/ }" >> "$MS/reports/notifications.log"

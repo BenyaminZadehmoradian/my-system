@@ -129,6 +129,92 @@ def parse_duration(s):
 
 SETUP_WORDS = {"source", ".", "cd", "export", "set", "module", "ulimit", "umask", "conda", "unset", "pushd"}
 
+# ---------------------------------------------------------------- command checks and AMD set-up
+AMD_RX = re.compile(r"(?<![\w-])(vivado|vitis_hls|vitis-run|v\+\+|xsim|xelab|xvlog|xvhdl|xsc|vivado_hls|bootgen|updatemem)(?![\w-])"
+                    r"|XILINX_(VIVADO|VITIS|HLS)")
+FILE_FLAGS = {"-source", "-f", "--tcl", "-tclbatch", "--source"}
+INTERPRETERS = {"bash", "sh", "python", "python3", "tclsh", "perl", "source", ".", "make"}
+
+
+def _segments(cmd):
+    return [x for x in re.split(r"&&|\|\||;|\||\n", cmd or "") if x.strip()]
+
+
+def _words(seg):
+    try:
+        w = shlex.split(seg)
+    except ValueError:
+        w = seg.split()
+    while w and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w[0]):     # VAR=value prefix
+        w = w[1:]
+    return w
+
+
+def referenced_files(cmd):
+    """Files a command line needs to exist: the script given to bash/sh/python/tclsh/source, ./script, and the file
+    after -source / -f / --tcl / -tclbatch (Vivado, vitis_hls, vitis-run, xsim). `make` -> its Makefile."""
+    out = []
+    for seg in _segments(cmd):
+        w = _words(seg)
+        if not w:
+            continue
+        if w[0] == "make":
+            if "-f" not in w and "-C" not in w:
+                out.append("Makefile")
+        elif w[0] in INTERPRETERS:
+            args = [x for x in w[1:] if not x.startswith("-")]
+            if args and w[0] not in ("python", "python3") or (args and args[0].endswith(".py")):
+                out.append(args[0])
+        elif w[0].startswith("./"):
+            out.append(w[0])
+        for k, x in enumerate(w[:-1]):
+            if x in FILE_FLAGS and w[0] != "make":
+                out.append(w[k + 1])
+    return [f for f in dict.fromkeys(out) if not any(c in f for c in "$`*?{}")]
+
+
+def preflight(cmd, cwd):
+    """Problems that would make the job fail or leave its files in the wrong place, before it is queued."""
+    probs = []
+    c = os.path.realpath(cwd)
+    home = os.path.realpath(os.path.expanduser("~"))
+    ms = os.path.realpath(str(config.MS))
+    if c == home:
+        probs.append("it would run in your home folder (its output files land there): cd to the project folder first")
+    elif c == ms or c.startswith(ms + "/"):
+        probs.append("it would run inside ~/My_System: cd to the project folder first")
+    elif os.path.isfile(os.path.join(c, "install.sh")) and os.path.isdir(os.path.join(c, "src", "lib", "mysys")):
+        probs.append("it would run inside the my-system source folder: cd to the project folder first")
+    for f in referenced_files(cmd):
+        p = os.path.expanduser(f)
+        if not os.path.exists(p if os.path.isabs(p) else os.path.join(cwd, p)):
+            probs.append(f"{f} does not exist" + ("" if os.path.isabs(p) else f" in {cwd}"))
+    return probs
+
+
+def needs_amd(cmd, cwd, max_bytes=262144):
+    """Does the job use AMD tools — in its command line, or in the script / Makefile it runs?"""
+    if AMD_RX.search(cmd or ""):
+        return True
+    for f in referenced_files(cmd):
+        p = os.path.expanduser(f)
+        p = p if os.path.isabs(p) else os.path.join(cwd, p)
+        try:
+            with open(p, "rb") as fh:
+                if AMD_RX.search(fh.read(max_bytes).decode(errors="replace")):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def amd_setup(cmd, cwd):
+    """AMD_SETUP (my_system.conf) put in front of a job that uses AMD tools and does not set them up itself."""
+    setup = (config.get("AMD_SETUP") or "").strip()
+    if not setup or "settings64" in (cmd or "") or not needs_amd(cmd, cwd):
+        return cmd
+    return f"{setup} && {cmd}"
+
 
 def _default_name(cmd, tool=None):
     """A job's name when none is given: the detected tool, else the first program that is not set-up
@@ -200,6 +286,11 @@ def submit(cmd, cwd=None, name=None, **opt):
     """Add a job; returns it. `cmd` is a shell command line."""
     cwd = os.path.abspath(os.path.expanduser(cwd or os.getcwd()))
     tool = opt.pop("tool", None) or guess_tool(cmd)
+    if opt.pop("auto_setup", True):                  # AMD_SETUP: Vivado/Vitis jobs need no "source settings64.sh &&"
+        full = amd_setup(cmd, cwd)
+        if full != cmd:
+            opt.setdefault("cmd_typed", cmd)
+            cmd = full
     prof = capacity.profiles().get(tool or "", {})
     j = dict(DEFAULTS)
     j.update({k: v for k, v in opt.items() if v is not None})
@@ -1294,6 +1385,28 @@ class Scheduler:
                     self.last_action = now
                     return
 
+    def remind_paused(self, jobs, now):
+        """A job you paused (ms q suspend) keeps its RAM: say so after SUSPEND_REMIND_H hours, then once a day."""
+        h = float(config.num("SUSPEND_REMIND_H") or 0)
+        if h <= 0:
+            return
+        for j in jobs:
+            if j["state"] != "suspended" or j.get("reason") != "paused by user":
+                continue
+            since = j.get("suspended_at")
+            if not since:                     # paused by an older version: count from now on
+                update(j["id"], suspended_at=now)
+                continue
+            last = j.get("reminded_at") or 0
+            if now - since >= h * 3600 and now - last >= max(h, 24) * 3600:
+                gb = (j.get("rss") or 0) / GiB
+                hours = (now - since) / 3600
+                self.notify("Job still paused", f"#{j['id']} {j['name']} has been paused for {hours:.0f} h"
+                            + (f" and holds {gb:.1f} GB RAM" if gb >= 0.1 else "")
+                            + f". Continue: ms q resume {j['id']} · or end it: ms q cancel {j['id']}",
+                            "default", "pause_button")
+                update(j["id"], reminded_at=now)
+
     def tick(self):
         while True:                       # reap finished runners (they are our children)
             try:
@@ -1332,6 +1445,7 @@ class Scheduler:
         if check_stuck:
             self._stuck_t = time.time()
             self.waiting_advice(jobs)
+            self.remind_paused(jobs, now)
         for j in jobs:                    # stuck detection when no explicit timeout
             if j["state"] != "running" or not check_stuck:
                 continue
@@ -1426,7 +1540,7 @@ def suspend(jid):
     j = load(jid)
     if j and j["state"] == "running":
         signal_job(j, signal.SIGSTOP)
-        update(jid, state="suspended", reason="paused by user")
+        update(jid, state="suspended", reason="paused by user", suspended_at=time.time(), reminded_at=None)
         return True
     return False
 

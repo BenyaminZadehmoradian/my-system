@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.19.0 — 2026-11-05
+- **The app no longer freezes.** A run left "running" in a run log made the Run logs page read every run log again
+  on each 15-s refresh (1.8 s with 40 logs; the window opened in 2.2 s). Run logs are now parsed once and again only
+  when the file changes (whether a run still lives is checked fresh); the table is rebuilt only when something
+  changed (running runs once a minute); the sidebar statuses are computed in a background thread; a page whose
+  refresh takes over 0.7 s is refreshed once a minute. Window in 0.5 s, the Run logs page in 0.2 s, refreshes ~0 s.
+  `ms gui --profile` writes the time of every page to state/gui_profile.txt.
+- `ms q add` checks the command first: the script / Tcl file it names (bash X, ./X, source X, -source, -f, --tcl,
+  -tclbatch, make → Makefile) must exist, and it must not run in ~, ~/My_System or a my-system checkout.
+  `--anyway` adds it all the same.
+- `AMD_SETUP` (my_system.conf), e.g. `source /mnt/data/Apps/2025.2.1/Vivado/settings64.sh`: put in front of every
+  job that uses AMD tools — in its command line or in the script or Makefile it runs — unless it sources a
+  settings64.sh itself. `ms q show` gives the command as typed (cmd_typed). On a server it is translated by path_map.
+- A job you paused (ms q suspend) keeps its RAM: a message after `SUSPEND_REMIND_H` hours (24), then once a day.
+- `ms thermal` (status, highest temperature in 24 h), `ms thermal check` (in the daily check: limits lost after a
+  reboot, hotter than MAX_TEMP_C), `ms thermal setup 80` / `ms thermal off` (thermald trip point + cpu-cool.service,
+  as measured in docs/thermal.md).
+- `ms remote licenses NAME [PART ...]`: a tiny synthesis per part on a node; parts without a license there are
+  remembered (jobs for them stay here), licensed ones are cleared. Default: the parts your recent jobs use.
+- path_map accepts `~/x` on the left (the literal text, for scripts that call `~/.local/bin/vitis_hls`);
+  docs/vitis_hls_wrapper.sh turns `vitis_hls -f` into `vitis-run --mode hls --tcl` on Vitis 2025.
+- Failure diagnosis: "Device needs a license" (Common 17-345 for a device) instead of "all seats in use".
+- GitHub Actions: lint (pyflakes, shellcheck) and every test on each push (.github/workflows/tests.yml).
+- docs: thermal.md; remote-servers.md (adding devices with docs/add_retry.sh, licenses, vitis_hls on the server).
+- tests/test_v19.py: 16 tests, including the app started offscreen with stuck runs (skipped without PyQt6).
+
 ## 1.18.5 — 2026-11-05
 - A server job that fails with "A valid license was not found for … device 'X'" makes the queue keep later jobs
   for device X here (30 days, or until the server's `setup` changes, e.g. to add XILINXD_LICENSE_FILE).

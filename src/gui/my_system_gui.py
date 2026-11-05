@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PyQt6.QtCore import QDateTime, QPointF, QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl
@@ -27,6 +28,7 @@ from PyQt6.QtWidgets import (
 
 HOME = Path.home()
 BASE = Path(os.environ.get("MY_SYSTEM", HOME / "My_System"))
+PROFILE = "--profile" in sys.argv or bool(os.environ.get("MS_GUI_PROFILE"))
 REPORTS, SCRIPTS, STATE = BASE / "reports", BASE / "bin", BASE / "state"
 sys.path.insert(0, str(BASE / "lib"))
 from mysys import config as CFG, detect as DET, gitstat as GIT, probes as PR, watcher as W  # noqa: E402
@@ -2050,7 +2052,7 @@ class RunLogsPage(Page):
 
     def __init__(self, win):
         super().__init__(win)
-        self._runs, self._sig = [], None
+        self._runs, self._sig, self._filled = [], None, 0.0
         lay = QVBoxLayout(self)
         lay.addLayout(header("Run logs", "Every run that writes the standard run log (msrun.jsonl) — from your scripts, "
                                          "Vivado/Tcl flows or `ms log run`. Select a run to see its timeline. "
@@ -2105,11 +2107,14 @@ class RunLogsPage(Page):
         from mysys import runlog as RL
         paths = RL.known_paths()
         sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p))
-        if sig == self._sig and not any(r["status"] == "running" for r in self._runs):
+        running = any(r["status"] == "running" for r in self._runs)
+        # unchanged files: nothing to do; running runs only update their duration, once a minute is enough
+        if sig == self._sig and not (running and time.time() - self._filled > 60):
             return
         self._sig = sig
-        self._runs = RL.all_runs(2000)
+        self._runs = RL.all_runs(2000)          # cheap: unchanged files come from the parse cache
         self.fill()
+        self._filled = time.time()
 
     def fill(self):
         from mysys import runlog as RL
@@ -2291,15 +2296,15 @@ class RunLogsPage(Page):
         l_.addLayout(b)
         d.exec()
 
-    def nav_status(self):
-        if self._sig is None:
-            self.refresh()
-        bad = sum(1 for r in self._runs[:200] if r["status"] in ("failed", "died") and r["end_ts"]
+    def nav_status(self):                       # runs in the background thread: no widgets here
+        from mysys import runlog as RL
+        runs = RL.all_runs(2000)
+        bad = sum(1 for r in runs[:200] if r["status"] in ("failed", "died") and r["end_ts"]
                   and time.time() - r["end_ts"] < 86400)
-        run = sum(1 for r in self._runs[:200] if r["status"] == "running")
+        run = sum(1 for r in runs[:200] if r["status"] == "running")
         if bad:
             return f"{bad} failed today", "bad"
-        return (f"{run} running" if run else f"{len(self._runs)} runs"), ("info" if run else None)
+        return (f"{run} running" if run else f"{len(runs)} runs"), ("info" if run else None)
 
 
 class ResultsPage(Page):
@@ -2727,6 +2732,11 @@ class Main(QMainWindow):
 
         self.stack = QStackedWidget()
         self.pages, self.navitems, self.row_page = [], [], {}
+        self.prof = {}                     # page -> {"init": s, "refresh": [s], "nav": [s]}  (ms gui --profile)
+        self.slow = {}                     # page index -> seconds its last refresh took
+        self.ticks = 0
+        self.nav_pool = ThreadPoolExecutor(max_workers=1)
+        self.nav_future = None
         group_of = {c: g for g, cs in self.GROUPS for c in cs}
         last_group = None
         for cls in self.PAGES:
@@ -2742,7 +2752,9 @@ class Main(QMainWindow):
                 hd.setSizeHint(QSize(200, 30 if self.nav.count() else 22))
                 hd.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
                 self.nav.addItem(hd)
+            t_init = time.time()
             page = cls(self)
+            self.prof.setdefault(cls.__name__, {"init": 0.0, "refresh": [], "nav": []})["init"] = time.time() - t_init
             wrap = QScrollArea()
             wrap.setWidgetResizable(True)
             wrap.setFrameShape(QFrame.Shape.NoFrame)
@@ -2777,7 +2789,10 @@ class Main(QMainWindow):
         h.addWidget(bw, 1)
         self.setCentralWidget(central)
         self.nav.setCurrentRow(min(self.row_page))
-        self.refresh_nav()
+        QTimer.singleShot(0, self.refresh_nav)       # the window shows first; the sidebar fills in when ready
+        poll = QTimer(self)
+        poll.timeout.connect(self.apply_nav)
+        poll.start(200)
         t = QTimer(self)
         t.timeout.connect(self.tick)
         t.start(15000)
@@ -2786,26 +2801,87 @@ class Main(QMainWindow):
         if row not in self.row_page:
             return
         self.stack.setCurrentIndex(self.row_page[row])
-        self.refresh()
+        self.refresh(force=True)
 
-    def refresh(self):
+    SLOW_S = 0.7                         # a page whose refresh takes longer is refreshed once a minute, not every 15 s
+
+    def refresh(self, force=False):
+        i = self.stack.currentIndex()
+        slow = self.slow.get(i, 0) > self.SLOW_S
+        if slow and not force and self.ticks % 4:
+            return
+        page = self.pages[i]
+        t0 = time.time()
         try:
-            self.pages[self.stack.currentIndex()].refresh()
+            page.refresh()
         except Exception as e:  # never let one bad file kill the app
             self.foot.setText(f"refresh error: {e}")
             return
-        self.foot.setText(f"Updated {time.strftime('%H:%M:%S')}  ·  refreshes every 15 s")
+        took = time.time() - t0
+        self.slow[i] = took
+        self.prof.setdefault(type(page).__name__, {"init": 0.0, "refresh": [], "nav": []})["refresh"].append(took)
+        every = "every minute (this page is slow to update)" if took > self.SLOW_S else "every 15 s"
+        self.foot.setText(f"Updated {time.strftime('%H:%M:%S')}  ·  refreshes {every}")
 
     def refresh_nav(self):
-        for p, ni in zip(self.pages, self.navitems):
-            try:
-                ni.set(*p.nav_status())
-            except Exception:
-                ni.set("", None)
+        """Sidebar statuses are computed in a background thread, so a slow one never freezes the window."""
+        if self.nav_future is not None and not self.nav_future.done():
+            return
+        pages = list(self.pages)
+
+        def work():
+            out = []
+            for p in pages:
+                t0 = time.time()
+                try:
+                    v = p.nav_status()
+                except Exception:
+                    v = ("", None)
+                out.append((v, time.time() - t0))
+            return out
+        self.nav_future = self.nav_pool.submit(work)
+        self.nav_future.applied = False
+
+    def apply_nav(self):
+        f = self.nav_future
+        if f is None or not f.done() or f.applied:
+            return
+        f.applied = True
+        try:
+            res = f.result()
+        except Exception:
+            return
+        for (v, took), p, ni in zip(res, self.pages, self.navitems):
+            ni.set(*v)
+            self.prof.setdefault(type(p).__name__, {"init": 0.0, "refresh": [], "nav": []})["nav"].append(took)
 
     def tick(self):
+        self.ticks += 1
         self.refresh()
         self.refresh_nav()
+        if PROFILE:
+            self.write_profile()
+
+    def write_profile(self):
+        """ms gui --profile: how long each page takes (state/gui_profile.txt)."""
+        rows = []
+        for name, d in self.prof.items():
+            rf, nv = d["refresh"], d["nav"]
+            rows.append((max(rf + nv + [d["init"]]), name, d["init"], max(rf) if rf else 0, len(rf), max(nv) if nv else 0))
+        lines = [f"my-system GUI profile {time.strftime('%F %T')} (seconds; worst of each)",
+                 f"{'page':24s} {'start':>7s} {'refresh':>8s} {'(n)':>4s} {'sidebar':>8s}"]
+        for _, name, ini, rf, n, nv in sorted(rows, reverse=True):
+            lines.append(f"{name:24s} {ini:7.2f} {rf:8.2f} {n:4d} {nv:8.2f}")
+        try:
+            (STATE / "gui_profile.txt").write_text("\n".join(lines) + "\n")
+        except OSError:
+            pass
+
+    def closeEvent(self, e):
+        if PROFILE:
+            self.write_profile()
+        self.nav_pool.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(e)
 
     def toggle_theme(self):
         os.environ["MY_SYSTEM_THEME"] = "light" if DARK else "dark"

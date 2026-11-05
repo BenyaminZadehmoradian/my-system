@@ -28,7 +28,8 @@ config/remotes.conf (INI, one section per server):
   missing_tools =              # programs the server does not have: jobs that use them always run here
   links =                      # ~/PATH -> TARGET[, ...]: links made on each node before a job, inside your home
                                # (e.g. ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx); never replaces anything
-  path_map =                   # LOCAL => SERVER[, ...]: paths that are elsewhere on the server, e.g.
+  path_map =                   # LOCAL => SERVER[, ...]: paths that are elsewhere on the server (LOCAL may be
+                                #   written ~/x for scripts that use that literal text), e.g.
                                # /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1
                                # (rewritten in the command and in the job's text files there; see "Paths" below)
   map_job_dir = yes            # the job folder's own absolute path is rewritten to its folder on the node
@@ -315,7 +316,9 @@ def parse_path_map(r):
             continue
         a, _, b = (x.strip().rstrip("/") for x in part.partition("=>"))
         bad = any(ch in a + b for ch in " $`;&|*?\"'\\")
-        if bad or not a.startswith("/") or not (b.startswith("/") or b.startswith("~/")) or len(a) < 4:
+        # LOCAL may also be written ~/x: then that literal text is replaced (scripts that call ~/.local/bin/tool)
+        if bad or not (a.startswith("/") or a.startswith("~/")) or not (b.startswith("/") or b.startswith("~/")) \
+                or len(a) < 4:
             raise KeyError(f"bad path_map entry '{part.strip()}' for {r['name']}: use /local/path => /server/path "
                            f"(or ~/path on the server)")
         if r.get("container") and b.startswith("~/"):
@@ -1294,6 +1297,114 @@ def tools_check(name, out=print):
     return ok["v"] and works.get("vivado", False)
 
 
+LIC_TCL = r"""
+foreach p $parts {
+  puts "L begin $p"
+  if {[llength [get_parts -quiet $p]] == 0} { puts "L missing $p"; continue }
+  catch {close_design -quiet}
+  read_verilog top.v
+  set rc [catch {synth_design -top top -part $p -mode out_of_context} e]
+  puts "L end $p $rc"
+  catch {close_design -quiet}
+}
+exit
+"""
+
+
+def license_parts(limit=20):
+    """One full part name (with its speed grade) per device used by recent queue jobs."""
+    from . import queue
+    seen, out = set(), []
+    for j in sorted(queue.all_jobs(), key=lambda j: -(j.get("created") or 0))[:300]:
+        if not os.path.isdir(j.get("cwd") or ""):
+            continue
+        for p in sorted(job_parts(j)):
+            if "-" not in p:                    # a bare device (xc7z020) is not a part synth_design accepts
+                continue
+            dev = _device(p)
+            if dev not in seen:
+                seen.add(dev)
+                out.append(p)
+    return out[:limit]
+
+
+def licenses(name, parts=None, out=print):
+    """Synthesize a two-flip-flop design for each part on a node: which devices have a license there."""
+    try:
+        r = get(name)
+    except KeyError as e:
+        out(f"  NO  configuration: {e}")
+        return None
+    parts = [p.lower() for p in (parts or license_parts())]
+    if not parts:
+        out("  ..  no parts found in your recent queue jobs: give them, e.g. ms remote licenses "
+            f"{name} xc7vx330tffg1157-1 xc7z020clg400-1")
+        return None
+    out(f"  ..  checking {len(parts)} part(s) on {name} with a tiny synthesis each (about a minute per part) …")
+    probe = ("cat > top.v <<'MSQ_V'\nmodule top(input clk, input d, output reg q); always @(posedge clk) q <= d; "
+             "endmodule\nMSQ_V\n"
+             f"cat > lic.tcl <<'MSQ_T'\nset parts {{{' '.join(parts)}}}\n{LIC_TCL}\nMSQ_T\n"
+             "vivado -mode batch -nojournal -nolog -notrace -source lic.tcl; echo probe=done > probe.txt")
+    rc, log, d = _probe_job(r, probe, "remote_licenses", cores=2, mem_gb=4, timeout_s=len(parts) * 600 + 600)
+    res = parse_licenses(log, parts)
+    no = [p for p, v in res.items() if v == "no license"]
+    yes = [p for p, v in res.items() if v == "licensed"]
+    if no:
+        save_unlicensed(r, [_device(p) for p in no])
+    if yes:
+        clear_unlicensed(r, [_device(p) for p in yes])
+    for p in parts:
+        v = res.get(p, "not checked (the job ended early)")
+        mark = "ok " if v == "licensed" else "NO " if v == "no license" else ".. "
+        out(f"  {mark} {p}: {v}")
+    if no:
+        out("       jobs for the parts without a license run here (a license server for the server lifts this: "
+            "XILINXD_LICENSE_FILE=port@host in setup)")
+    if not res:
+        for line in log.splitlines()[-20:]:
+            out("       " + line)
+    return res
+
+
+def _device(part):
+    m = re.match(r"(x[ca][a-z]{0,3}\d+[a-z]*\d*[a-z]*?)(?=[a-z]{1,3}\d{3,4}|-|$)", part.lower())
+    return m.group(1) if m else part.lower()
+
+
+def parse_licenses(log, parts):
+    """{part: licensed | no license | not installed there | failed (not a license problem)} from the probe log."""
+    res, cur, buf = {}, None, []
+    for line in log.splitlines():
+        if line.startswith("L begin "):
+            cur, buf = line.split()[-1], []
+        elif line.startswith("L missing "):
+            res[line.split()[-1]] = "not installed there"
+            cur = None
+        elif line.startswith("L end ") and cur:
+            rc = line.split()[-1]
+            text = "\n".join(buf)
+            res[cur] = ("no license" if LICENSE_RX.search(text) else "licensed" if rc == "0"
+                        else "failed (not a license problem)")
+            cur = None
+        elif cur:
+            buf.append(line)
+    return {p: v for p, v in res.items() if p in parts}
+
+
+def clear_unlicensed(r, devices_):
+    f = STATE / f"{r['name']}-unlicensed.json"
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return
+    for x in devices_:
+        (d.get("devices") or {}).pop(x, None)
+    try:
+        f.write_text(json.dumps(d))
+    except OSError:
+        pass
+
+
 def _tool_fix(lines):
     t = " ".join(lines).lower()
     if "locale" in t:
@@ -1319,6 +1430,8 @@ HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this
   ms remote list              configured servers and their state
   ms remote check NAME        step-by-step check: ssh, Slurm, account, work folder, nodes
   ms remote test NAME         check + a 1-minute test job that reports what the nodes offer (CPUs, RAM, tools)
+  ms remote licenses NAME [PART ...]   which devices have a license there (a tiny synthesis per part; default:
+                              the parts your recent queue jobs use); jobs for unlicensed parts then stay here
   ms remote tools NAME        start Vivado/Vitis on a node exactly like a job (setup, links, path_map) and say
                               what is missing: settings, permissions, libraries, locale, HLS, devices
   ms remote status NAME       free CPUs there and your jobs
@@ -1376,6 +1489,10 @@ def cli(a):
     if sub == "tools":
         print(f"AMD tools on {a[1]}:")
         return 0 if tools_check(a[1]) else 1
+    if sub == "licenses":
+        print(f"Device licenses on {a[1]}:")
+        res = licenses(a[1], a[2:] or None)
+        return 0 if res is not None else 1
     if sub in ("check", "test"):
         print(f"{'Testing' if sub == 'test' else 'Checking'} remote {a[1]}:")
         return 0 if check(a[1], test_job=sub == "test") else 1

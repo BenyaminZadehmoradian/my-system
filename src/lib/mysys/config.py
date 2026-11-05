@@ -25,6 +25,8 @@ DEFAULTS = {
     "SSD_WARN_PCT": "93",
     "FAST_FILL_GB": "5",
     "HOT_C": "90",
+    "AMD_SETUP": "",                 # e.g. "source /mnt/data/Apps/2025.2.1/Vivado/settings64.sh": put before AMD-tool jobs
+    "SUSPEND_REMIND_H": "24",        # tell me when a job I paused has been waiting this many hours (0 = never)
     "MAX_TEMP_C": "",                # e.g. 80: keep the CPU below this — queue jobs here wait / pause above it (empty = off)
     "QUEUE_TEMP_MARGIN": "5",        # no new local jobs from MAX_TEMP_C minus this many degrees
     "QUEUE_TEMP_RESUME": "10",       # a job paused for heat continues at MAX_TEMP_C minus this many degrees

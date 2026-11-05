@@ -95,7 +95,39 @@ ssh titan "ls -la --time-style=full-iso /home/slurmslave/.Xilinx"   # then remov
 Mind `A && B && C &` in a shell: the `&` puts the **whole chain** in the background (a slow `rm -rf` on the
 share then delays the copy behind it, and `rsync.log` appears only later).
 
-### Adding devices later
+### Adding devices later (done 5 Nov 2026: Virtex-7 and Zynq UltraScale+)
+
+1. List the parts your projects use (`grep -rhoE "\bx[ca][a-z]{0,3}[0-9][0-9a-z]*(-[0-9a-z]+){0,3}" --include=*.tcl ...`).
+2. New token (step 2 below), then a config with the families to add set to `:1`
+   (`sed -e 's/Virtex-7 FPGAs:0/Virtex-7 FPGAs:1/' ... install_config_local.txt > install_config_add.txt`).
+3. `xsetup -b Add` from the installation's own `.xinstall/2025.2.1/`, with retries: `docs/add_retry.sh`
+   (the downloads failed checksums ~50 times on the first attempt; the second attempt finished: 23 min download,
+   1 h install).
+4. `rsync -rltp` to the share again (only new files are copied), then `ms remote tools titan` so the queue learns
+   the new device list. Remove the token afterwards.
+
+### Licenses
+
+Devices outside the free edition need a license. On Titan, xc7vx330t failed with
+`A valid license was not found for feature 'Synthesis' and/or device 'xc7vx330t'` although it is installed.
+`ms remote licenses titan` synthesizes a two-flip-flop design for each part your recent jobs use and records which
+have no license there; the queue keeps jobs for those parts here (also learned from any failed job). A license
+server (`export XILINXD_LICENSE_FILE=port@host` in `setup`) lifts it: a new `setup` clears the list.
+
+### vitis_hls on the server
+
+Vitis 2025 has no `vitis_hls` command. `docs/vitis_hls_wrapper.sh` turns `vitis_hls -f x.tcl` into
+`vitis-run --mode hls --tcl x.tcl` wherever settings64.sh was sourced. To let jobs that call it (even as the literal
+`~/.local/bin/vitis_hls`) run on Titan unchanged:
+
+```
+ssh titan 'mkdir -p /mnt/perflab/benyamin/bin && cat > /mnt/perflab/benyamin/bin/vitis_hls && chmod 755 /mnt/perflab/benyamin/bin/vitis_hls' < docs/vitis_hls_wrapper.sh
+# remotes.conf (ms unlock; edit; ms lock):
+links = ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx, ~/benyamin/bin -> /mnt/perflab/benyamin/bin
+path_map = /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1, ~/.local/bin/vitis_hls => ~/benyamin/bin/vitis_hls, /home/benyamin/.local/bin/vitis_hls => ~/benyamin/bin/vitis_hls
+setup = source ~/benyamin/xilinx/2025.2.1/Vivado/settings64.sh; export PATH=$HOME/benyamin/bin:$PATH
+missing_tools = vivado_hls xsc
+```
 
 The first install chose only Zynq-7000. A job for another part fails there with
 `ERROR: [HLS 200-1023] Part '…' is not installed` (seen 5 Nov 2026 with xc7vx330tffg1157-1, Virtex-7).

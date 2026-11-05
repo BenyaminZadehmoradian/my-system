@@ -39,6 +39,9 @@ echo; echo "## CPU"
 t=$(pyq "from mysys import probes; print(probes.cpu_temp() or '')")
 [ -n "$t" ] && { [ "$t" -ge "${HOT_C:-90}" ] && warn "CPU ${t}°C" || ok "CPU ${t}°C"; }
 echo "load: $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) threads"
+th_out=$("$PY" "$MS/bin/ms" thermal check 2>/dev/null)          # cooling limits lost after a reboot, too hot today
+[ -n "$th_out" ] && echo "$th_out"
+while IFS= read -r l; do WARN+=("${l#  !! }"); done < <(grep '^  !! ' <<< "$th_out")
 
 echo; echo "## Services"
 ign="${IGNORE_UNITS:-}"
