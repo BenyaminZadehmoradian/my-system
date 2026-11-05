@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.19.2 — 2026-11-05
+- The GUI test failed on GitHub's runners: PyQt6 installed with `pip --user` was not found once the test changed
+  HOME for the app it starts. Its folder is now passed on (PYTHONPATH). Only the test changed.
+
 ## 1.19.1 — 2026-11-05
 - `ms remote licenses`: a device without a license was reported as "failed (not a license problem)". Inside
   `catch`, Vivado prints only `WARNING: [Common 17-348] Failed to get the license …`, not the final 17-345 error

@@ -392,14 +392,19 @@ print("ok")
 
 def test_gui_opens_fast_and_never_blocks():
     try:
+        import PyQt6
         import PyQt6.QtWidgets  # noqa: F401
     except Exception:
         print("skipped: PyQt6 is not installed")
         return
     tmp, ms = fake_ms()
     shutil.copytree(SRC / "gui", ms / "gui")
+    # the app runs with HOME changed: a PyQt6 installed in the user's own site-packages (pip --user, as on GitHub's
+    # runners) would not be found there, so its folder is passed on explicitly
+    site = os.path.dirname(os.path.dirname(PyQt6.__file__))
     env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp), WORK=str(tmp / "work"),
-               QT_QPA_PLATFORM="offscreen")
+               QT_QPA_PLATFORM="offscreen",
+               PYTHONPATH=os.pathsep.join(x for x in (site, os.environ.get("PYTHONPATH", "")) if x))
     r = subprocess.run([sys.executable, "-c", GUI], env=env, capture_output=True, text=True, timeout=240)
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout[-3000:] + r.stderr[-3000:]
 
