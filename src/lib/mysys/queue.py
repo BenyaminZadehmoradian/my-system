@@ -568,6 +568,30 @@ def _launch(j, gpu_ids=None):
 
 
 # ---------------------------------------------------------------- 1.6 helpers: pressure, groups, fairness, pinning
+def temp_limits():
+    """(limit, start_below, resume_below) in °C from MAX_TEMP_C, or None when off."""
+    try:
+        lim = float(config.get("MAX_TEMP_C") or 0)
+    except (TypeError, ValueError):
+        lim = 0
+    if lim <= 0:
+        return None
+    m = float(config.num("QUEUE_TEMP_MARGIN") or 5)
+    r = float(config.num("QUEUE_TEMP_RESUME") or 10)
+    return lim, lim - m, lim - max(r, m)
+
+
+def temp_block(t=None):
+    """Reason not to start a job HERE because the CPU is (nearly) too hot, or ''. Jobs for servers still go."""
+    tl = temp_limits()
+    if not tl:
+        return ""
+    t = probes.cpu_temp() if t is None else t
+    if t is not None and t >= tl[1]:
+        return f"waiting: CPU at {t:.0f}°C (kept below {tl[0]:.0f}°C, MAX_TEMP_C)"
+    return ""
+
+
 def pressure_block(cap, io_since=None, now=None):
     """Reason not to start anything now (kernel pressure stall information), or ''. Only sustained pressure counts
     (10-second and 1-minute averages). Disk pressure caused by your own runs can last for hours: after
@@ -973,7 +997,45 @@ class Scheduler:
         return all(x in SUCCESS or (g and x in TERMINAL) for x, g in zip(st, ign))
 
     # ---------------------------------------------------------------- memory pressure and preemption
+    def heat(self, jobs, now):
+        """MAX_TEMP_C: over the limit for 20 s -> pause the lowest-priority job running HERE (server jobs do not heat
+        this machine); below MAX_TEMP_C - QUEUE_TEMP_RESUME -> continue one paused job. One action per 30 s."""
+        tl = temp_limits()
+        t = probes.cpu_temp() if tl else None
+        if not tl or t is None:
+            self.hot_since = None
+            return False
+        lim, _, resume_below = tl
+        self.hot_since = (getattr(self, "hot_since", None) or now) if t >= lim else None
+        if now - self.last_action <= 30:
+            return False
+        local = [j for j in jobs if j["state"] == "running" and not j.get("remote")]
+        if self.hot_since and now - self.hot_since >= 20 and local:
+            victim = sorted(local, key=lambda j: (int(j.get("priority") or 0), -(j.get("started") or 0)))[0]
+            signal_job(victim, signal.SIGSTOP)
+            update(victim["id"], state="suspended", suspended_at=now,
+                   reason=f"paused: CPU too hot ({t:.0f}°C, limit {lim:.0f}°C)")
+            told = self.__dict__.setdefault("_hot_told", {})
+            if now - told.get("any", 0) > 1800:
+                told["any"] = now
+                self.notify("Job paused (CPU hot)", f"#{victim['id']} {victim['name']} paused at {t:.0f}°C to keep the "
+                                                    f"CPU below {lim:.0f}°C; it continues below {resume_below:.0f}°C.",
+                            "default", "thermometer")
+            self.last_action = now
+            return True
+        hot = sorted([j for j in jobs if j["state"] == "suspended" and j.get("reason", "").startswith("paused: CPU too hot")],
+                     key=lambda j: (-int(j.get("priority") or 0), j.get("started") or 0))
+        if hot and t < resume_below:
+            s = hot[0]
+            signal_job(s, signal.SIGCONT)
+            update(s["id"], state="running", reason="resumed (CPU cooled down)")
+            self.last_action = now
+            return True
+        return False
+
     def pressure(self, jobs, cap, now):
+        if self.heat(jobs, now):
+            return True
         running = [j for j in jobs if j["state"] == "running"]
         exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
         lim = float(config.num("QUEUE_PSI_MEM_FULL"))
@@ -993,6 +1055,7 @@ class Scheduler:
                 self.last_action = now
                 return True
         susp = sorted([j for j in jobs if j["state"] == "suspended" and j.get("reason", "").startswith("paused: ")
+                       and not j.get("reason", "").startswith("paused: CPU too hot")
                        or (j["state"] == "suspended" and "higher-priority" in j.get("reason", ""))],
                       key=lambda j: (-int(j.get("priority") or 0), j.get("started") or 0))
         if susp and now - self.last_action > 30:
@@ -1036,7 +1099,7 @@ class Scheduler:
                 return
         io_hi = cap.get("psi_io_some60", 0) >= float(config.num("QUEUE_PSI_IO_SOME") or 101)
         self.io_since = (getattr(self, "io_since", None) or now) if io_hi else None
-        why_p = pressure_block(cap, self.io_since, now)
+        why_p = pressure_block(cap, self.io_since, now) or temp_block()
         base_delay = float(config.num("QUEUE_START_DELAY") or 0)
         if self.delay is None:
             self.delay = base_delay

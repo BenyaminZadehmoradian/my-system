@@ -206,6 +206,7 @@ BIG_FOLDER_DEST="{dest}"
 SSD_WARN_PCT=93          # root disk usage alert (%)
 FAST_FILL_GB=5           # alert if root disk loses this much in one minute
 HOT_C=90                 # CPU temperature alert
+MAX_TEMP_C=              # e.g. 80: queue jobs here wait / pause to keep the CPU below this (empty = off)
 OVERLOAD_RATIO=1.5       # load / CPU threads considered overloaded ...
 OVERLOAD_MINUTES=15      # ... for this many minutes
 REBOOT_HINT=1            # tell me when a reboot is pending and nothing is running

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_remote import CONF, cluster, run  # noqa: E402
-from test_features import fake_ms  # noqa: E402
+from test_features import fake_ms, py  # noqa: E402
 
 
 def test_non_utf8_log_and_busy_controller():
@@ -350,6 +350,59 @@ assert not a.get("remote") and "xc7vx330tffg1157-1" in (a.get("prefer_note") or 
 assert b.get("remote") == "titan", b
 print("ok")
 """, offload="prefer", extra="tools = *\n")
+    assert "ok" in out
+
+
+
+def test_max_temp_waits_pauses_and_resumes():
+    out, notes, _ = py(r"""
+T = {"t": 60.0}
+probes.cpu_temp = lambda: T["t"]
+os.makedirs(os.path.join(W, "h"), exist_ok=True)
+a = queue.submit("sleep 60", cwd=os.path.join(W, "h"), name="hotjob", **small)
+assert until(lambda: st(a["id"]) == "running", 20), queue.load(a["id"])
+# 77 °C: close to the 80 °C limit -> nothing new starts here
+T["t"] = 77.0
+b = queue.submit("sleep 60", cwd=os.path.join(W, "h"), name="waits", **small)
+for _ in range(5):
+    S.tick(); time.sleep(0.2)
+jb = queue.load(b["id"])
+assert jb["state"] == "queued" and "CPU at 77" in (jb.get("reason") or ""), jb
+# 84 °C for more than 20 s -> the running job is paused
+T["t"] = 84.0
+S.last_action = 0
+S.hot_since = time.time() - 25
+assert until(lambda: st(a["id"]) == "suspended", 10), queue.load(a["id"])
+ja = queue.load(a["id"])
+assert "CPU too hot (84" in ja["reason"], ja
+# 75 °C: still above the resume point (70) -> stays paused
+T["t"] = 75.0
+S.last_action = 0
+for _ in range(3):
+    S.tick(); time.sleep(0.2)
+assert st(a["id"]) == "suspended"
+# 65 °C: continues, and the waiting job may start
+T["t"] = 65.0
+S.last_action = 0
+assert until(lambda: st(a["id"]) == "running", 10), queue.load(a["id"])
+assert until(lambda: st(b["id"]) == "running", 20), queue.load(b["id"])
+queue.cancel(a["id"]); queue.cancel(b["id"])
+until(lambda: st(a["id"]) in queue.TERMINAL and st(b["id"]) in queue.TERMINAL, 20)
+print("ok")
+""", extra_conf='PHONE_REPORT_TIMES=""\nPHONE_REQUESTS=0\nAI_PROCESS_NAMES=""\nMAX_TEMP_C=80\n')
+    assert "ok" in out
+    assert "Job paused (CPU hot)" in notes, notes
+
+
+def test_max_temp_off_by_default():
+    out, *_ = py(r"""
+probes.cpu_temp = lambda: 99.0
+os.makedirs(os.path.join(W, "c"), exist_ok=True)
+a = queue.submit("true", cwd=os.path.join(W, "c"), name="cool", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 20), queue.load(a["id"])
+assert st(a["id"]) == "done"
+print("ok")
+""")
     assert "ok" in out
 
 

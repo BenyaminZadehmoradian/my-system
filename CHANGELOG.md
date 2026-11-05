@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.4 — 2026-11-05
+- `MAX_TEMP_C` (my_system.conf, off by default), e.g. 80: from MAX_TEMP_C − QUEUE_TEMP_MARGIN (5) no new queue job
+  starts on this machine (jobs for servers still go); above MAX_TEMP_C for 20 s the lowest-priority job running here
+  is paused (SIGSTOP, like for low RAM) and continues below MAX_TEMP_C − QUEUE_TEMP_RESUME (10). One action per 30 s,
+  a phone/desktop message at most every 30 min. Only queue jobs are controlled: for a hard limit on everything,
+  use the CPU's own limits (thermald / RAPL), see README.
+
 ## 1.18.3 — 2026-11-05
 - `ms remote tools` asks Vivado itself which devices are installed (`get_parts`); the old list of folder names
   showed every family (virtex7 too) even when only Zynq-7000 was installed. The list is saved per server.
