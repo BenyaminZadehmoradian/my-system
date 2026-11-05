@@ -635,6 +635,7 @@ def run_job(jid):
 
     import codecs
     seen, last_state, offset = 0, "", 0
+    lic_buf, no_lic = "", set()
     dec = codecs.getincrementaldecoder("utf-8")(errors="replace")   # a character cut between two polls stays whole
     while True:
         if stop["now"]:
@@ -651,7 +652,10 @@ def run_job(jid):
             st = state_part.decode(errors="replace").strip()
             if log_part:                       # bytes: the offset stays exact and a cut character is completed later
                 offset += len(log_part)
-                sys.stdout.write(dec.decode(log_part))
+                text = dec.decode(log_part)
+                sys.stdout.write(text)
+                lic_buf = (lic_buf + text)[-8000:]          # a message cut between two polls is still found
+                no_lic |= {d.lower() for d in LICENSE_RX.findall(lic_buf)}
                 sys.stdout.flush()
             if st != last_state:
                 if st:
@@ -676,6 +680,12 @@ def run_job(jid):
     if rest:
         sys.stdout.write(rest)
         sys.stdout.flush()
+        no_lic |= {d.lower() for d in LICENSE_RX.findall(lic_buf + rest)}
+    if no_lic:
+        save_unlicensed(r, no_lic)
+        print(f"[{r['name']}] no license there for {', '.join(sorted(no_lic))}: later jobs for "
+              f"{'it' if len(no_lic) == 1 else 'them'} run here (a license for the server, e.g. "
+              f"XILINXD_LICENSE_FILE in setup, lifts this)", flush=True)
     # results
     rc, out, _ = ssh(r, f"sacct -n -X -P -j {sid} -o State,ExitCode 2>/dev/null | head -1", 60)
     acct = (out or "").strip()
@@ -787,6 +797,46 @@ def devices(name):
         return None
 
 
+LICENSE_RX = re.compile(r"valid license was not found for feature '[^']*' and/or device '([A-Za-z0-9_]+)'")
+
+
+def save_unlicensed(r, devices_):
+    """Remember devices the server has no license for (with the setup line: a new setup, e.g. a license server,
+    clears the list)."""
+    f = STATE / f"{r['name']}-unlicensed.json"
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        d = {}
+    if d.get("setup") != r.get("setup"):
+        d = {"setup": r.get("setup"), "devices": {}}
+    for x in devices_:
+        d.setdefault("devices", {})[x] = time.time()
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(d))
+    except OSError:
+        pass
+
+
+def unlicensed(r, max_age_days=30):
+    """Devices known to have no license on server r (seen in the last 30 days, with the same setup)."""
+    try:
+        d = json.loads((STATE / f"{r['name']}-unlicensed.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if d.get("setup") != r.get("setup"):
+        return []
+    return [k for k, t in (d.get("devices") or {}).items() if time.time() - t < max_age_days * 86400]
+
+
+def unlicensed_parts(j, r):
+    nl = [x.replace("-", "") for x in unlicensed(r)]
+    if not nl:
+        return []
+    return sorted(p for p in job_parts(j) if any(p.replace("-", "").startswith(d) for d in nl))
+
+
 def job_parts(j, limit_files=300, max_bytes=262144):
     """FPGA part names a job uses: in its command and in the Tcl/project/config files of its folder (cached 10 min)."""
     key = (j.get("cwd"), j.get("cmd"))
@@ -865,6 +915,12 @@ def why_not(j, r, scan=True):
         mp = []
     if mp:
         return f"it uses a part not installed there: {', '.join(mp[:3])} (add the devices on the server, then ms remote tools {r['name']})"
+    try:
+        up = unlicensed_parts(j, r)
+    except Exception:
+        up = []
+    if up:
+        return f"no license there for: {', '.join(up[:3])} (a job failed for it; a license for the server lifts this)"
     return None
 
 
@@ -1221,6 +1277,9 @@ def tools_check(name, out=print):
         save_devices(r["name"], devs)
     elif have["vivado"]:
         out("  ..  could not ask Vivado for its installed devices")
+    nl = unlicensed(r)
+    if nl:
+        out(f"  ..  no license there (seen in failed jobs) for: {' '.join(sorted(nl))} — jobs for them run here")
     # what can be taken out of missing_tools
     miss = r["missing_tools"].split()
     alias = {"vitis": ("vitis-run", "v++"), "xsim": ("xelab",), "xvlog": ("xelab",), "xvhdl": ("xelab",),

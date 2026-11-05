@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.5 — 2026-11-05
+- A server job that fails with "A valid license was not found for … device 'X'" makes the queue keep later jobs
+  for device X here (30 days, or until the server's `setup` changes, e.g. to add XILINXD_LICENSE_FILE).
+  `ms q explain` says "no license there for: …", `ms remote tools` lists such devices. Seen on Titan: Virtex-7
+  xc7vx330t needs a paid license that the free edition lacks.
+
 ## 1.18.4 — 2026-11-05
 - `MAX_TEMP_C` (my_system.conf, off by default), e.g. 80: from MAX_TEMP_C − QUEUE_TEMP_MARGIN (5) no new queue job
   starts on this machine (jobs for servers still go); above MAX_TEMP_C for 20 s the lowest-priority job running here

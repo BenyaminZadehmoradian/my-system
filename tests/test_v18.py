@@ -406,6 +406,34 @@ print("ok")
     assert "ok" in out
 
 
+
+def test_no_license_on_server_is_remembered():
+    out, *_ = run(r"""
+from mysys import remote as RM
+RM.save_devices("titan", ["xc7vx330t", "xc7z020"])
+os.makedirs(os.path.join(W, "lic"), exist_ok=True)
+open(os.path.join(W, "lic", "b.tcl"), "w").write("set PART xc7vx330tffg1157-1\n")
+msg = ("ERROR: [Common 17-345] A valid license was not found for feature 'Synthesis' and/or device "
+       "'xc7vx330t'. Please run the Vivado License Manager")
+import shlex
+a = queue.submit("echo " + shlex.quote(msg) + "; exit 1", cwd=os.path.join(W, "lic"), name="nolic", remote="titan", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60)
+log = open(queue.LOGS / f"{a['id']}.log").read()
+assert "no license there for xc7vx330t" in log, log
+# the next job for that part stays here, one for a licensed part still goes
+b = queue.submit("echo again > o.txt", cwd=os.path.join(W, "lic"), name="v7again", remote="auto", **small)
+os.makedirs(os.path.join(W, "z"), exist_ok=True)
+open(os.path.join(W, "z", "b.tcl"), "w").write("set PART xc7z020clg400-1\n")
+c = queue.submit("echo z > o.txt", cwd=os.path.join(W, "z"), name="z7", remote="auto", **small)
+assert until(lambda: st(b["id"]) in queue.TERMINAL and st(c["id"]) in queue.TERMINAL, 90)
+jb, jc = queue.load(b["id"]), queue.load(c["id"])
+assert not jb.get("remote") and "no license there for: xc7vx330tffg1157-1" in (jb.get("prefer_note") or ""), jb
+assert jc.get("remote") == "titan", jc
+print("ok")
+""", offload="prefer", extra="tools = *\n")
+    assert "ok" in out
+
+
 if __name__ == "__main__":                # ms selftest runs each test file as a script (no pytest needed)
     import time
     t0 = time.time()
