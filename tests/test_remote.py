@@ -48,6 +48,9 @@ echo $! > "$FAKE_SLURM/$n.pid"
 echo "$n"
 ''',
     "squeue": r'''#!/bin/bash
+# a busy controller: squeue answers nothing for a while (FAKE_SLURM/flaky holds how many more times)
+if [ -f "$FAKE_SLURM/flaky" ]; then n=$(cat "$FAKE_SLURM/flaky"); if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE_SLURM/flaky";
+  echo "slurm_load_jobs error: Socket timed out on send/recv operation" >&2; exit 1; fi; fi
 j=""; while [ $# -gt 0 ]; do case "$1" in -j) j="$2"; shift 2;; -o|-A) shift 2;; *) shift;; esac; done
 for f in "$FAKE_SLURM"/*.state; do [ -e "$f" ] || continue; n=$(basename "$f" .state)
   [ -n "$j" ] && [ "$n" != "$j" ] && continue
@@ -59,7 +62,7 @@ echo "$(cat "$FAKE_SLURM/$j.state")|$(cat "$FAKE_SLURM/$j.rc" 2>/dev/null || ech
 ''',
     "sinfo": r'''#!/bin/bash
 m=64000; [ "$FAKE_NOMEM" = 1 ] && m=1
-case "$*" in *-N*) echo "node07 16 $m idle"; echo "node08 16 $m mix";; *%m*) echo $m; echo $m;; *) echo "8/24/0/32";; esac
+case "$*" in *-N*) echo "node07 16 $m idle"; echo "node08 16 $m mix";; *%m*) [ "$FAKE_SINFO_DOWN" = 1 ] && exit 1; echo $m; echo $m;; *) echo "8/24/0/32";; esac
 ''',
     "scancel": r'''#!/bin/bash
 acct=""; for a in "$@"; do case "$a" in --account=*) acct="${a#--account=}";; esac; done

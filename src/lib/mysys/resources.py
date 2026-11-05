@@ -56,7 +56,7 @@ def external_use(name, cmd):
         return c[1]
     used = 0
     try:
-        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors="replace", timeout=30).stdout
         m = re.search(r"Total of (\d+) licenses? in use", out)
         if m:
             used = int(m.group(1))

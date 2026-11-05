@@ -88,7 +88,7 @@ def tool_installs(roots=None, docker=True):
     try:
         if not docker:
             raise OSError
-        r = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture_output=True, text=True, errors="replace", timeout=10)
         if r.returncode == 0 and r.stdout.strip():
             add("docker_data", r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):

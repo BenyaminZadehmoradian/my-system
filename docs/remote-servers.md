@@ -82,8 +82,9 @@ ssh titan "cat /mnt/perflab/benyamin/installers/attempts.log; tail -c 300 /mnt/p
 # 5. check on bacchus
 ssh titan "source /home/slurmslave/benyamin/xilinx/2025.2.1/Vivado/settings64.sh && vivado -version | head -2"
 
-# 6. copy to the share (a few dozen case-only duplicates in gnu/ fail; HLS/Vivado do not use them)
-ssh titan "nohup rsync -rlt /home/slurmslave/benyamin/xilinx/2025.2.1 /mnt/perflab/benyamin/xilinx/ \
+# 6. copy to the share (a few dozen case-only duplicates in gnu/ fail; HLS/Vivado do not use them).
+#    -p keeps the execute bits: without it (rsync -rlt) the programs may not be executable on the share
+ssh titan "nohup rsync -rltp /home/slurmslave/benyamin/xilinx/2025.2.1 /mnt/perflab/benyamin/xilinx/ \
   > /mnt/perflab/benyamin/installers/rsync.log 2>&1 < /dev/null & echo started"
 
 # 7. clean up: the login token, the stray ~/.Xilinx (check it is yours and from today first)
@@ -99,14 +100,36 @@ share then delays the copy behind it, and `rsync.log` appears only later).
 ```
 links = ~/benyamin/xilinx -> /mnt/perflab/benyamin/xilinx
 path_map = /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1
-setup = source ~/benyamin/xilinx/2025.2.1/Vivado/settings64.sh
+setup = source ~/benyamin/xilinx/2025.2.1/Vitis/settings64.sh
 ```
+- `setup`: source **Vitis**' settings64.sh, not Vivado's — Vitis' sets up Vivado too, while Vivado's alone leaves
+  `vitis-run` / `v++` (HLS) off the PATH.
 - `links`: before each job, on the node, `~/benyamin/xilinx` becomes a link to the share (only inside your own
   folder; nothing existing is replaced). The tools then live at exactly the path they were installed to, so no
   path inside the installation needs changing. On bacchus the real installation is at that path anyway.
 - `path_map`: scripts that use this machine's Vivado path keep working there (rewritten on the node only).
-- Remove `vivado vitis vitis_hls ...` from `missing_tools` only after a test job (`ms q add --on titan --
-  vivado -version`) works on a node.
+- Remove `vivado vitis vitis_hls ...` from `missing_tools` only after `ms remote tools titan` says they work on a
+  node (it prints the new `missing_tools` line).
+
+### When the tools do not work there: `ms remote tools titan`
+
+It sends a job that starts Vivado/Vitis on a node exactly like a real job (setup, links, path_map) and reports:
+
+| It says | Cause and fix |
+|---|---|
+| `XILINX_VIVADO and XILINX_VITIS are empty` | `setup` is empty or sources a file that does not exist on the node; check the `link` line it prints. |
+| `link …: a real folder/file is there` | Something already sits at `~/benyamin/xilinx` on that node, so the link to the share was not made. Remove it there if it is yours. |
+| `link … TARGET NOT FOUND` | `/mnt/perflab` is not mounted on that node, or the copy to the share is incomplete. |
+| `… is executable — NO` | The copy lost the execute bits: copy again with `rsync -rltp`. |
+| `missing: libXYZ.so` | A library is missing on the nodes: ask the admins, or put the `.so` in `~/benyamin/lib` (on the share) and add `export LD_LIBRARY_PATH=…` to `setup`. |
+| `HLS (vitis-run / v++) is on PATH — NO` | Only Vivado's settings were sourced: use `Vitis/settings64.sh`. |
+| `no 'vitis_hls' command there` | Newer Vitis has `vitis-run --mode hls` / `v++ -c --mode hls` instead; change those jobs or keep `vitis_hls` in `missing_tools`. |
+| `no libc6-dev` | HLS C simulation cannot link on the nodes; csynth works. |
+| `device families installed there` | Only these parts can be used there (the install chose Zynq-7000 only); other parts fail with "part not found". |
+
+A job that stops before writing its log (exit 90/91/92) is now reported with the reason; exit 92 almost always
+means the node cannot `scp` from bacchus (each node has its own `~/.ssh`). The locale sent along by ssh is replaced
+by `C.UTF-8` on the node when it does not exist there (Vivado aborts on an unknown locale).
 
 ## 4. How a job runs there (my-system)
 

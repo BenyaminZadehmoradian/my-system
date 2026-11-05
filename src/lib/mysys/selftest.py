@@ -238,7 +238,7 @@ def live_checks():
         out.append(("MCP server registered for Claude Code", reg, "" if reg is not None else "~/.claude.json not readable"))
     try:
         lg = subprocess.run(["loginctl", "show-user", os.environ.get("USER", ""), "-p", "Linger", "--value"],
-                            capture_output=True, text=True, timeout=15).stdout.strip()
+                            capture_output=True, text=True, errors="replace", timeout=15).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         lg = ""
     out.append(("queue keeps running after log out (linger)", lg == "yes" if lg else None, lg or "unknown"))
@@ -286,7 +286,7 @@ def run(args):
     try:
         env = dict(os.environ, MY_SYSTEM=str(ms), MS_TEST_WORK=str(root / "work"), MSQ_TICK="0.5")
         r = subprocess.run(["nice", "-n", "19", "ionice", "-c3", sys.executable, "-c", HARNESS], env=env,
-                           capture_output=True, text=True, timeout=900)
+                           capture_output=True, text=True, errors="replace", timeout=900)
         try:
             results += [tuple(x) for x in json.loads(r.stdout.strip().splitlines()[-1])]
         except (ValueError, IndexError):
@@ -295,7 +295,7 @@ def run(args):
             tdir = config.MS / "tests"
             for t in sorted(tdir.glob("test_*.py")) if tdir.exists() else []:
                 print(f"Running {t.name}…", flush=True)
-                rr = subprocess.run(["nice", "-n", "19", "ionice", "-c3", sys.executable, str(t)], capture_output=True, text=True,
+                rr = subprocess.run(["nice", "-n", "19", "ionice", "-c3", sys.executable, str(t)], capture_output=True, text=True, errors="replace",
                                     timeout=1200, cwd=str(root), env=dict(os.environ, MS_NO_CGROUP="1"))
                 results.append((f"unit tests {t.stem}", rr.returncode == 0,
                                 "" if rr.returncode == 0 else (rr.stderr or rr.stdout)[-600:]))

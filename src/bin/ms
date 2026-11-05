@@ -33,7 +33,7 @@
   ms replay TIME         what the machine was doing then (load, RAM, biggest programs, jobs); ms replay crashes
   ms ping NAME [start|fail|CODE]   dead-man's-switch ping to PING_<NAME> in my_system.conf
   ms housekeeping        rotate / trim my-system's own logs (daily job does this)
-  ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, status (ms remote help)
+  ms remote ...          run queue jobs on a Slurm server (Titan): setup, check, test, tools, status (ms remote help)
   ms pause FEATURE|all [--for 2h|--until 08:00]   turn a part of my-system off for a while (ms pause help)
   ms resume FEATURE|all  turn it on again;  ms paused  what is off
   ms tools [allow|deny|default|reset ...]   which Vivado/Vitis/ISE versions each project may use

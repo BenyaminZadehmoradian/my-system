@@ -1114,14 +1114,14 @@ def _git_head(repo, ref, remote=False):
     try:
         if remote:
             subprocess.run(["git", "-C", repo, "fetch", "--quiet"], capture_output=True, timeout=120)
-        return subprocess.run(["git", "-C", repo, "rev-parse", ref], capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run(["git", "-C", repo, "rev-parse", ref], capture_output=True, text=True, errors="replace", timeout=10).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
 
 def _changed_paths(repo, a, b):
     try:
-        out = subprocess.run(["git", "-C", repo, "diff", "--name-only", a, b], capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run(["git", "-C", repo, "diff", "--name-only", a, b], capture_output=True, text=True, errors="replace", timeout=30).stdout
         return [x for x in out.splitlines() if x]
     except (OSError, subprocess.TimeoutExpired):
         return []

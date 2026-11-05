@@ -73,7 +73,7 @@ def _tsp_waiting():
     if not exe:
         return []
     try:
-        out = subprocess.run([exe, "-l"], capture_output=True, text=True, timeout=5).stdout.splitlines()[1:]
+        out = subprocess.run([exe, "-l"], capture_output=True, text=True, errors="replace", timeout=5).stdout.splitlines()[1:]
     except (OSError, subprocess.TimeoutExpired):
         return []
     rows = []

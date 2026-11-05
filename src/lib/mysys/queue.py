@@ -333,7 +333,7 @@ def free_gpus():
         return []
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.used,memory.total", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         return []
     res = []
@@ -1066,7 +1066,7 @@ class Scheduler:
                 elif note and j.get("prefer_note") != f"not sent: {note}":
                     update(j["id"], prefer_note=f"not sent: {note}")
             if j.get("remote") and pause.paused("remote"):
-                msg = f"waiting: sending jobs to servers is paused (ms resume remote)"
+                msg = "waiting: sending jobs to servers is paused (ms resume remote)"
                 if j.get("reason") != msg:
                     update(j["id"], reason=msg)
                 continue

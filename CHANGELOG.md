@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.18.0 — 2026-11-05
+Server (Titan) fixes and a tool check:
+- **A server job that died before writing its log (e.g. exit 92: the node cannot scp from the head node) was
+  followed forever** and looked "running" here; while a job was pending its state was never shown. The poll no
+  longer fails when the log does not exist yet, and such jobs end with the reason (exit code, Slurm's own output).
+- A busy Slurm controller (squeue answering nothing) no longer ends a running job: sacct must say it ended.
+- A cancel reaches `scancel` at once (the runner waited up to a whole poll interval, and the SIGKILL after 30 s
+  could leave the job running on the shared account). Cancelling during the upload no longer starts the job there.
+- Tool logs that are not UTF-8 (or a character cut between two polls) no longer crash the runner.
+- Results: links the job made come back; unsafe entries (absolute links, links out of the folder) are skipped and
+  listed instead of stopping the copy halfway.
+- The node falls back to `C.UTF-8` when the locale sent along by ssh does not exist there (Vivado aborts with
+  "locale::facet::_S_create_c_locale name not valid").
+- Link check on the node says when a real folder or another link sits where the link should be.
+- `sbatch` refused `--mem` (Titan) after sinfo could not answer: retried once without it, and remembered.
+- Free CPUs are counted in the configured partition only.
+- New `ms remote tools NAME`: starts Vivado, vitis-run, v++, vitis_hls and xelab on a node exactly like a job and
+  explains what is missing (settings, execute bits, libraries, locale, HLS on PATH, libc6-dev for csim, installed
+  device families) and which `missing_tools` can be removed.
+- All command helpers decode output with `errors="replace"`: a non-UTF-8 file name (e.g. on the SMB share) no
+  longer crashes the daily check, system report or software page (UnicodeDecodeError is not an OSError).
+- docs/remote-servers.md: `setup` must source Vitis' settings64.sh (Vivado's leaves HLS off the PATH); copy with
+  `rsync -rltp`; a troubleshooting table.
+
 ## 1.17.3 — 2026-11-03
 - The job log of a server job keeps the server's real paths (it was translated back like result files, which
   made "No such file" errors point at local paths) and starts with what was used there: each link and whether

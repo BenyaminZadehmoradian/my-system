@@ -153,7 +153,11 @@ def _ssh_base(r):
 def ssh(r, cmd, timeout=60, input_=None, text=True):
     """Run a shell command on the head node: (rc, stdout, stderr). Never prompts for a password."""
     try:
-        p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, text=text, timeout=timeout, input=input_)
+        if text:      # tool logs are not always UTF-8 (and a copy can end mid-character): never crash on them
+            p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, timeout=timeout, encoding="utf-8",
+                               errors="replace", input=input_)
+        else:
+            p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, timeout=timeout, input=input_)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, "" if text else b"", "timed out"
@@ -217,16 +221,23 @@ JOB_SH = r"""#!/bin/bash
 # my-system remote job {jid} (attempt {attempt}) — generated, do not edit
 REMOTE_DIR={remote_dir}
 HEAD={head}
-copy() {{  # copy with retries: copy SRC DST (one of them host:path)
-  for i in 1 2 3 4 5 6 7 8; do scp -q -o BatchMode=yes "$1" "$2" && return 0; sleep $((i * i)); done; return 1
+copy() {{  # copy with retries: copy SRC DST (one of them host:path); the last error is shown
+  local i e
+  for i in 1 2 3 4 5 6 7 8; do e=$(scp -q -o BatchMode=yes -o ConnectTimeout=20 "$1" "$2" 2>&1) && return 0; sleep $((i * i)); done
+  echo "[remote] scp $1 -> $2 failed 8 times: $e" >&2; return 1
 }}
+# AMD tools abort ("locale::facet::_S_create_c_locale name not valid") when the locale sent along by ssh/sbatch
+# does not exist on the node: fall back to C.UTF-8, which every node has
+if [ -n "$(locale 2>&1 >/dev/null)" ]; then unset LANGUAGE; export LANG=C.UTF-8 LC_ALL=C.UTF-8; fi
 if [ -d "$REMOTE_DIR" ] && [ -f "$REMOTE_DIR/in.tar.gz" ]; then
   SHARED=1; W="$(cd "$REMOTE_DIR" && pwd)/run"; mkdir -p "$W"; cd "$W" || exit 90
   tar xzf ../in.tar.gz || exit 91
 else
   SHARED=0; W=$(mktemp -d "${{TMPDIR:-/tmp}}/msq-{jid}-XXXXXX") && [ -n "$W" ] && cd "$W" || exit 90
-  copy "$HEAD:$REMOTE_DIR/in.tar.gz" in.tar.gz || {{ echo "cannot fetch the job files from $HEAD" >&2; exit 92; }}
-  tar xzf in.tar.gz && rm -f in.tar.gz
+  copy "$HEAD:$REMOTE_DIR/in.tar.gz" in.tar.gz || {{ echo "cannot fetch the job files from $HEAD (node $(hostname)): \
+can this node ssh to $HEAD without a password? (key and known_hosts in this node's own home)" >&2; exit 92; }}
+  tar xzf in.tar.gz || {{ echo "the job files could not be unpacked on $(hostname)" >&2; exit 91; }}
+  rm -f in.tar.gz
 fi
 {link_lines}
 JD={jobdir}
@@ -266,7 +277,7 @@ RC=$?
 kill $SYNC 2>/dev/null
 echo "[remote] finished $(date '+%F %T') rc=$RC" >> msq-{jid}.log
 echo $RC > .msq-{jid}-rc
-find . -newer .msq-{jid}-start -type f ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
+find . -newer .msq-{jid}-start \( -type f -o -type l \) ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
 {unmap_lines}
 tar czf out.tar.gz -T .msq-{jid}-changed .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
 if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp msq-{jid}.log ../msq-{jid}.log
@@ -368,7 +379,7 @@ def outside_paths(j, r, limit=3):
         OUTSIDE_RX = _re.compile(r"(?<![\w.~$/])(/(?:home|mnt|data|tools|opt|scratch|media|srv)/[^\s\"'<>|;:,)\]}*?=]+)")
     cwd = (j.get("cwd") or "").rstrip("/")
     skip = [a for a, _ in parse_path_map(r)] + [cwd]
-    key = (cwd, r["name"], j.get("cmd"), tuple(j.get("inputs") or []))
+    key = (cwd, r["name"], j.get("cmd"), tuple(j.get("inputs") or []), r.get("path_map"), r.get("exclude"))
     c = _OUT_CACHE.get(key)
     if c and time.time() - c[0] < 600:
         return c[1]
@@ -457,8 +468,12 @@ def job_script(r, j, remote_dir):
     info = []
     for a_, b_ in parse_links(r):
         p_ = "$HOME/" + a_[2:]
-        info.append(f'if [ -e "{p_}/" ]; then echo "[remote] link {a_} -> {b_}: ok"; else echo "[remote] link {a_} -> {b_}: '
-                    f'TARGET NOT FOUND (is it installed/copied there?)"; fi >> msq-{j["id"]}.log')
+        info.append(f'if [ -L "{p_}" ] && [ "$(readlink "{p_}")" != "{b_}" ]; then echo "[remote] link {a_}: points to '
+                    f'$(readlink "{p_}"), not {b_} (left alone; remove it on $(hostname) if it is yours and old)"; '
+                    f'elif [ -e "{p_}" ] && [ ! -L "{p_}" ]; then echo "[remote] link {a_}: a real folder/file is there on '
+                    f'$(hostname), so no link was made and {b_} is NOT used"; '
+                    f'elif [ -e "{p_}/" ]; then echo "[remote] link {a_} -> {b_}: ok"; else echo "[remote] link {a_} -> {b_}: '
+                    f'TARGET NOT FOUND on $(hostname) (is the share mounted there / the tools copied?)"; fi >> msq-{j["id"]}.log')
     for a_, b_ in map_pairs(r, j.get("cwd")):
         info.append(f'echo "[remote] path {a_} -> {b_}" >> msq-{j["id"]}.log')
     return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1),
@@ -487,6 +502,77 @@ def mem_supported(r):
     return max(vals) >= 1024
 
 
+ENDED = ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL",
+         "DEADLINE", "REVOKED")
+
+
+def _slurm_ended(r, sid, rdir, jid):
+    """True when Slurm's accounting says the job ended, or its results are already there. False while sacct still
+    reports it pending/running, or when nothing can be told (the caller then waits a few more polls)."""
+    rc, out, _ = ssh(r, f"sacct -n -X -P -j {int(sid)} -o State 2>/dev/null | head -1; "
+                        f"test -e {shlex.quote(rdir)}/out.tar.gz && echo HAVE_OUT", 60)
+    if rc != 0:
+        return False
+    if "HAVE_OUT" in out:
+        return True
+    state = (out.split() or [""])[0].upper()
+    return state.startswith(ENDED)
+
+
+EARLY_EXIT = {"90": "could not make or enter its folder on the node (is /tmp full there?)",
+              "91": "the job files could not be unpacked on the node",
+              "92": "the node could not fetch the job files from the head node with scp: each node has its own home, so "
+                    "the ssh key and known_hosts for the head node must be in that node's ~/.ssh too"}
+
+
+def _explain_early_death(r, sid, rdir, acct):
+    """A job that ended without writing its log: say why, from the exit code and Slurm's own output file."""
+    code = acct.split("|")[-1].split(":")[0] if "|" in acct else ""
+    if code in EARLY_EXIT:
+        print(f"[{r['name']}] exit {code}: {EARLY_EXIT[code]}", flush=True)
+    rc, out, _ = ssh(r, f"sacct -n -X -P -j {int(sid)} -o NodeList,Reason 2>/dev/null | head -1; "
+                        f"tail -n 15 {shlex.quote(rdir)}/slurm-{int(sid)}.out 2>/dev/null; true", 60)
+    if rc == 0 and out.strip():
+        for line in out.strip().splitlines()[:16]:
+            print(f"[{r['name']}]   {line}", flush=True)
+    print(f"[{r['name']}] Slurm writes its own output (slurm-{sid}.out) on the node, in /tmp when the job folder does "
+          f"not exist there; ms remote test {r['name']} checks the whole path", flush=True)
+
+
+def _extract_results(tar_path, dest):
+    """Unpack the results one by one into dest. Unsafe or unusable entries (absolute names, '..', links pointing out of
+    the folder, devices) are skipped instead of stopping the whole copy. Returns the skipped entries with reasons."""
+    skipped = []
+    try:
+        tf = tarfile.open(tar_path)
+    except (tarfile.TarError, OSError, EOFError) as e:
+        return [f"the results archive is damaged ({e})"]
+    with tf:
+        try:
+            members = tf.getmembers()
+        except (tarfile.TarError, OSError, EOFError) as e:      # truncated: keep what could be read
+            members = list(tf.members)
+            skipped.append(f"archive truncated ({e})")
+        for m in members:
+            if m.name.startswith(("/", "..")) or ".." in Path(m.name).parts:
+                skipped.append(f"{m.name}: path outside the job folder")
+                continue
+            try:
+                try:
+                    tf.extract(m, dest, filter="data")
+                except TypeError:                 # Python < 3.12 without extraction filters
+                    if m.issym() or m.islnk():
+                        tgt = os.path.normpath(os.path.join(os.path.dirname(m.name), m.linkname))
+                        if m.linkname.startswith("/") or tgt.startswith(".."):
+                            raise tarfile.TarError("link points outside the job folder")
+                    if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+                        raise tarfile.TarError("special file")
+                    tf.extract(m, dest)
+            except (tarfile.TarError, OSError) as e:
+                skipped.append(f"{m.name}: {e.__class__.__name__}: {e}"[:200])
+    return skipped
+
+
 def run_job(jid):
     """Upload, sbatch, follow, download. Prints progress (it becomes the job's log); returns the job's exit code."""
     from . import queue
@@ -495,6 +581,12 @@ def run_job(jid):
     if j.get("secrets"):
         print(f"[{r['name']}] refused: jobs with secrets are never sent to a shared server", flush=True)
         return 2
+    stop = {"now": False}
+
+    def on_term(signum, frame):        # cancelled / timeout here -> cancel there too (set before anything is sent,
+        stop["now"] = True             # so a job cancelled during the upload never runs there unseen)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
     src = os.getcwd()
     pats = r["exclude"].split()
     if not j.get("inputs"):
@@ -515,24 +607,34 @@ def run_job(jid):
     if rc != 0:
         print(f"[{r['name']}] upload failed: {(err or b'').decode(errors='replace') if isinstance(err, bytes) else err}", flush=True)
         return 3
+    if stop["now"]:
+        print(f"[{r['name']}] cancelled before it was submitted", flush=True)
+        if _own_job_dir(r, rdir):
+            ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
+        return 130
     r["_slurm_mem"] = mem_supported(r)
     script = job_script(r, j, rdir)
     rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120,
                        input_=script)
     sid = (out or "").strip().split(";")[0].strip()
+    if (rc != 0 or not sid.isdigit()) and r["_slurm_mem"] and "memory" in (err or "").lower() \
+            and (r.get("slurm_mem") or "auto").lower() == "auto":
+        # the nodes report no RAM (like Titan) but sinfo could not tell us: again without --mem, and remember it
+        r["_slurm_mem"] = False
+        (STATE / f"{r['name']}-mem.json").write_text(json.dumps({"t": time.time(), "max_mb": 0}))
+        print(f"[{r['name']}] Slurm refused --mem: submitting without it", flush=True)
+        rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh",
+                           120, input_=job_script(r, j, rdir))
+        sid = (out or "").strip().split(";")[0].strip()
     if rc != 0 or not sid.isdigit():
         print(f"[{r['name']}] sbatch failed: {(err or out).strip()[:500]}", flush=True)
         return 4
     queue.update(jid, remote_job=sid, remote_dir=rdir)
     print(f"[{r['name']}] submitted as Slurm job {sid}", flush=True)
 
-    stop = {"now": False}
-
-    def on_term(signum, frame):        # cancelled / timeout here -> cancel there too
-        stop["now"] = True
-    signal.signal(signal.SIGTERM, on_term)
-    signal.signal(signal.SIGINT, on_term)
+    import codecs
     seen, last_state, offset = 0, "", 0
+    dec = codecs.getincrementaldecoder("utf-8")(errors="replace")   # a character cut between two polls stays whole
     while True:
         if stop["now"]:
             # only this job, and only if it runs under your account
@@ -540,15 +642,16 @@ def run_job(jid):
             print(f"[{r['name']}] cancelled Slurm job {sid}" + ("" if crc == 0 else f" — scancel said: {cerr.strip()[:200]}"),
                   flush=True)
             return 130
-        rc, out, _ = ssh(r, f"squeue -h -j {sid} -o '%T|%N|%r' 2>/dev/null; echo ===; "
-                            f"tail -c +{offset + 1} {shlex.quote(rdir)}/msq-{jid}.log 2>/dev/null", 60)
+        rc, raw, _ = ssh(r, f"squeue -h -j {sid} -o '%T|%N|%r' 2>/dev/null; echo ===; "
+                            f"tail -c +{offset + 1} {shlex.quote(rdir)}/msq-{jid}.log 2>/dev/null; true", 60, text=False)
+        # (; true: no log yet — pending, or the job died before writing one — must not look like a lost connection)
         if rc == 0:
-            state_part, _, log_part = out.partition("===\n")
-            st = state_part.strip()
-            if log_part:
-                sys.stdout.write(log_part)
+            state_part, _, log_part = raw.partition(b"===\n")
+            st = state_part.decode(errors="replace").strip()
+            if log_part:                       # bytes: the offset stays exact and a cut character is completed later
+                offset += len(log_part)
+                sys.stdout.write(dec.decode(log_part))
                 sys.stdout.flush()
-                offset += len(log_part.encode())
             if st != last_state:
                 if st:
                     s_, node, why = (st.split("|") + ["", ""])[:3]
@@ -558,11 +661,20 @@ def run_job(jid):
                 last_state = st
             if not st:
                 seen += 1
-                if seen >= 2:                   # gone from the queue twice in a row: finished
+                # squeue says nothing both for a finished job and when the controller is busy: ask sacct, and only
+                # give up waiting when Slurm says the job ended (or, without accounting, after a few quiet polls)
+                if seen >= 2 and (_slurm_ended(r, sid, rdir, jid) or seen >= 10):
                     break
             else:
                 seen = 0
-        time.sleep(float(os.environ.get("MSQ_REMOTE_POLL", "30")))
+        # wait in short steps: a cancel (SIGTERM) must reach scancel long before the SIGKILL that follows it
+        t_end = time.time() + float(os.environ.get("MSQ_REMOTE_POLL", "30"))
+        while time.time() < t_end and not stop["now"]:
+            time.sleep(min(0.5, max(0.0, t_end - time.time())))
+    rest = dec.decode(b"", final=True)
+    if rest:
+        sys.stdout.write(rest)
+        sys.stdout.flush()
     # results
     rc, out, _ = ssh(r, f"sacct -n -X -P -j {sid} -o State,ExitCode 2>/dev/null | head -1", 60)
     acct = (out or "").strip()
@@ -571,12 +683,9 @@ def run_job(jid):
     if data.returncode == 0 and data.stdout:
         tmp = STATE / f"out-{jid}.tar.gz"
         tmp.write_bytes(data.stdout)
-        with tarfile.open(tmp) as tf:
-            members = [m for m in tf.getmembers() if not m.name.startswith(("/", "..")) and ".." not in Path(m.name).parts]
-            try:
-                tf.extractall(src, members=members, filter="data")
-            except TypeError:                     # Python < 3.12
-                tf.extractall(src, members=members)
+        skipped = _extract_results(tmp, src)
+        if skipped:
+            print(f"[{r['name']}] not copied back ({len(skipped)}): " + "; ".join(skipped[:5]), flush=True)
         tmp.unlink(missing_ok=True)
         tag = f".msq-{jid}-"                 # per job: two jobs in one folder never mix up their results
         try:
@@ -592,6 +701,8 @@ def run_job(jid):
         print(f"[{r['name']}] results copied back" + (f" (Slurm: {acct})" if acct else ""), flush=True)
     else:
         print(f"[{r['name']}] no results came back (Slurm: {acct or 'unknown'}). Files stay in {r['ssh']}:{rdir}", flush=True)
+        if not offset:                         # it never even wrote its log: it stopped while getting ready on the node
+            _explain_early_death(r, sid, rdir, acct)
     if job_rc is None:
         code = acct.split("|")[-1].split(":")[0] if "|" in acct else ""
         job_rc = int(code) if code.isdigit() and int(code) else 5
@@ -614,7 +725,8 @@ def status(r, fresh=False):
     c = _cache(r["name"])
     if not fresh and time.time() - c.get("t", 0) < 300:
         return c
-    rc, out, err = ssh(r, "sinfo -h -o '%C' 2>&1; echo ===; squeue -h " + (f"-A {shlex.quote(r['account'])} " if r["account"] else "")
+    part = f"-p {shlex.quote(r['partition'])} " if r.get("partition") else ""   # only CPUs you may use
+    rc, out, err = ssh(r, f"sinfo -h {part}-o '%C' 2>&1 | tail -1; echo ===; squeue -h " + (f"-A {shlex.quote(r['account'])} " if r["account"] else "")
                           + "-o %T 2>/dev/null | sort | uniq -c", 30)
     res = {"t": time.time(), "ok": rc == 0}
     if rc == 0:
@@ -838,16 +950,14 @@ def check(name, test_job=False, out=print):
     return ok_all
 
 
-def _test_job(r, out):
+def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):
+    """Run `probe` on a node of `r` through the normal remote path (upload, setup, links, path_map, results back).
+    Returns (rc, log text, folder)."""
     from . import queue
     import tempfile
     d = Path(tempfile.mkdtemp(prefix="ms-remote-test-", dir=str(STATE) if STATE.exists() else None))
-    probe = ("echo host=$(hostname); echo cpus=$(nproc); free -g | awk '/Mem:/{print \"mem_gb=\"$2}'; "
-             "for t in vivado vitis_hls vitis-run xsim xelab docker apptainer singularity python3; do "
-             "p=$(command -v $t 2>/dev/null); echo tool_$t=${p:-none}; done; "
-             "ls -d /mnt/perflab/* 2>/dev/null | head -20 | sed 's/^/perflab=/'; "
-             "docker image ls --format 'image={{.Repository}}:{{.Tag}}' 2>/dev/null | head -30; echo probe=done > probe.txt")
-    j = queue.submit(probe, cwd=str(d), name="remote_probe", mem_gb=1, cores=1, remote=r["name"], state="held", limit_memory=False)
+    j = queue.submit(probe, cwd=str(d), name=name, mem_gb=mem_gb, cores=cores, remote=r["name"], state="held",
+                     limit_memory=False, **({"timeout_s": timeout_s} if timeout_s else {}))
     queue.update(j["id"], state="running", started=time.time())
     old = os.getcwd()
     os.chdir(d)
@@ -856,17 +966,228 @@ def _test_job(r, out):
     finally:
         os.chdir(old)
     queue.update(j["id"], state="done" if rc == 0 else "failed", ended=time.time(), rc=rc)
-    log = ""
-    for f in (f"msq-{j['id']}.log",):
-        try:
-            log = Path(d, f).read_text()
-        except OSError:
-            pass
+    try:
+        log = Path(d, f"msq-{j['id']}.log").read_text(errors="replace")
+    except OSError:
+        log = ""
+    return rc, log, d
+
+
+def _test_job(r, out):
+    probe = ("echo host=$(hostname); echo cpus=$(nproc); free -g | awk '/Mem:/{print \"mem_gb=\"$2}'; "
+             "for t in vivado vitis_hls vitis-run v++ xsim xelab docker apptainer singularity python3; do "
+             "p=$(command -v $t 2>/dev/null); echo tool_$t=${p:-none}; done; "
+             "ls -d /mnt/perflab/* 2>/dev/null | head -20 | sed 's/^/perflab=/'; "
+             "docker image ls --format 'image={{.Repository}}:{{.Tag}}' 2>/dev/null | head -30; echo probe=done > probe.txt")
+    rc, log, d = _probe_job(r, probe, "remote_probe")
     facts = [l for l in log.splitlines() if "=" in l and not l.startswith("[")]
     for l in facts:
         out("       " + l)
     (STATE / f"{r['name']}-probe.txt").write_text("\n".join(facts) + "\n")
     return rc == 0 and Path(d, "probe.txt").exists()
+
+
+# ---------------------------------------------------------------- AMD tools on the nodes
+TOOLS_PROBE = r"""
+echo "T node=$(hostname)"
+echo "T os=$( . /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")"
+echo "T glibc=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')"
+echo "T locale=${LC_ALL:-${LANG:-unset}}"
+echo "T home=$HOME"; [ -w "$HOME" ] && echo "T home_writable=yes" || echo "T home_writable=no"
+echo "T tmp_free_gb=$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2{printf "%d", $4/1048576}')"
+echo "T XILINX_VIVADO=${XILINX_VIVADO:-}"
+echo "T XILINX_VITIS=${XILINX_VITIS:-}"
+echo "T XILINX_HLS=${XILINX_HLS:-}"
+for v in "$XILINX_VIVADO" "$XILINX_VITIS"; do
+  [ -n "$v" ] || continue; root=$(dirname "$v")
+  for p in Vivado Vitis Vitis_HLS; do [ -f "$root/$p/settings64.sh" ] && echo "T settings=$root/$p/settings64.sh"; done
+done
+for t in vivado vitis vitis-run v++ vitis_hls xsim xelab xvlog; do
+  p=$(command -v "$t" 2>/dev/null)
+  echo "T tool.$t=${p:-none}"
+  [ -n "$p" ] || continue
+  rp=$(readlink -f "$p"); [ -x "$rp" ] && echo "T exec.$t=yes" || echo "T exec.$t=no"
+done
+miss=""
+for d in "$XILINX_VIVADO/bin/unwrapped/lnx64.o" "$XILINX_VITIS/bin/unwrapped/lnx64.o" "$XILINX_HLS/bin/unwrapped/lnx64.o"; do
+  [ -d "$d" ] || continue
+  for b in "$d"/vivado "$d"/xelab "$d"/xsim "$d"/vitis-run "$d"/v++ "$d"/vitis_hls; do
+    [ -f "$b" ] || continue
+    miss="$miss $(ldd "$b" 2>/dev/null | awk '/not found/{print $1}')"
+  done
+done
+miss=$(echo $miss | tr ' ' '\n' | sort -u | tr '\n' ' ')
+echo "T missing_libs=$miss"
+[ -e /usr/lib/x86_64-linux-gnu/crt1.o ] && echo "T crt1=yes" || echo "T crt1=no"
+[ -e /usr/include/stdio.h ] && echo "T libc_headers=yes" || echo "T libc_headers=no"
+if [ -n "$XILINX_VIVADO" ] && [ -d "$XILINX_VIVADO/data/parts/xilinx" ]; then
+  echo "T parts=$(ls "$XILINX_VIVADO/data/parts/xilinx" 2>/dev/null | tr '\n' ' ')"
+fi
+run() {  # NAME CMD...: run with a time limit, show the first lines and the exit code
+  local n=$1; shift
+  command -v "$1" >/dev/null 2>&1 || return 0
+  mkdir -p "tooltest/$n"
+  local o; o=$(cd "tooltest/$n" && timeout 600 "$@" 2>&1 < /dev/null); local rc=$?
+  printf '%s\n' "$o" | grep -v '^\s*$' | head -6 | sed "s/^/V $n| /"
+  echo "T rc.$n=$rc"
+}
+run vivado vivado -version
+run vitis-run vitis-run --version
+run v++ v++ --version
+run vitis_hls vitis_hls -version
+run xelab xelab -version
+echo probe=done > probe.txt
+"""
+
+
+def _parse_probe(log):
+    facts, vers = {}, {}
+    for line in log.splitlines():
+        if line.startswith("T ") and "=" in line:
+            k, _, v = line[2:].partition("=")
+            if k == "settings":
+                facts.setdefault("settings", []).append(v.strip())
+            else:
+                facts[k.strip()] = v.strip()
+        elif line.startswith("V ") and "| " in line:
+            n, _, v = line[2:].partition("| ")
+            vers.setdefault(n, []).append(v)
+    return facts, vers
+
+
+def tools_check(name, out=print):
+    """Run Vivado/Vitis on a compute node exactly as a job would (setup, links, path_map) and explain what is missing.
+    Returns True when Vivado works there."""
+    try:
+        r = get(name)
+    except KeyError as e:
+        out(f"  NO  configuration: {e}")
+        return False
+    rc, o, e = ssh(r, "echo ok", 30)
+    if rc != 0 or not o.startswith("ok"):
+        out(f"  NO  ssh {r['ssh']} does not work — run: ms remote check {name}")
+        return False
+    out(f"  ..  setup: {r.get('setup') or '(empty)'}")
+    for a, b in parse_links(r):
+        out(f"  ..  link on each node: {a} -> {b}")
+    out("  ..  sending a test job that starts the AMD tools on a node (a few minutes; Vivado is slow to start "
+        "from a network share) …")
+    rc, log, d = _probe_job(r, TOOLS_PROBE, "remote_tools_check", cores=2, mem_gb=4, timeout_s=3600)
+    facts, vers = _parse_probe(log)
+    (STATE / f"{r['name']}-tools.txt").write_text(log)
+    for line in log.splitlines():                 # what the job script itself reported (links, translations)
+        if line.startswith("[remote] link"):
+            out("  ..  " + line[9:])
+    if not facts:
+        out(f"  NO  the test job did not run (exit {rc}). Its log:")
+        for line in log.splitlines()[-25:]:
+            out("       " + line)
+        out(f"       fix: ms remote test {name} first (it checks that plain jobs run there)")
+        return False
+    out(f"  ..  node {facts.get('node')} · {facts.get('os')} · glibc {facts.get('glibc')} · "
+        f"{facts.get('tmp_free_gb', '?')} GB free in /tmp · locale {facts.get('locale')}")
+    ok = {"v": True}
+
+    def step(good, what, detail="", fix=""):
+        out(f"  {'ok ' if good else 'NO '} {what}" + (f" — {detail}" if detail else ""))
+        if not good and fix:
+            for i, f in enumerate(fix.split("\n")):
+                out(("       fix: " if i == 0 else "            ") + f)
+        return good
+
+    have = {t: facts.get(f"tool.{t}", "none") != "none" for t in
+            ("vivado", "vitis", "vitis-run", "v++", "vitis_hls", "xsim", "xelab", "xvlog")}
+    settings = facts.get("settings", [])
+    vitis_settings = next((x for x in settings if "/Vitis/" in x), "")
+    if not facts.get("XILINX_VIVADO") and not facts.get("XILINX_VITIS"):
+        ok["v"] = False
+        step(False, "setup loads the AMD tools", "XILINX_VIVADO and XILINX_VITIS are empty on the node",
+             "set in remotes.conf (ms unlock; edit; ms lock):\n"
+             "setup = source ~/ACCOUNT/xilinx/VERSION/Vitis/settings64.sh   (Vitis also sets up Vivado)\n"
+             "and check that the link target exists on the nodes (the 'link' line above)")
+    else:
+        step(True, "setup loads the AMD tools", facts.get("XILINX_VITIS") or facts.get("XILINX_VIVADO"))
+    for t in ("vivado", "vitis-run", "v++"):
+        if have[t] and facts.get(f"exec.{t}") == "no":
+            ok["v"] = False
+            step(False, f"{t} is executable", facts.get(f"tool.{t}"),
+                 "the files lost their execute permission when they were copied to the share (rsync -rlt does\n"
+                 "not keep permissions). Copy again with: rsync -rltp …  — or ask for the share to be mounted\n"
+                 "with file_mode=0755 / 'noperm'")
+    libs = facts.get("missing_libs", "").split()
+    if libs:
+        ok["v"] = False
+        step(False, "all libraries the tools need are on the node", "missing: " + " ".join(libs),
+             "ask the admins to install them on the nodes (AMD: <install>/Vitis/scripts/installLibs.sh lists\n"
+             "the packages), or copy the .so files into ~/ACCOUNT/lib on the share and add to setup:\n"
+             "export LD_LIBRARY_PATH=~/ACCOUNT/lib:$LD_LIBRARY_PATH")
+    elif facts.get("XILINX_VIVADO") or facts.get("XILINX_VITIS"):
+        step(True, "all libraries the tools need are on the node")
+    works = {}
+    for t in ("vivado", "vitis-run", "v++", "vitis_hls", "xelab"):
+        if not have.get(t):
+            continue
+        trc = facts.get(f"rc.{t}")
+        first = next((v for v in vers.get(t, []) if v.strip()), "")
+        works[t] = trc == "0"
+        if trc == "124":
+            step(False, f"{t} starts", "no answer within 10 minutes",
+                 "the network share may be very slow on this node; try again, or copy the tools to the\n"
+                 "node's local disk")
+            ok["v"] = ok["v"] and t != "vivado"
+        elif trc == "0":
+            step(True, f"{t} starts", first)
+        else:
+            step(False, f"{t} starts", f"exit {trc}: " + " / ".join(vers.get(t, [])[-3:]),
+                 _tool_fix(vers.get(t, [])))
+            ok["v"] = ok["v"] and t != "vivado"
+    if not have["vivado"] and (facts.get("XILINX_VIVADO") or facts.get("XILINX_VITIS")):
+        ok["v"] = False
+        step(False, "vivado is on PATH", "not found after setup", "source the Vivado or Vitis settings64.sh in setup")
+    if have["vivado"] and not (have["vitis-run"] or have["v++"] or have["vitis_hls"]):
+        step(False, "HLS (vitis-run / v++) is on PATH", "only Vivado is set up",
+             (f"to use HLS there, source Vitis instead of Vivado in setup:\nsetup = source {vitis_settings}"
+              if vitis_settings else "HLS needs the Vitis product (installer product 1), not Vivado (2)"))
+    elif (have["vitis-run"] or have["v++"]) and not have["vitis_hls"]:
+        out("  ..  no 'vitis_hls' command there (newer Vitis versions replaced it with 'vitis-run --mode hls' and\n"
+            "       'v++ -c --mode hls'); jobs that call vitis_hls must be changed, or keep vitis_hls in missing_tools")
+    if (have["vitis-run"] or have["v++"] or have["vitis_hls"]) and (facts.get("crt1") == "no" or facts.get("libc_headers") == "no"):
+        step(False, "C compiler files for HLS C simulation (csim)", "the node has no libc6-dev (crt1.o / stdio.h)",
+             "csynth and cosim-free flows work; for csim ask the admins for: apt install libc6-dev")
+    if facts.get("parts"):
+        out(f"  ..  device families installed there: {facts['parts']}")
+        out("       (a job for a part that is not installed there fails with 'part not found')")
+    # what can be taken out of missing_tools
+    miss = r["missing_tools"].split()
+    alias = {"vitis": ("vitis-run", "v++"), "xsim": ("xelab",), "xvlog": ("xelab",), "xvhdl": ("xelab",),
+             "xelab": ("xelab",), "vivado": ("vivado",), "vitis_hls": ("vitis_hls",), "vitis-run": ("vitis-run",),
+             "v++": ("v++",)}
+    can = [m for m in miss if m in alias and any(works.get(a) for a in alias[m])]
+    if can:
+        rest = [m for m in miss if m not in can]
+        out(f"  ->  these work there now; take them out of missing_tools so jobs may be sent: {' '.join(can)}")
+        out(f"       missing_tools = {' '.join(rest)}")
+    out(f"  ..  full output: {STATE / (r['name'] + '-tools.txt')}")
+    return ok["v"] and works.get("vivado", False)
+
+
+def _tool_fix(lines):
+    t = " ".join(lines).lower()
+    if "locale" in t:
+        return "a locale problem: update my-system (jobs now fall back to C.UTF-8) and try again"
+    if "libtinfo" in t or "libncurses" in t:
+        return "the node lacks libtinfo/libncurses: ask the admins (apt install libtinfo6 libncurses6),\nor put the .so in ~/ACCOUNT/lib and add it to LD_LIBRARY_PATH in setup"
+    if "cannot open shared object" in t or "error while loading shared libraries" in t:
+        return "a library is missing on the node (see the line above): ask the admins to install it"
+    if "permission denied" in t:
+        return "not executable on the share: copy again with rsync -rltp, or a mount with file_mode=0755"
+    if "no such file" in t:
+        return "a file of the installation is missing (the copy to the share may be incomplete: check rsync.log)"
+    if "license" in t:
+        return "a license problem: devices outside the free (Standard) edition need a license on the server"
+    if "java" in t or "jre" in t:
+        return "Java could not start: check free memory and /tmp space on the node"
+    return "see the full output (path below)"
 
 
 HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this machine is busy or too small
@@ -875,6 +1196,8 @@ HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this
   ms remote list              configured servers and their state
   ms remote check NAME        step-by-step check: ssh, Slurm, account, work folder, nodes
   ms remote test NAME         check + a 1-minute test job that reports what the nodes offer (CPUs, RAM, tools)
+  ms remote tools NAME        start Vivado/Vitis on a node exactly like a job (setup, links, path_map) and say
+                              what is missing: settings, permissions, libraries, locale, HLS, devices
   ms remote status NAME       free CPUs there and your jobs
   ms remote clean NAME [--days 7]   remove your own old job folders there (kept after failed jobs)
 
@@ -916,7 +1239,7 @@ def cli(a):
     if sub == "list":
         rs = remotes()
         if not rs:
-            print(f"no remotes configured (ms remote setup titan)")
+            print("no remotes configured (ms remote setup titan)")
         for n, r in rs.items():
             c = _cache(n)
             state = "unknown" if not c else ("reachable" if c.get("ok") else f"not reachable: {c.get('error', '')}")
@@ -927,6 +1250,9 @@ def cli(a):
     if len(a) < 2:
         print(HELP)
         return 2
+    if sub == "tools":
+        print(f"AMD tools on {a[1]}:")
+        return 0 if tools_check(a[1]) else 1
     if sub in ("check", "test"):
         print(f"{'Testing' if sub == 'test' else 'Checking'} remote {a[1]}:")
         return 0 if check(a[1], test_job=sub == "test") else 1

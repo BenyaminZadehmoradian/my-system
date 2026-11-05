@@ -170,7 +170,7 @@ def _read(p, default=""):
 def _cmd(args, timeout=10):
     import subprocess
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=dict(os.environ, LC_ALL="C"))
+        r = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=timeout, env=dict(os.environ, LC_ALL="C"))
         return r.stdout
     except (OSError, subprocess.SubprocessError):
         return ""

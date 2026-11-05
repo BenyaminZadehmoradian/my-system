@@ -19,7 +19,7 @@ OUT = config.REPORTS / "system"
 
 def _cmd(args, timeout=30):
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+        return subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=timeout,
                               env=dict(os.environ, LC_ALL="C")).stdout
     except (OSError, subprocess.SubprocessError):
         return ""

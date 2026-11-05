@@ -36,7 +36,7 @@ def _now():
 def _git(cwd):
     def g(*a):
         try:
-            r = subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, errors="replace", timeout=5)
             return r.stdout.strip() if r.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):
             return None
@@ -49,7 +49,7 @@ def _git(cwd):
 def _project(cwd):
     top = None
     try:
-        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True, errors="replace", timeout=5)
         top = r.stdout.strip() if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         pass

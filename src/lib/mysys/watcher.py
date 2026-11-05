@@ -637,7 +637,7 @@ def daily_sizes():
         if not os.path.exists(p):
             continue
         try:
-            r = subprocess.run(["du", "-sb", "--one-file-system", p], capture_output=True, text=True, timeout=3600)
+            r = subprocess.run(["du", "-sb", "--one-file-system", p], capture_output=True, text=True, errors="replace", timeout=3600)
             b = int(r.stdout.split()[0])
         except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
             continue

@@ -38,7 +38,7 @@ def is_dark():
         return os.environ["MY_SYSTEM_THEME"] == "dark"
     try:
         r = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-                           capture_output=True, text=True, timeout=2)
+                           capture_output=True, text=True, errors="replace", timeout=2)
         return "dark" in r.stdout
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -612,7 +612,7 @@ class RunsPage(Page):
             self.live.setItem(i, 5, cell(human(j["rss"])))
             self.live.setItem(i, 6, cell(", ".join(map(str, j["pids"][:3]))))
         if shutil.which("tsp"):
-            r = subprocess.run(["tsp"], capture_output=True, text=True)
+            r = subprocess.run(["tsp"], capture_output=True, text=True, errors="replace")
             self.queue.setPlainText(r.stdout.strip() or "queue empty")
         else:
             self.queue.setPlainText("task-spooler not installed")
@@ -772,7 +772,7 @@ class BackupPage(Page):
 
     @staticmethod
     def active(unit):
-        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
+        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, errors="replace")
         return r.stdout.strip() in ("active", "activating")
 
     def refresh(self):
@@ -1264,7 +1264,7 @@ class SystemPage(Page):
     def hardware(self):
         self.list.clearSelection()
         try:
-            out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "hw"], capture_output=True, text=True,
+            out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "hw"], capture_output=True, text=True, errors="replace",
                                  timeout=30).stdout
         except (OSError, subprocess.TimeoutExpired) as e:
             out = f"error: {e}"
@@ -1383,18 +1383,18 @@ class SoftwarePage(Page):
                              lambda: (setattr(self, "_sig", None), self.refresh()))
 
     def plan(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "plan"], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "plan"], capture_output=True, text=True, errors="replace", timeout=120)
         self.view.setPlainText(r.stdout or r.stderr)
 
     def who(self):
         q = self.q.text().strip()
         if q:
-            r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "uses", q], capture_output=True, text=True, timeout=120)
+            r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "uses", q], capture_output=True, text=True, errors="replace", timeout=120)
             self.view.setPlainText(r.stdout or r.stderr)
 
     def project(self):
         r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "project", self.proj.currentText()],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, errors="replace", timeout=120)
         self.view.setPlainText(r.stdout or r.stderr)
 
     def nav_status(self):
@@ -1547,7 +1547,7 @@ class NotifyPage(Page):
             self.log.setItem(i, 3, cell(msg))
 
     def brief_preview(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief"], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief"], capture_output=True, text=True, errors="replace", timeout=60)
         d = QDialog(self)
         d.setWindowTitle("Status report (as it appears on the phone)")
         d.resize(520, 640)
@@ -1814,7 +1814,7 @@ class QueuePage(Page):
         d.exec()
 
     def _ms(self, *args):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, errors="replace", timeout=120)
         return r.stdout + r.stderr
 
     def details(self):
@@ -2001,7 +2001,7 @@ class QueuePage(Page):
         f = path or self._pick()
         if not f:
             return None
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "check", f], capture_output=True, text=True)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "check", f], capture_output=True, text=True, errors="replace")
         d = QDialog(self)
         d.setWindowTitle("Flow plan")
         d.resize(1000, 600)
@@ -2026,7 +2026,7 @@ class QueuePage(Page):
             self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "run", f, "--resume"], None, None, self.refresh)
 
     def show_schedules(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "schedules"], capture_output=True, text=True)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "schedules"], capture_output=True, text=True, errors="replace")
         QMessageBox.information(self, "Scheduled flows", (r.stdout.strip() or "No schedules.") +
                                 "\n\nAdd one in a terminal:\n  ms flow schedule FILE --cron \"17 2 * * *\"\n"
                                 "  ms flow schedule FILE --idle\n  ms flow schedule FILE --on-commit ~/project")
@@ -2243,7 +2243,7 @@ class RunLogsPage(Page):
         if not target:
             self.view.setPlainText("Select a run first.")
             return
-        out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "check", target], capture_output=True, text=True).stdout
+        out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "check", target], capture_output=True, text=True, errors="replace").stdout
         self.view.setPlainText(out or "(no output)")
 
     def open_folder(self):
@@ -2640,7 +2640,7 @@ class HistoryPage(Page):
         self._shown = False
 
     def _run(self, args):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, errors="replace", timeout=60)
         self.view.setPlainText(r.stdout + r.stderr)
 
     def show_time(self):

@@ -44,7 +44,7 @@ STDLIB = None
 
 def _run(cmd, timeout=60, **kw):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, **kw).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 
