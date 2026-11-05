@@ -302,6 +302,31 @@ print("ok")
     assert "ok" in out
 
 
+
+def test_names_and_estimates_for_2025_commands():
+    import os
+    tmp, ms = fake_ms()
+    (ms / "config/plugins.conf").write_text("vivado\nvitis_hls\nmake\n")
+    env = dict(os.environ, MY_SYSTEM=str(ms), MS_NO_CGROUP="1", HOME=str(tmp))
+    code = r"""
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib")); sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "plugins"))
+from mysys import queue, probes
+probes.meminfo = lambda: {"MemTotal": 64 * 2**30, "MemAvailable": 48 * 2**30, "SwapTotal": 0, "SwapFree": 0}
+probes.threads = lambda: 8
+S = "source /mnt/data/Apps/2025.2.1/Vivado/settings64.sh && "
+v = queue.submit(S + "vivado -mode batch -source build.tcl", cwd="/tmp", state="held")
+h = queue.submit(S + "vitis-run --mode hls --tcl hls.tcl", cwd="/tmp", state="held")
+m = queue.submit("cd hw && export A=1 && make all", cwd="/tmp", state="held")
+p = queue.submit("python3 run.py", cwd="/tmp", state="held")
+assert (v["name"], h["name"], m["name"], p["name"]) == ("vivado", "vitis-run", "make", "python3"), (v["name"], h["name"], m["name"], p["name"])
+assert float(h["mem_gb"]) >= 4 and float(v["mem_gb"]) >= 8, (h["mem_gb"], v["mem_gb"])
+print("ok")
+"""
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+
+
 if __name__ == "__main__":                # ms selftest runs each test file as a script (no pytest needed)
     import time
     t0 = time.time()

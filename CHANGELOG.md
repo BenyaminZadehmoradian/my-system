@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.2 — 2026-11-05
+- HLS with Vitis 2025+ (`vitis-run`, `v++`) gets a real starting estimate (4 GB / 1.5 cores, v++ 8 GB / 2 cores)
+  instead of the 2 GB / 1 core of an unknown program, here and in the cores asked from Slurm.
+- A job without --name is named after its tool or first real program: `source settings64.sh && vivado ...` is
+  "vivado" (was "source"); `cd`, `export`, `VAR=value` are skipped too.
+- 1.18.1 (same day): hermetic server tests, `ms q explain` keeps saying why a job was not sent after it ran here.
+
 ## 1.18.0 — 2026-11-05
 Server (Titan) fixes and a tool check:
 - **A server job that died before writing its log (e.g. exit 92: the node cannot scp from the head node) was

@@ -21,6 +21,9 @@ GiB = 2**30
 DEFAULT_PROFILES = {
     "vivado": {"peak_gb": 8.0, "cores": 2.0, "note": "synthesis + implementation; placement/routing peaks highest"},
     "vitis_hls": {"peak_gb": 4.0, "cores": 1.5, "note": "C synthesis"},
+    "vitis-run": {"peak_gb": 4.0, "cores": 1.5, "note": "HLS in Vitis 2025+ (vitis-run --mode hls)"},
+    "vivado_hls": {"peak_gb": 4.0, "cores": 1.5, "note": "C synthesis (old HLS)"},
+    "v++": {"peak_gb": 8.0, "cores": 2.0, "note": "compile/link; the link runs Vivado implementation"},
     "xsim": {"peak_gb": 2.0, "cores": 1.0, "note": "single-threaded simulation"},
     "yosys": {"peak_gb": 2.0, "cores": 1.0, "note": ""},
     "nextpnr": {"peak_gb": 2.0, "cores": 1.0, "note": ""},

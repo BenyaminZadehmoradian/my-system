@@ -127,6 +127,25 @@ def parse_duration(s):
     return int(float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)])
 
 
+SETUP_WORDS = {"source", ".", "cd", "export", "set", "module", "ulimit", "umask", "conda", "unset", "pushd"}
+
+
+def _default_name(cmd, tool=None):
+    """A job's name when none is given: the detected tool, else the first program that is not set-up
+    ('source settings64.sh && vivado ...' is 'vivado', not 'source')."""
+    if tool:
+        return tool
+    for seg in re.split(r"&&|\|\||;|\n", cmd or ""):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            words = seg.split()
+        words = [w for w in words if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w)]   # VAR=value
+        if words and words[0] not in SETUP_WORDS:
+            return Path(words[0]).name or "job"
+    return "job"
+
+
 def guess_tool(cmd):
     from . import plugins
     try:
@@ -205,7 +224,7 @@ def submit(cmd, cwd=None, name=None, **opt):
     for k in ("begin", "deadline"):
         if j.get(k) is not None:
             j[k] = parse_when(j[k])
-    nm = re.sub(r"[^A-Za-z0-9_.+-]", "_", name or (Path(shlex.split(cmd)[0]).name if cmd.strip() else "job"))[:60]
+    nm = re.sub(r"[^A-Za-z0-9_.+-]", "_", name or _default_name(cmd, tool))[:60]
     with _Lock():
         # collapse: a newer request with the same key replaces older ones that have not started
         if j.get("collapse_key"):
