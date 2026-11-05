@@ -285,6 +285,23 @@ def test_live_titan_script_against_fake_cluster():
         assert want in r.stdout, (want, r.stdout)
 
 
+
+def test_explain_says_why_a_job_was_not_sent_after_it_ran_here():
+    out, *_ = run(r"""
+os.makedirs(os.path.join(W, "o"), exist_ok=True)
+open(os.path.join(W, "o", "run.sh"), "w").write("cat /mnt/only_here/data.txt\n")   # a path that exists only here
+a = queue.submit("echo here > h.txt", cwd=os.path.join(W, "o"), name="stay", remote="auto", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+j = queue.load(a["id"])
+assert not j.get("remote") and st(a["id"]) == "done", j
+lines = {k: v for _, k, v in queue.explain(a["id"])}
+assert "/mnt/only_here/data.txt" in lines.get("not sent to a server", ""), lines
+assert "server first" in lines.get("may run on a server", ""), lines
+print("ok")
+""", offload="prefer", extra="tools = *\n")
+    assert "ok" in out
+
+
 if __name__ == "__main__":                # ms selftest runs each test file as a script (no pytest needed)
     import time
     t0 = time.time()

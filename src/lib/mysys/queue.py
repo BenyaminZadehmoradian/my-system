@@ -649,7 +649,16 @@ def explain(jid):
         out.append((True, "runs on", f"{j['remote']}" + (f" (Slurm job {j['remote_job']})" if j.get("remote_job") else "")
                     + " — local CPU and RAM do not matter"))
     elif j.get("remote_ok"):
-        out.append((True, "may run on a server", "when this machine stays busy (offload in config/remotes.conf)"))
+        try:
+            from . import remote as RM
+            modes = {r["offload"] for r in RM.remotes().values()}
+        except Exception:
+            modes = set()
+        out.append((True, "may run on a server", "the server first, this machine as fallback (offload = prefer)"
+                    if "prefer" in modes else "when this machine stays busy (offload in config/remotes.conf)"))
+    if not j.get("remote") and j.get("prefer_note") and j["state"] != "queued":
+        # it ran (or runs) here: say why it was not sent, also after the fact
+        out.append((False, "not sent to a server", j["prefer_note"].replace("not sent: ", "", 1)))
     if not j.get("remote") and j["state"] == "queued":
         try:
             from . import remote as RM

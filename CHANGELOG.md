@@ -28,6 +28,8 @@ Server (Titan) fixes and a tool check:
   queue with path translation). Neither is run automatically: they use the shared cluster.
 - docs/remote-servers.md: verified Titan configuration (Vivado and HLS jobs pass on titan02; in 2025.2.1 Vivado's
   settings64.sh also sets up Vitis; no vitis_hls command); copy with `rsync -rltp`; a troubleshooting table.
+- `ms q explain` says why a job was not sent to a server also after it ran here (it only did while queued), and
+  says "the server first" when offload = prefer.
 - Tests that use the fake cluster no longer see this machine's own AMD tools (PATH, XILINX_*).
 
 ## 1.17.3 — 2026-11-03
