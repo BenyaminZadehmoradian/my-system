@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.1 — 2026-11-05
+- `ms remote licenses`: a device without a license was reported as "failed (not a license problem)". Inside
+  `catch`, Vivado prints only `WARNING: [Common 17-348] Failed to get the license …`, not the final 17-345 error
+  (seen on Titan for xc7vx330t); both count now, and the caught message is printed too. The output shows only the
+  result lines instead of every synthesis line.
+
 ## 1.19.0 — 2026-11-05
 - **The app no longer freezes.** A run left "running" in a run log made the Run logs page read every run log again
   on each 15-s refresh (1.8 s with 40 logs; the window opened in 2.2 s). Run logs are now parsed once and again only

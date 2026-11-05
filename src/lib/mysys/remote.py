@@ -1298,17 +1298,21 @@ def tools_check(name, out=print):
 
 
 LIC_TCL = r"""
+read_verilog top.v
 foreach p $parts {
   puts "L begin $p"
   if {[llength [get_parts -quiet $p]] == 0} { puts "L missing $p"; continue }
   catch {close_design -quiet}
-  read_verilog top.v
   set rc [catch {synth_design -top top -part $p -mode out_of_context} e]
+  puts "L msg $p [string map {"\n" " "} $e]"
   puts "L end $p $rc"
   catch {close_design -quiet}
 }
 exit
 """
+# inside catch, Vivado prints only the warning (Common 17-348), not the final 17-345 error
+LICENSE_FAIL_RX = re.compile(r"valid license was not found|Failed to get the license for feature|license feature \S+ could not be found",
+                             re.I)
 
 
 def license_parts(limit=20):
@@ -1344,7 +1348,8 @@ def licenses(name, parts=None, out=print):
     probe = ("cat > top.v <<'MSQ_V'\nmodule top(input clk, input d, output reg q); always @(posedge clk) q <= d; "
              "endmodule\nMSQ_V\n"
              f"cat > lic.tcl <<'MSQ_T'\nset parts {{{' '.join(parts)}}}\n{LIC_TCL}\nMSQ_T\n"
-             "vivado -mode batch -nojournal -nolog -notrace -source lic.tcl; echo probe=done > probe.txt")
+             "vivado -mode batch -nojournal -nolog -notrace -source lic.tcl > lic.log 2>&1; "
+             "grep -E '^L |license' lic.log; echo probe=done > probe.txt")   # only what matters, not every synth line
     rc, log, d = _probe_job(r, probe, "remote_licenses", cores=2, mem_gb=4, timeout_s=len(parts) * 600 + 600)
     res = parse_licenses(log, parts)
     no = [p for p, v in res.items() if v == "no license"]
@@ -1383,7 +1388,7 @@ def parse_licenses(log, parts):
         elif line.startswith("L end ") and cur:
             rc = line.split()[-1]
             text = "\n".join(buf)
-            res[cur] = ("no license" if LICENSE_RX.search(text) else "licensed" if rc == "0"
+            res[cur] = ("licensed" if rc == "0" else "no license" if LICENSE_FAIL_RX.search(text)
                         else "failed (not a license problem)")
             cur = None
         elif cur:

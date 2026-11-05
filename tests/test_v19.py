@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -275,7 +274,12 @@ for p in $parts; do
   echo "L begin $p"
   case "$p" in
     xc9*) echo "L missing $p"; continue;;
-    xc7vx*) echo "ERROR: [Common 17-345] A valid license was not found for feature 'Synthesis' and/or device '${p%%ffg*}'."
+    xc7vx*) # what Vivado really prints when synth_design runs inside catch (Titan, 5 Nov 2026): only the warning
+            echo "WARNING: [Common 17-348] Failed to get the license for feature 'Synthesis' and/or device '${p%%ffg*}'. Explanation: The license feature Synthesis could not be found."
+            echo "synth_design failed"
+            echo "L msg $p ERROR: [Common 17-69] Command failed: synth_design failed"
+            echo "L end $p 1";;
+    xc7vh*) echo "ERROR: [Common 17-345] A valid license was not found for feature 'Synthesis' and/or device 'xc7vh580t'."
             echo "L end $p 1";;
     xc7k*) echo "ERROR: [Synth 8-439] module 'top' not found"; echo "L end $p 1";;
     *) echo "Got license"; echo "L end $p 0";;
@@ -293,14 +297,17 @@ def test_remote_licenses():
     (root / "Vivado/bin/vivado").write_text(FAKE_VIVADO_LIC)
     (ms / "config/remotes.conf").write_text(CONF.format(offload="never") + f"setup = source {root}/Vitis/settings64.sh\n")
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "remote", "licenses", "titan", "xc7vx330tffg1157-1",
-                        "xc7z020clg400-1", "xc9zz1-a1", "xc7k70tfbg676-1"], env=env, capture_output=True, text=True,
+                        "xc7z020clg400-1", "xc9zz1-a1", "xc7k70tfbg676-1", "xc7vh580thcg1155-2"], env=env,
+                       capture_output=True, text=True,
                        timeout=180)
     o = r.stdout
     assert r.returncode == 0, o + r.stderr
     assert "NO  xc7vx330tffg1157-1: no license" in o and "ok  xc7z020clg400-1: licensed" in o, o
     assert "xc9zz1-a1: not installed there" in o and "xc7k70tfbg676-1: failed (not a license problem)" in o, o
     st = json.loads((ms / "state/remote/titan-unlicensed.json").read_text())
-    assert list(st["devices"]) == ["xc7vx330t"], st
+    assert "xc7vh580thcg1155-2: no license" in o, o
+    assert sorted(st["devices"]) == ["xc7vh580t", "xc7vx330t"], st
+    assert "Synthesizing" not in o and "Report Cell Usage" not in o, "only the result lines are shown"
 
 
 def test_license_parts_from_recent_jobs():
