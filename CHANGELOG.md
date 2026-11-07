@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.20.1 — 2026-11-07
+- Server jobs now record what they really used there (Slurm accounting): average cores used of the cores
+  reserved, peak RAM and run time, shown at the end of the job log (`[titan] used 3.6 of 4 cores on average,
+  peak RAM 12.1 GB (9.8 h)`) and kept in the job (`ms q show ID`: remote_cores_used, remote_peak_gb). The final
+  Slurm state is kept too (it stayed "RUNNING" after the job ended).
+- `ms q edit --help` gave a Python error.
+
 ## 1.20.0 — 2026-11-07
 From a problem report written by an AI session that ran a long study through the queue and Titan:
 - `ms q --help` (and `-h`, `help`) printed the queue instead of the help.

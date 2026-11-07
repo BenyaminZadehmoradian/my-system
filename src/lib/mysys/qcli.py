@@ -422,11 +422,11 @@ def q_cmd(a):
             print(f"{mark} {check:<34} {detail}")
         return 0
     if sub == "edit":
-        if not a:
+        if not a or a[0] in ("-h", "--help", "help"):
             print("usage: ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] "
                   "[--env K=V] [--after ID[,ID..] | --after none]")
             return 2
-        jid, rest, kw = int(a[0]), a[1:], {}
+        jid, rest, kw = _ids(a[:1])[0], a[1:], {}
         names = {"--cmd": "cmd", "--mem": "mem_gb", "--cores": "cores", "--priority": "priority", "--name": "name",
                  "--timeout": "timeout_s", "--group": "group", "--retries": "retries", "--nice": "nice", "--cwd": "cwd"}
         i = 0

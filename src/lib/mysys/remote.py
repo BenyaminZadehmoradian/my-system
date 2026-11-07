@@ -730,8 +730,13 @@ def run_job(jid):
               f"{'it' if len(no_lic) == 1 else 'them'} run here (a license for the server, e.g. "
               f"XILINXD_LICENSE_FILE in setup, lifts this)", flush=True)
     # results
-    rc, out, _ = ssh(r, f"sacct -n -X -P -j {sid} -o State,ExitCode 2>/dev/null | head -1", 60)
-    acct = (out or "").strip()
+    rc, out, _ = ssh(r, f"sacct -n -P -j {sid} -o State,ExitCode,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS 2>/dev/null", 60)
+    acct, use = slurm_usage(out)
+    if use:
+        queue.update(jid, remote_state=acct.split("|")[0] or None, **use)
+        print(f"[{r['name']}] used {use['remote_cores_used']:.1f} of {use['remote_cores']} cores on average"
+              + (f", peak RAM {use['remote_peak_gb']:.1f} GB" if use.get("remote_peak_gb") else "")
+              + f" ({use['remote_elapsed_s'] / 3600:.1f} h)", flush=True)
     tmp = STATE / f"out-{jid}.tar.gz"
     with open(tmp, "wb") as fh:                    # streamed to disk: results can be many GB
         data = subprocess.run(_ssh_base(r) + [f"cat {shlex.quote(rdir)}/out.tar.gz"], stdout=fh,
@@ -1130,6 +1135,49 @@ def check(name, test_job=False, out=print):
         out("  .. sending a 1-minute test job (1 CPU, 1 GB) to learn what the nodes offer …")
         ok_all = step(_test_job(r, out), "test job ran and its results came back") and ok_all
     return ok_all
+
+
+def _cpu_seconds(t):
+    """sacct TotalCPU ([D-]HH:MM:SS, MM:SS.mmm) -> seconds."""
+    t = (t or "").strip()
+    if not t:
+        return 0.0
+    days = 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d) if d.isdigit() else 0
+    parts = [float(x) for x in t.split(":") if x.replace(".", "", 1).isdigit()]
+    sec = 0.0
+    for x in parts:
+        sec = sec * 60 + x
+    return days * 86400 + sec
+
+
+def _size_gb(v):
+    m = re.match(r"([0-9.]+)([KMGT]?)", (v or "").strip())
+    if not m:
+        return 0.0
+    return float(m.group(1)) * {"": 1 / 2**30, "K": 1 / 2**20, "M": 1 / 2**10, "G": 1, "T": 1024}[m.group(2)]
+
+
+def slurm_usage(out):
+    """('STATE|EXIT', {remote_cores, remote_cores_used, remote_elapsed_s, remote_peak_gb}) from
+    sacct -P -o State,ExitCode,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS (job line + its steps)."""
+    lines = [ln.split("|") for ln in (out or "").strip().splitlines() if ln.count("|") >= 5]
+    if not lines:
+        return (out or "").strip().splitlines()[0] if (out or "").strip() else "", {}
+    st, ex, el, cpu, n, _ = lines[0][:6]
+    acct = f"{st}|{ex}"
+    try:
+        el, n = int(el), int(n)
+    except ValueError:
+        return acct, {}
+    peak = max((_size_gb(x[5]) for x in lines), default=0.0)
+    use = {"remote_cores": n, "remote_elapsed_s": el,
+           "remote_cores_used": round(_cpu_seconds(cpu) / el, 2) if el else 0.0}
+    if peak:
+        use["remote_peak_gb"] = round(peak, 2)
+    return acct, use
 
 
 def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):

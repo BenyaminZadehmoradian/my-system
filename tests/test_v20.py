@@ -43,6 +43,8 @@ def test_q_help_and_policy():
     env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
     r = subprocess.run([sys.executable, str(ms / "bin/ms"), "q", "--help"], env=env, capture_output=True, text=True)
     assert "ms q add" in r.stdout and "scheduler:" not in r.stdout, r.stdout[:300]
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "q", "edit", "--help"], env=env, capture_output=True, text=True)
+    assert "usage: ms q edit" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
     src = ROOT / ("src/ai" if (ROOT / "src").is_dir() else "ai") / "claude/hooks/guard.py"
     spec = importlib.util.spec_from_file_location("g", src)
     g = importlib.util.module_from_spec(spec)
@@ -62,6 +64,16 @@ print("ok")
 """
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
     assert "ok" in r.stdout, r.stdout + r.stderr
+
+
+def test_slurm_usage():
+    sys.path.insert(0, str(ROOT / "src/lib"))
+    from mysys import remote as R
+    acct, u = R.slurm_usage("COMPLETED|0:0|7200|05:00:00|4|\nCOMPLETED|0:0|7200|05:00:00|4|9.5G\n")
+    assert acct == "COMPLETED|0:0" and u == {"remote_cores": 4, "remote_elapsed_s": 7200, "remote_cores_used": 2.5,
+                                              "remote_peak_gb": 9.5}, u
+    assert R.slurm_usage("FAILED|1:0") == ("FAILED|1:0", {})
+    assert R._cpu_seconds("1-00:00:01") == 86401 and abs(R._cpu_seconds("02:03.5") - 123.5) < 1e-9
 
 
 if __name__ == "__main__":
