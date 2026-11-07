@@ -34,7 +34,7 @@ Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and
   ms q prio ID P                     change priority (higher runs first)
   ms q why ID                        why a job would run again (what changed)
   ms q explain ID                    why a waiting job has not started: every condition, pass/fail
-  ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] [--env K=V]
+  ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] [--env K=V] [--after ID,..|none]
   ms q send ID TEXT                  type a line into a running job started with --stdin
   ms q groups                        groups, their limits and how many jobs run in each
   ms q flaky                         steps that failed and then passed on retry without changes
@@ -278,6 +278,9 @@ def parse_add(a):
 
 
 def q_cmd(a):
+    if a and a[0] in ("-h", "--help", "help"):
+        print(Q_HELP)
+        return 0
     if not a or a[0] in ("list", "ls") or a[0].startswith("--"):
         show_all = "--all" in a
         js = [j for j in queue.all_jobs() if show_all or j["state"] not in queue.TERMINAL
@@ -307,7 +310,12 @@ def q_cmd(a):
             return 2
         line = " ".join(shlex.quote(c) for c in cmd) if len(cmd) > 1 else cmd[0]
         anyway = opt.pop("_anyway", False)
-        probs = queue.preflight(line, os.getcwd())
+        line2, here = queue.leading_cd(line, opt.get("cwd") or os.getcwd())
+        if line2 != line:
+            opt.setdefault("cmd_typed", line)
+            line, opt["cwd"] = line2, here
+            print(f"note: runs in {here} (from the 'cd' at the start)", file=sys.stderr)
+        probs = queue.preflight(line, opt.get("cwd") or os.getcwd())
         if probs and not anyway:
             print("not added — it would fail or leave its files in the wrong place:", file=sys.stderr)
             for p_ in probs:
@@ -415,7 +423,8 @@ def q_cmd(a):
         return 0
     if sub == "edit":
         if not a:
-            print("usage: ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] [--env K=V]")
+            print("usage: ms q edit ID [--cmd C] [--mem GB] [--cores N] [--priority P] [--name N] [--timeout T] [--group G] "
+                  "[--env K=V] [--after ID[,ID..] | --after none]")
             return 2
         jid, rest, kw = int(a[0]), a[1:], {}
         names = {"--cmd": "cmd", "--mem": "mem_gb", "--cores": "cores", "--priority": "priority", "--name": "name",
@@ -431,6 +440,8 @@ def q_cmd(a):
                 kw.setdefault("env", {})[kk] = vv
             elif k == "--label" and v:
                 kw.setdefault("labels", []).append(v)
+            elif k == "--after" and v:
+                kw["depends"] = [] if v in ("none", "-", "") else _ids([v])
             else:
                 print(f"unknown option {k}")
                 return 2

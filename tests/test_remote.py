@@ -471,6 +471,32 @@ print("\n".join(['W="$PWD"'] + lines[a:b]))
     shutil.rmtree(d)
 
 
+def test_results_filter_and_size_limit():
+    out, notes, tmp, ms, env = run(r"""
+with open(os.path.join(MS, "config", "remotes.conf"), "a") as f:
+    f.write("max_download_gb = 0.05\nresults_exclude = *.dcp scratch\n")   # 50 MB
+P = os.path.join(W, "big"); os.makedirs(P)
+cmd = ("head -c 110000000 /dev/zero > huge.bin; echo small > small.txt; echo d > a.dcp; mkdir -p scratch; "
+       "echo s > scratch/x; mkdir -p out; echo r > out/res.txt")
+a = queue.submit(cmd, cwd=P, name="bigres", remote="titan", **small)
+assert until(lambda: st(a["id"]) in queue.TERMINAL, 60), queue.load(a["id"])
+log = open(queue.LOGS / f"{a['id']}.log").read()
+assert st(a["id"]) == "done", log
+got = sorted(os.listdir(P))
+assert "small.txt" in got and "out" in got, got
+assert "huge.bin" not in got and "a.dcp" not in got and "scratch" not in got, got
+assert "stay on the server" in log and "stayed on the server" in log, log
+# --outputs limits what comes back
+Q = os.path.join(W, "outs"); os.makedirs(Q)
+b = queue.submit("echo 1 > keep.rpt; echo 2 > drop.log", cwd=Q, name="outs", remote="titan", outputs=["*.rpt"], **small)
+assert until(lambda: st(b["id"]) in queue.TERMINAL, 60), queue.load(b["id"])
+got = sorted(x for x in os.listdir(Q) if not x.startswith(("msq-", ".msq", "msrun")))
+assert got == ["keep.rpt"], got
+print("ok")
+""", shared=False)
+    assert "ok" in out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

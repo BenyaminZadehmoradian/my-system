@@ -190,6 +190,12 @@ by `C.UTF-8` on the node when it does not exist there (Vivado aborts on an unkno
    are rewritten (job folder, `path_map`; time stamps kept), `setup` runs, then the command.
 3. The log is copied back every minute (`ms q log ID`); at the end only files the job wrote come back, with
    server paths translated back to local ones. The job folder on bacchus is removed after success.
+   What comes back can be limited:
+   - `--outputs GLOB` on the job (flows: `outputs:`): only matching new/changed files come back.
+   - `results_exclude = *.dcp scratch` in remotes.conf: never bring these back (names, globs or folders).
+   - `max_download_gb = 20` (default): if the job wrote more, files over 100 MB stay on the server
+     (`kept/` or `kept.tar` in the job folder on bacchus; the log says which); the folder is then not removed
+     and `ms remote clean NAME` removes it after 7 days. The download is streamed to disk, not held in memory.
 4. A job sent automatically that fails there runs once more here. Jobs that use files that exist only here
    (absolute paths outside the job folder and not in `path_map`) are not sent: `ms q explain ID` says which.
 

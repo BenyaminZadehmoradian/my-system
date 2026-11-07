@@ -33,6 +33,9 @@ config/remotes.conf (INI, one section per server):
                                # /mnt/data/Apps/2025.2.1 => ~/benyamin/xilinx/2025.2.1
                                # (rewritten in the command and in the job's text files there; see "Paths" below)
   map_job_dir = yes            # the job folder's own absolute path is rewritten to its folder on the node
+  max_download_gb = 20         # results bigger than this: files over 100 MB stay on the server (head node, 7 days)
+  results_exclude =            # files a job writes that never come back, e.g. *.dcp .Xil xsim.dir *.wdb
+                               # (a job's own --outputs GLOB list, if given, limits the results to those files)
   setup =                      # shell lines run before every job command there, e.g.
                                # source ~/benyamin/xilinx/2025.2.1/Vitis/settings64.sh; export XILINX_ROOT=...
 
@@ -68,6 +71,7 @@ DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": 
             "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
             "missing_tools": "", "links": "", "setup": "", "path_map": "", "map_job_dir": "yes",
+            "max_download_gb": "20", "results_exclude": "",
             "slurm_mem": "auto"}
 GiB = 2**30
 
@@ -281,7 +285,26 @@ echo "[remote] finished $(date '+%F %T') rc=$RC" >> msq-{jid}.log
 echo $RC > .msq-{jid}-rc
 find . -newer .msq-{jid}-start \( -type f -o -type l \) ! -name in.tar.gz ! -name out.tar.gz ! -name .msq-{jid}-start -printf '%P\n' > .msq-{jid}-changed
 {unmap_lines}
-tar czf out.tar.gz -T .msq-{jid}-changed .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
+msq_keep() {{  # which written files come back: the job's --outputs (if any), minus results_exclude
+  case "$1" in .msq-*|msq-*.log) return 0;; esac
+{keep_case}
+  return 0
+}}
+while IFS= read -r f; do msq_keep "$f" || continue; echo "$(stat -c %s -- "$f" 2>/dev/null || echo 0) $f"; done < .msq-{jid}-changed > .msq-{jid}-sizes
+TOT=$(awk '{{s+=$1}} END{{printf "%d", s}}' .msq-{jid}-sizes)
+if [ "$TOT" -gt {cap_bytes} ] && [ {cap_bytes} -gt 0 ]; then   # too much to copy home: big files stay on the server
+  awk -v b={big_bytes} '{{n=$1; l=$0; sub(/^[0-9]+ /,"",l); if (n>b) print l > ".msq-{jid}-big"; else print l}}' .msq-{jid}-sizes > .msq-{jid}-sel
+  NB=$(wc -l < .msq-{jid}-big); BB=$(awk -v b={big_bytes} '$1>b{{s+=$1}} END{{printf "%.1f", s/1073741824}}' .msq-{jid}-sizes)
+  echo "[remote] results: $((TOT/1048576)) MB is over max_download_gb; $NB file(s) over 100 MB ($BB GB) stay on the server: {head_dir}/kept (7 days)" >> msq-{jid}.log
+  sort -rn .msq-{jid}-sizes | head -5 | awk '{{printf "[remote]   %.1f GB  ", $1/1073741824; $1=""; print substr($0,2)}}' >> msq-{jid}.log
+  if [ "$SHARED" = 1 ]; then mkdir -p ../kept && tar cf - -T .msq-{jid}-big | (cd ../kept && tar xf -)
+  else tar cf kept.tar -T .msq-{jid}-big && copy kept.tar "$HEAD:$REMOTE_DIR/kept.tar"; rm -f kept.tar; fi
+  echo kept > .msq-{jid}-kept; echo .msq-{jid}-kept >> .msq-{jid}-sel
+else
+  sed 's/^[0-9]* //' .msq-{jid}-sizes > .msq-{jid}-sel
+  echo "[remote] results: $((TOT/1048576)) MB" >> msq-{jid}.log
+fi
+tar czf out.tar.gz -T .msq-{jid}-sel .msq-{jid}-rc .msq-{jid}-outputs msq-{jid}.log 2>/dev/null
 if [ "$SHARED" = 1 ]; then mv out.tar.gz ../out.tar.gz; cp msq-{jid}.log ../msq-{jid}.log
 else copy out.tar.gz "$HEAD:$REMOTE_DIR/out.tar.gz"; copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; cd /; case "$W" in */msq-{jid}-??????) rm -rf "$W";; esac; fi
 exit $RC
@@ -335,6 +358,11 @@ def _srv(path):
 
 def _sq(s):
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _safe_glob(g):
+    import re as _re
+    return bool(g) and _re.fullmatch(r"[A-Za-z0-9_.*?/\[\]+-]+", g) is not None and ".." not in g.split("/")
 
 
 def map_pairs(r, cwd):
@@ -469,6 +497,17 @@ def job_script(r, j, remote_dir):
         run = (env + " " if env else "") + f"bash {cmdfile}"
     head = r.get("head") or r["ssh"]
     mlines, ulines = map_lines_for(r, j.get("cwd"), cmdfile)
+    keep = []
+    outs = [o for o in (j.get("outputs") or []) if _safe_glob(o)]
+    if outs:
+        keep.append('  case "$1" in ' + "|".join(f"{o}|*/{o}" for o in outs) + ") ;; *) return 1;; esac")
+    excl = [e for e in (r.get("results_exclude") or "").split() if _safe_glob(e)]
+    if excl:
+        keep.append('  case "$1" in ' + "|".join(f"{e}|*/{e}|{e}/*|*/{e}/*" for e in excl) + ") return 1;; esac")
+    try:
+        cap = int(float(r.get("max_download_gb") or 0) * 2**30)
+    except ValueError:
+        cap = 20 * 2**30
     info = []
     for a_, b_ in parse_links(r):
         p_ = "$HOME/" + a_[2:]
@@ -482,7 +521,8 @@ def job_script(r, j, remote_dir):
         info.append(f'echo "[remote] path {a_} -> {b_}" >> msq-{j["id"]}.log')
     return JOB_SH.format(map_lines=mlines, unmap_lines=ulines, jid=j["id"], attempt=j.get("attempt", 1),
                          sbatch_lines="\n".join(lines), link_lines=link_lines(r), jobdir=jobdir, body=body,
-                         info_lines="\n".join(info),
+                         info_lines="\n".join(info), keep_case="\n".join(keep), cap_bytes=cap,
+                         big_bytes=100 * 2**20, head_dir=remote_dir,
                          remote_dir=shlex.quote(remote_dir), head=shlex.quote(head), cores=cores, run_line=run)
 
 
@@ -692,11 +732,13 @@ def run_job(jid):
     # results
     rc, out, _ = ssh(r, f"sacct -n -X -P -j {sid} -o State,ExitCode 2>/dev/null | head -1", 60)
     acct = (out or "").strip()
-    data = subprocess.run(_ssh_base(r) + [f"cat {shlex.quote(rdir)}/out.tar.gz"], capture_output=True, timeout=3600)
+    tmp = STATE / f"out-{jid}.tar.gz"
+    with open(tmp, "wb") as fh:                    # streamed to disk: results can be many GB
+        data = subprocess.run(_ssh_base(r) + [f"cat {shlex.quote(rdir)}/out.tar.gz"], stdout=fh,
+                              stderr=subprocess.DEVNULL, timeout=6 * 3600)
     job_rc = None
-    if data.returncode == 0 and data.stdout:
-        tmp = STATE / f"out-{jid}.tar.gz"
-        tmp.write_bytes(data.stdout)
+    kept = False
+    if data.returncode == 0 and tmp.stat().st_size > 0:
         skipped = _extract_results(tmp, src)
         if skipped:
             print(f"[{r['name']}] not copied back ({len(skipped)}): " + "; ".join(skipped[:5]), flush=True)
@@ -710,8 +752,12 @@ def run_job(jid):
         if outs.exists() and os.environ.get("MSQ_OUTPUTS"):
             with open(os.environ["MSQ_OUTPUTS"], "a") as f:
                 f.write(outs.read_text())
-        for f in ("rc", "outputs", "changed", "start"):
+        kept = Path(src, tag + "kept").exists()
+        for f in ("rc", "outputs", "changed", "start", "kept"):
             Path(src, tag + f).unlink(missing_ok=True)
+        if kept:
+            print(f"[{r['name']}] big result files stayed on the server in {r['ssh']}:{rdir} (kept/ or kept.tar); "
+                  f"ms remote clean {r['name']} removes them after 7 days", flush=True)
         print(f"[{r['name']}] results copied back" + (f" (Slurm: {acct})" if acct else ""), flush=True)
     else:
         print(f"[{r['name']}] no results came back (Slurm: {acct or 'unknown'}). Files stay in {r['ssh']}:{rdir}", flush=True)
@@ -720,7 +766,8 @@ def run_job(jid):
     if job_rc is None:
         code = acct.split("|")[-1].split(":")[0] if "|" in acct else ""
         job_rc = int(code) if code.isdigit() and int(code) else 5
-    if job_rc == 0 and os.environ.get("MSQ_REMOTE_KEEP") != "1":
+    tmp.unlink(missing_ok=True)
+    if job_rc == 0 and os.environ.get("MSQ_REMOTE_KEEP") != "1" and not kept:
         if _own_job_dir(r, rdir):                  # never anything but this job's own folder
             ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
     return job_rc

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.20.0 — 2026-11-07
+From a problem report written by an AI session that ran a long study through the queue and Titan:
+- `ms q --help` (and `-h`, `help`) printed the queue instead of the help.
+- `ms q edit ID --after ID[,ID..]|none` changes what a waiting job waits for (no more cancel and re-add). A job
+  cannot wait for itself, for a job that does not exist, or in a circle.
+- `ms q add -- bash -c 'cd DIR && CMD'` (or `cd DIR && CMD`): the job now runs in DIR with CMD; before, the check
+  looked for CMD's script in the folder `ms q add` was typed in and refused, and the job was never sent to a server.
+- Server results: a job that wrote 43 GB on the node brought it all back, and the download was read into memory.
+  Now the download is streamed to a file; `--outputs GLOB` limits what comes back from a server too;
+  `results_exclude` (remotes.conf) names files never brought back; `max_download_gb` (default 20) keeps files over
+  100 MB on the server when a job wrote more than that (the log says where; `ms remote clean` removes them later).
+- AI permission rules: `rm -rf ~*` was refused for every folder written as `~/...` (a project's own temp folder
+  too). Only removing `/` or the whole home folder is refused now (also by the guard, after `~`/`$HOME` are
+  expanded); other `rm` still asks. `cd`, `pwd`, `mkdir -p`, `ms q add/show/log/explain/edit`, `ms flow check/run`, `ms log check/compare/diff`,
+  `ms capacity`, `ms remote list/status` and `ms tools` no longer ask (`ms q cancel/suspend` still ask).
+
 ## 1.19.3 — 2026-11-07
 - `ms remote test / tools / licenses` removed their temporary job folder (state/remote/ms-remote-test-*) never;
   ten were left on the workstation. They are now removed when the test ends, and the daily housekeeping removes

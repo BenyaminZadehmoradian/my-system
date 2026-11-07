@@ -6,7 +6,10 @@ from . import config
 
 BASH_DENY = ["sudo *", "su *", "pkexec *", "apt *", "apt-get *", "dpkg *", "snap *", "flatpak *", "systemctl *",
              "kill *", "pkill *", "killall *", "reboot*", "shutdown*", "poweroff*", "chown *", "chmod -R *",
-             "rm -rf /*", "rm -rf ~*", "find / *", "locate *", "crontab *", "mkfs*"]
+             "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/", "rm -rf ~/*", "rm -rf $HOME", "rm -rf $HOME/",
+             "rm -rf $HOME/*", "find / *", "locate *", "crontab *", "mkfs*"]
+# (was "rm -rf ~*", which also refused removing a folder inside a project written as ~/project/tmp;
+#  rm stays in BASH_ASK, and the guard blocks writes/deletes in protected paths)
 BASH_ASK = ["pip install *", "pip3 install *", "python3 -m pip install *", "npm install *", "npm i *",
             "cargo install *", "git push *", "git reset --hard*", "rm *", "mv *", "docker *", "conda install *"]
 
@@ -36,8 +39,14 @@ def build():
         "permissions": {
             "defaultMode": "default",
             "disableBypassPermissionsMode": "disable",
+            # harmless and wanted commands run without a question (the guard hook still checks every one of them)
             "allow": [f"Read({rule_path(str(config.MS))}/**)", "Bash(git status)", "Bash(git diff *)",
-                      "Bash(git log *)", "Bash(ls *)", "Bash(ms status)", "Bash(ms results * --dry-run)"],
+                      "Bash(git log *)", "Bash(ls *)", "Bash(cd *)", "Bash(pwd)", "Bash(mkdir -p *)",
+                      "Bash(ms status)", "Bash(ms results * --dry-run)", "Bash(ms q)", "Bash(ms q add *)",
+                      "Bash(ms q show *)", "Bash(ms q log *)", "Bash(ms q explain *)", "Bash(ms q edit *)",
+                      "Bash(ms q --help)", "Bash(ms flow check *)", "Bash(ms flow run *)", "Bash(ms flow example)",
+                      "Bash(ms log check *)", "Bash(ms log compare *)", "Bash(ms log diff *)", "Bash(ms capacity*)", "Bash(ms remote list)", "Bash(ms remote status*)",
+                      "Bash(ms tools)", "Bash(ms paused)", "Bash(ms replay *)"],
             "ask": [f"Bash({a})" for a in BASH_ASK],
             "deny": list(dict.fromkeys(deny)),
         },

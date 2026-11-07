@@ -64,6 +64,11 @@ These rules are installed by **my-system** and are read-only. The machine-specif
       this machine (another project, `~/Downloads`, `/mnt/data/...` data, `/opt/...` tools). Such a job is kept here
       automatically (`ms q explain ID` names the path). If a job should run on the server, keep its inputs inside its
       folder or ask the user to add the path to `path_map`; never copy files to the server yourself.
+    - A command that starts with `cd DIR && ...` (also inside `bash -c '...'`) runs in DIR: the queue strips the
+      `cd` and uses DIR as the job folder. Still, prefer `cd DIR` first and then `ms q add` with relative paths.
+    - Results: everything the job writes comes back unless you say otherwise. For jobs that write big temporary
+      files, pass `--outputs GLOB` (only those come back) or delete the temporaries at the end of the job.
+    - To change the order of waiting jobs use `ms q edit ID --after OTHER` (not cancel and re-add).
     - Write new scripts so they work anywhere: relative paths inside the run folder, tools from the allowed Vivado
       path (or `$XILINX_VIVADO` after `settings64.sh`), thread counts from `$MSQ_THREADS`.
     - Programs listed as missing on a server always run here; that is expected.

@@ -1,0 +1,73 @@
+"""1.20: leading cd, ms q edit --after, ms q --help, policy for rm. Run: python3 tests/test_v20.py"""
+import importlib.util
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_features import fake_ms, py  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_leading_cd_and_edit_after():
+    out, notes, tmp = py(r'''
+P = os.path.join(W, "proj"); os.makedirs(P)
+open(os.path.join(P, "run.sh"), "w").write("pwd > where.txt\n")
+c, d = queue.leading_cd(f"bash -c 'cd {P} && bash run.sh > log.txt'", W)
+assert (c, d) == ("bash run.sh > log.txt", P), (c, d)
+assert queue.leading_cd(f"cd {P}/nope && x", W) == (f"cd {P}/nope && x", W)
+assert queue.preflight(c, d) == [], queue.preflight(c, d)
+j = queue.submit(f"cd {P} && bash run.sh", cwd=W, name="cdjob", **small)
+jj = queue.load(j["id"])
+assert jj["cwd"] == P and jj["cmd"] == "bash run.sh" and jj["cmd_typed"].startswith("cd "), jj
+assert until(lambda: st(j["id"]) == "done", 30)
+assert open(os.path.join(P, "where.txt")).read().strip() == P
+h = queue.submit("true", cwd=W, name="h", state="held", **small)
+k = queue.submit("true", cwd=W, name="k", state="held", **small)
+ok, msg = queue.edit(k["id"], depends=[h["id"]])
+assert ok and queue.load(k["id"])["depends"] == [h["id"]], msg
+ok, msg = queue.edit(h["id"], depends=[k["id"]])
+assert not ok and "waits for" in msg, msg
+ok, msg = queue.edit(k["id"], depends=[999])
+assert not ok and "no such job" in msg
+print("V20-OK")
+''')
+    assert "V20-OK" in out, out
+
+
+def test_q_help_and_policy():
+    tmp, ms = fake_ms()
+    env = dict(os.environ, MY_SYSTEM=str(ms), HOME=str(tmp))
+    r = subprocess.run([sys.executable, str(ms / "bin/ms"), "q", "--help"], env=env, capture_output=True, text=True)
+    assert "ms q add" in r.stdout and "scheduler:" not in r.stdout, r.stdout[:300]
+    src = ROOT / ("src/ai" if (ROOT / "src").is_dir() else "ai") / "claude/hooks/guard.py"
+    spec = importlib.util.spec_from_file_location("g", src)
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    for c in ("rm -rf ~", "rm -rf ~/", "rm -rf ~/*", "rm -rf $HOME", "cd x && rm -rf /"):
+        assert g.check_bash(c, []), c
+    for c in ("rm -rf ~/hls_dse_runs/tmp_build", "rm -rf ./work", "rm -f ~/proj/a.txt", "rm -rf *", "rm -rf build/*"):
+        assert not g.check_bash(c, []), c
+    code = r"""
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["MY_SYSTEM"], "lib"))
+from mysys import policy
+p = policy.build()["permissions"]
+assert "Bash(rm -rf ~*)" not in p["deny"] and "Bash(rm -rf ~/*)" in p["deny"]
+assert "Bash(ms q add *)" in p["allow"] and not any("cancel" in x for x in p["allow"]) and "Bash(cd *)" in p["allow"]
+print("ok")
+"""
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert "ok" in r.stdout, r.stdout + r.stderr
+
+
+if __name__ == "__main__":
+    t0 = time.time()
+    for k, fn in list(globals().items()):
+        if k.startswith("test_"):
+            fn()
+            print("ok", k)
+    print(f"all passed in {time.time() - t0:.1f}s")

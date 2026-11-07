@@ -173,6 +173,30 @@ def referenced_files(cmd):
     return [f for f in dict.fromkeys(out) if not any(c in f for c in "$`*?{}")]
 
 
+CD_RX = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*&&\s*(.+)$", re.S)
+
+
+def leading_cd(cmd, cwd):
+    """'cd /abs/dir && rest' (also inside bash -c '...') -> ('rest', '/abs/dir'): the job then runs in that folder,
+    so its files, the checks before queueing and a server run all use the right folder. Otherwise unchanged."""
+    c = (cmd or "").strip()
+    try:
+        w = shlex.split(c)
+    except ValueError:
+        w = []
+    if len(w) == 3 and w[0] in ("bash", "sh") and w[1] == "-c":   # bash -c 'cd X && ...'
+        c = w[2].strip()
+    m = CD_RX.match(c)
+    if not m:
+        return cmd, cwd
+    d = m.group(1).strip("'\"")
+    d = os.path.expanduser(d)
+    d = d if os.path.isabs(d) else os.path.join(cwd, d)
+    if not os.path.isdir(d) or "$" in d or "`" in d:
+        return cmd, cwd
+    return m.group(2).strip(), os.path.normpath(d)
+
+
 def preflight(cmd, cwd):
     """Problems that would make the job fail or leave its files in the wrong place, before it is queued."""
     probs = []
@@ -285,6 +309,10 @@ def resolve_timeout(val, prof):
 def submit(cmd, cwd=None, name=None, **opt):
     """Add a job; returns it. `cmd` is a shell command line."""
     cwd = os.path.abspath(os.path.expanduser(cwd or os.getcwd()))
+    c2, d2 = leading_cd(cmd, cwd)
+    if (c2, d2) != (cmd, cwd):                         # cd X && ...: the job's folder is X
+        opt.setdefault("cmd_typed", cmd)
+        cmd, cwd = c2, d2
     tool = opt.pop("tool", None) or guess_tool(cmd)
     if opt.pop("auto_setup", True):                  # AMD_SETUP: Vivado/Vitis jobs need no "source settings64.sh &&"
         full = amd_setup(cmd, cwd)
@@ -852,7 +880,8 @@ def explain(jid):
 
 def edit(jid, **kw):
     """Change a job that has not started yet (pueue edit). Returns (ok, message)."""
-    allowed = {"cmd", "name", "mem_gb", "cores", "priority", "timeout_s", "cwd", "env", "group", "labels", "retries", "nice"}
+    allowed = {"cmd", "name", "mem_gb", "cores", "priority", "timeout_s", "cwd", "env", "group", "labels", "retries", "nice",
+               "depends"}
     bad = set(kw) - allowed
     if bad:
         return False, "cannot change: " + ", ".join(sorted(bad))
@@ -871,6 +900,21 @@ def edit(jid, **kw):
                 kw[k] = float(kw[k])
         if "priority" in kw:
             kw["priority"] = int(kw["priority"])
+        if "depends" in kw:                            # --after: new dependencies (checked: they exist, no cycle)
+            deps = [int(x) for x in kw["depends"]]
+            for d in deps:
+                if d == jid or not load(d):
+                    return False, f"cannot wait for job {d}: " + ("itself" if d == jid else "no such job")
+                seen, todo = set(), [d]
+                while todo:
+                    x = todo.pop()
+                    if x == jid:
+                        return False, f"cannot wait for job {d}: it (indirectly) waits for {jid}"
+                    if x in seen:
+                        continue
+                    seen.add(x)
+                    todo += [int(y) for y in (load(x) or {}).get("depends") or []]
+            kw["depends"] = deps
         j.update(kw)
         j["edited"] = time.time()
         save(j)

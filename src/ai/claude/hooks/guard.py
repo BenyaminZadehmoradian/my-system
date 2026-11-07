@@ -62,6 +62,10 @@ def protected():
     return sorted({os.path.realpath(os.path.expanduser(p)).rstrip("/") for p in out if p}, key=len, reverse=True)
 
 
+# rm of / or the whole home folder (the command is checked after ~ and $HOME are expanded)
+RM_ROOT = re.compile(r"(^|[;&|(\s])rm\s+(-\S+\s+)*['\"]?(" + re.escape(HOME.rstrip("/")) + r"/?|/)\*?['\"]?(\s|$|;|&|\))")
+
+
 def expand(cmd):
     cmd = cmd.replace("${HOME}", HOME).replace("$HOME", HOME)
     return re.sub(r"(^|[\s=:'\"(])~(?=/|\s|$)", lambda m: m.group(1) + HOME, cmd)
@@ -347,6 +351,8 @@ def check_bash(cmd, prot):
     for rx, why in HARD:
         if rx.search(c):
             return why
+    if RM_ROOT.search(c):
+        return "removing the whole home folder or / is not allowed"
     why = check_user_only(c) or check_remote(c) or check_heavy(c)
     if why:
         return why
