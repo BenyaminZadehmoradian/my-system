@@ -1701,8 +1701,16 @@ def clear(older_than_days=0):
 def efficiency(j):
     """seff-like numbers: memory used vs reserved, CPU used vs reserved."""
     req_m = float(j.get("mem_gb") or 0)
-    peak = (j.get("peak_rss") or 0) / GiB
     secs = runtime(j)
+    if j.get("remote_job"):              # ran on a server: what this machine saw is only the ssh link
+        peak = j.get("remote_peak_gb") or 0
+        cu = j.get("remote_cores_used")
+        req_c = float(j.get("remote_cores") or j.get("cores") or 0)
+        return {"mem_req_gb": req_m, "mem_peak_gb": round(peak, 2),
+                "mem_eff": round(peak / req_m * 100) if peak and req_m else None, "cores_req": req_c,
+                "cores_used": round(cu, 2) if cu else None, "cpu_eff": round(cu / req_c * 100) if cu and req_c else None,
+                "seconds": round(j.get("remote_elapsed_s") or secs), "remote": True}
+    peak = (j.get("peak_rss") or 0) / GiB
     cu = j.get("cores_used")
     if cu is None and j.get("cpu_s") and secs:
         cu = j["cpu_s"] / secs

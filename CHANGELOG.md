@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.20.2 — 2026-11-07
+- `ms q show` / `ms q report` / the GUI showed, for a server job, the memory and CPU of the ssh link on this
+  machine (e.g. "peak 0.29 GB (0%)", "used 0.04") as if it were the job's. For server jobs they now show what
+  Slurm measured there, or "measured there when the job ends" while it runs. Server jobs that ended before
+  1.20.1 are measured the first time `ms q show ID` is run for them.
+
 ## 1.20.1 — 2026-11-07
 - Server jobs now record what they really used there (Slurm accounting): average cores used of the cores
   reserved, peak RAM and run time, shown at the end of the job log (`[titan] used 3.6 of 4 cores on average,

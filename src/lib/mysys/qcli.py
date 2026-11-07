@@ -343,15 +343,26 @@ def q_cmd(a):
             if not j:
                 print(f"no job {jid}")
                 continue
+            if j.get("remote_job") and j.get("remote_cores_used") is None and j["state"] in queue.TERMINAL:
+                try:
+                    from mysys import remote
+                    remote.measure(j)                  # older server jobs: ask Slurm what they used
+                except Exception:
+                    pass
             e = queue.efficiency(j)
             for k in ("id", "name", "state", "reason", "cmd_typed", "cmd", "cwd", "tool", "priority", "attempt", "retries", "depends",
                       "timeout_s", "resources", "run_id", "outputs", "last_line", "start_note", "group", "labels"):
                 if j.get(k) not in (None, "", [], {}):
                     print(f"{k:>10}: {j.get(k)}")
             print(f"{'times':>10}: created {_fmt_t(j['created'])} · started {_fmt_t(j.get('started'))} · ended {_fmt_t(j.get('ended'))}")
-            print(f"{'memory':>10}: reserved {e['mem_req_gb']} GB · peak {e['mem_peak_gb']} GB" + (f" ({e['mem_eff']}%)" if e['mem_eff'] is not None else ""))
-            print(f"{'cpu':>10}: reserved {e['cores_req']} · used {e['cores_used']}" + (f" ({e['cpu_eff']}%)" if e['cpu_eff'] is not None else ""))
-            if j.get("io_read") is not None:
+            where = f" on {j.get('remote')} ({j.get('remote_node') or 'node'})" if e.get("remote") else ""
+            if e.get("remote") and e["cores_used"] is None:
+                print(f"{'memory':>10}: reserved {e['mem_req_gb']} GB{where} · use measured there when the job ends")
+                print(f"{'cpu':>10}: reserved {e['cores_req']}{where} · use measured there when the job ends")
+            else:
+                print(f"{'memory':>10}: reserved {e['mem_req_gb']} GB{where} · peak {e['mem_peak_gb']} GB" + (f" ({e['mem_eff']}%)" if e['mem_eff'] is not None else ""))
+                print(f"{'cpu':>10}: reserved {e['cores_req']}{where} · used {e['cores_used']}" + (f" ({e['cpu_eff']}%)" if e['cpu_eff'] is not None else ""))
+            if j.get("io_read") is not None and not e.get("remote"):
                 print(f"{'disk I/O':>10}: read {j['io_read'] / 2**30:.2f} GB · written {j['io_write'] / 2**30:.2f} GB")
             if j.get("issues"):
                 print(f"{'issues':>10}: {j['issues']}")

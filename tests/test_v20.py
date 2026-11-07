@@ -73,6 +73,13 @@ def test_slurm_usage():
     assert acct == "COMPLETED|0:0" and u == {"remote_cores": 4, "remote_elapsed_s": 7200, "remote_cores_used": 2.5,
                                               "remote_peak_gb": 9.5}, u
     assert R.slurm_usage("FAILED|1:0") == ("FAILED|1:0", {})
+    from mysys import queue as Q
+    j = {"mem_gb": 64, "cores": 16, "remote_job": 1, "peak_rss": 3e8, "cpu_s": 100, "started": 1, "ended": 3601}
+    e = Q.efficiency(j)
+    assert e["remote"] and e["cores_used"] is None and e["mem_peak_gb"] == 0, e
+    j.update(remote_cores=16, remote_cores_used=12.0, remote_peak_gb=40.0, remote_elapsed_s=3600)
+    e = Q.efficiency(j)
+    assert (e["cpu_eff"], e["mem_eff"], e["seconds"]) == (75, 62, 3600), e
     assert R._cpu_seconds("1-00:00:01") == 86401 and abs(R._cpu_seconds("02:03.5") - 123.5) < 1e-9
 
 

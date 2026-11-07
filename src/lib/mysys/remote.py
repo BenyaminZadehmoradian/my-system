@@ -1180,6 +1180,26 @@ def slurm_usage(out):
     return acct, use
 
 
+def measure(j):
+    """Ask Slurm afterwards what a finished server job used (jobs that ended before 1.20.1, or when the link was
+    down at the end). Saves remote_cores_used / remote_peak_gb in the job. Returns True when it found numbers."""
+    from . import queue
+    if not j.get("remote_job") or j.get("remote_cores_used") is not None or j.get("state") not in queue.TERMINAL:
+        return False
+    try:
+        r = get(j.get("remote") or "")
+        rc, out, _ = ssh(r, f"sacct -n -P -j {int(j['remote_job'])} -o State,ExitCode,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS"
+                            " 2>/dev/null", 30)
+    except Exception:
+        return False
+    acct, use = slurm_usage(out)
+    if not use:
+        return False
+    queue.update(j["id"], remote_state=acct.split("|")[0] or None, **use)
+    j.update(use)
+    return True
+
+
 def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):
     """Run `probe` on a node of `r` through the normal remote path (upload, setup, links, path_map, results back).
     Returns (rc, log text, names of the files that came back). The temporary job folder is removed."""
