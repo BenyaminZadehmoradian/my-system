@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.19.3 — 2026-11-07
+- `ms remote test / tools / licenses` removed their temporary job folder (state/remote/ms-remote-test-*) never;
+  ten were left on the workstation. They are now removed when the test ends, and the daily housekeeping removes
+  any older than a day.
+
 ## 1.19.2 — 2026-11-05
 - The GUI test failed on GitHub's runners: PyQt6 installed with `pip --user` was not found once the test changed
   HOME for the app it starts. Its folder is now passed on (PYTHONPATH). Only the test changed.

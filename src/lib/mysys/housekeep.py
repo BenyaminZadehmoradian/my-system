@@ -71,6 +71,15 @@ def run(verbose=False):
             done.append(f"{n} file(s) of cleared jobs removed")
     except (OSError, ImportError):
         pass
+    try:                                           # temporary folders of server tests left by older versions
+        from . import remote
+        import shutil
+        for d in remote.STATE.glob("ms-remote-test-*"):
+            if d.is_dir() and time.time() - d.stat().st_mtime > 86400:
+                shutil.rmtree(d, ignore_errors=True)
+                done.append(f"removed {d.name}")
+    except (OSError, ImportError):
+        pass
     from . import history
     history.housekeeping()
     if verbose:

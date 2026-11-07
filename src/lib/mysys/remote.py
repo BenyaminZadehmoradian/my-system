@@ -1087,7 +1087,7 @@ def check(name, test_job=False, out=print):
 
 def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):
     """Run `probe` on a node of `r` through the normal remote path (upload, setup, links, path_map, results back).
-    Returns (rc, log text, folder)."""
+    Returns (rc, log text, names of the files that came back). The temporary job folder is removed."""
     from . import queue
     import tempfile
     d = Path(tempfile.mkdtemp(prefix="ms-remote-test-", dir=str(STATE) if STATE.exists() else None))
@@ -1105,7 +1105,10 @@ def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):
         log = Path(d, f"msq-{j['id']}.log").read_text(errors="replace")
     except OSError:
         log = ""
-    return rc, log, d
+    files = {p.name for p in d.iterdir()} if d.exists() else set()
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)            # temporary: nothing of it is needed afterwards
+    return rc, log, files
 
 
 def _test_job(r, out):
@@ -1119,7 +1122,7 @@ def _test_job(r, out):
     for l in facts:
         out("       " + l)
     (STATE / f"{r['name']}-probe.txt").write_text("\n".join(facts) + "\n")
-    return rc == 0 and Path(d, "probe.txt").exists()
+    return rc == 0 and "probe.txt" in d
 
 
 # ---------------------------------------------------------------- AMD tools on the nodes
