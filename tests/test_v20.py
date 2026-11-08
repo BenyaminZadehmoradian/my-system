@@ -83,6 +83,18 @@ def test_slurm_usage():
     assert R._cpu_seconds("1-00:00:01") == 86401 and abs(R._cpu_seconds("02:03.5") - 123.5) < 1e-9
 
 
+def test_max_cores():
+    sys.path.insert(0, str(ROOT / "src/lib"))
+    from mysys import remote as R
+    r = {"max_jobs": "12", "max_cores": "8"}
+    run = [{"remote": "titan", "state": "running", "cores": 1}] * 6
+    assert R.full("titan", r, {"cores": 1}, run) is None, "7 one-core jobs fit in 8 cores"
+    assert "max_cores" in R.full("titan", r, {"cores": 4}, run), "6 + 4 > 8"
+    assert R.full("titan", r, {"cores": 16}, []) is None, "one job bigger than the cap may start alone"
+    assert "max_jobs" in R.full("titan", {"max_jobs": "6", "max_cores": ""}, {"cores": 1}, run)
+    assert R.full("titan", {"max_jobs": "12", "max_cores": ""}, {"cores": 64}, run) is None, "empty = no core cap"
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

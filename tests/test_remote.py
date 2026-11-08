@@ -156,7 +156,7 @@ d = queue.submit("sleep 60", cwd=os.path.join(W, "q"), name="long2", mem_gb=1, c
 e = queue.submit("true", cwd=os.path.join(W, "q"), name="third", mem_gb=1, cores=1, remote="titan")
 assert until(lambda: st(d["id"]) == "running", 30)
 S.tick()
-assert st(e["id"]) == "queued" and "2 job(s) already on titan" in queue.load(e["id"])["reason"]
+assert st(e["id"]) == "queued" and "already runs 2 of your jobs" in queue.load(e["id"])["reason"]
 queue.cancel(c["id"]); queue.cancel(d["id"]); queue.cancel(e["id"])
 assert until(lambda: st(c["id"]) in queue.TERMINAL and not queue._alive(queue.load(c["id"]).get("pid")), 40)
 sid = queue.load(c["id"])["remote_job"]

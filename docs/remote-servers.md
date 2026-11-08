@@ -157,6 +157,19 @@ missing_tools = vitis_hls vivado_hls xsc
 - Remove `vivado vitis vitis_hls ...` from `missing_tools` only after `ms remote tools titan` says they work on a
   node (it prints the new `missing_tools` line).
 
+### How many jobs there at once (max_jobs, max_cores)
+
+`max_jobs` counts jobs; `max_cores` (empty = no limit) caps the cores your running jobs there reserve together.
+Measured on Titan (8 Nov 2026, `ms q show`): a script that runs one Vivado/HLS design after another uses under
+one core (0.6–1.1) and 4–13 GB, while `JOBS=8` inside one job used 3–4.6 cores. With only `max_jobs = 12`,
+twelve one-core jobs used ~12 of 1152 cores. Better:
+```
+max_jobs = 48
+max_cores = 48
+```
+and submit sequential scripts with `--cores 1 --mem 18`: 48 of them can run, or 12 jobs of `--cores 4` — your
+share of the shared server stays 48 cores either way. `ms q show ID` shows what a finished job really used there.
+
 ### When the tools do not work there
 
 First run `bash tests/live/titan_diagnose.sh titan` (works without my-system 1.18; really synthesizes with Vivado and

@@ -134,7 +134,10 @@ def remote_lines():
         tools = r["tools"].strip() or "(only jobs added with --on auto)"
         out += [f"- **{n}** ({r['type']}, via my-system only): {mode_txt.get(r['offload'], r['offload'])}. "
                 f"Jobs allowed automatically: {'all' if tools == '*' else tools}. "
-                f"At most {r['max_jobs']} of your jobs there at once{node}.",
+                f"At most {r['max_jobs']} of your jobs there at once"
+                + (f", together reserving at most {r['max_cores']} cores (so ask only for the cores a job really "
+                   f"uses: `--cores 1` for a script that runs one tool run after another)" if str(r.get('max_cores') or '').strip() else "")
+                + f"{node}.",
                 f"  - Not available there (jobs using these always run on this machine): "
                 f"{r['missing_tools'] or '(none listed)'}",
                 f"  - Only the job's own folder is copied there and back (max {r['max_upload_gb']} GB, else `--inputs`). "

@@ -1308,8 +1308,9 @@ class Scheduler:
                     if j.get("reason") != f"waiting: {why}":
                         update(j["id"], reason=f"waiting: {why}")
                     continue
-                if RM.running_here(j["remote"], all_jobs()) >= int(rmt["max_jobs"]):
-                    msg = f"waiting: {rmt['max_jobs']} job(s) already on {j['remote']}"
+                fw = RM.full(j["remote"], rmt, j, all_jobs())
+                if fw:
+                    msg = f"waiting: {fw}"
                     if j.get("reason") != msg:
                         update(j["id"], reason=msg)
                     continue

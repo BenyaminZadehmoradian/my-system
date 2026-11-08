@@ -15,6 +15,8 @@ config/remotes.conf (INI, one section per server):
   docker_args = -v /mnt/perflab:/mnt/perflab:ro
   default_time = 24:00:00
   max_jobs = 8                 # at most this many of your jobs there at once
+  max_cores =                  # at most this many reserved cores (--cores) of your jobs there at once; empty = no
+                               # limit. With it, many small jobs (1 core) can run where few big ones would
   max_upload_gb = 2            # bigger job folders must declare their inputs (--inputs)
   exclude = .git .Xil *.jou *.backup.log .msq_shadow
   offload = never              # never | busy | always | prefer: automatic use for allowed jobs
@@ -68,7 +70,7 @@ from . import config
 CONF = "remotes.conf"
 STATE = config.STATE / "remote"
 DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": "", "qos": "", "workdir": "jobs/msq/{account}",
-            "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_upload_gb": "2",
+            "container": "", "docker_args": "", "default_time": "24:00:00", "max_jobs": "8", "max_cores": "", "max_upload_gb": "2",
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
             "missing_tools": "", "links": "", "setup": "", "path_map": "", "map_job_dir": "yes",
             "max_download_gb": "20", "results_exclude": "",
@@ -139,6 +141,7 @@ TEMPLATE = """# Remote servers for the my-system queue (ms remote help). Edit: m
 #docker_args = -v /mnt/perflab:/mnt/perflab:ro
 #default_time = 24:00:00
 #max_jobs = 8
+#max_cores = 48              # cap on the reserved cores of your jobs there (with it, max_jobs can be higher)
 #max_upload_gb = 2
 #exclude = .git .Xil *.jou *.backup.log
 #offload = never             # never | busy | always | prefer (prefer = server first, this machine as fallback)
@@ -819,6 +822,31 @@ def running_here(name, jobs):
     return sum(1 for x in jobs if x.get("remote") == name and x["state"] in ("running", "suspended"))
 
 
+def cores_there(name, jobs):
+    """Cores reserved (--cores) by your jobs running on server `name`."""
+    return sum(float(x.get("cores") or 1) for x in jobs
+               if x.get("remote") == name and x["state"] in ("running", "suspended"))
+
+
+def full(name, r, j, jobs):
+    """Why server `name` takes no more of your jobs right now (max_jobs, max_cores), or None.
+    A job bigger than max_cores on its own may still start when none of yours runs there."""
+    n = running_here(name, jobs)
+    if n >= int(r["max_jobs"]):
+        return f"{name} already runs {r['max_jobs']} of your jobs (max_jobs)"
+    cap = str(r.get("max_cores") or "").strip()
+    if cap:
+        try:
+            cap_f = float(cap)
+        except ValueError:
+            return None
+        used = cores_there(name, jobs)
+        need = float(j.get("cores") or 1)
+        if n and used + need > cap_f:
+            return f"{name}: your jobs there reserve {used:g} cores, +{need:g} would pass max_cores = {cap}"
+    return None
+
+
 def _uses(j, progs):
     """True when the job's tool or any word of its command is one of `progs` (by program name)."""
     import re as _re
@@ -1007,7 +1035,7 @@ def speed(j, name, jobs):
 
 def prefer_target(j, jobs):
     """(name, note) of a server with offload = prefer that should run this job before this machine is tried,
-    or (None, why-not). The server is skipped when it is full, unreachable, at max_jobs, or measurably slower."""
+    or (None, why-not). The server is skipped when it is full, unreachable, at max_jobs/max_cores, or measurably slower."""
     why = None
     for name, r in remotes().items():
         if r["offload"] != "prefer":
@@ -1016,8 +1044,9 @@ def prefer_target(j, jobs):
         if wn:
             why = f"{name}: {wn}"
             continue
-        if running_here(name, jobs) >= int(r["max_jobs"]):
-            why = f"{name} already runs {r['max_jobs']} of your jobs"
+        fw = full(name, r, j, jobs)
+        if fw:
+            why = fw
             continue
         st = status(r)
         if not st.get("ok"):
@@ -1051,7 +1080,7 @@ def offload_target(j, jobs, waited_s, local_cap):
             float(j.get("cores") or 1) > local_cap.get("threads", 1)
         if mode == "busy" and not too_big and waited_s < float(r["offload_after_min"]) * 60:
             continue
-        if running_here(name, jobs) >= int(r["max_jobs"]):
+        if full(name, r, j, jobs):
             continue
         st = status(r)
         if st.get("ok") and st.get("idle_cpus", 0) >= max(1, int(round(float(j.get("cores") or 1)))):
@@ -1562,7 +1591,7 @@ HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this
 
 On a shared server my-system only touches: its own folder (workdir, e.g. ~/jobs/msq/benyamin) on the head node,
 its own temporary folder on the node while a job runs, and its own Slurm jobs (scancel --account=you JOBID).
-It never deletes outside these, never builds or removes docker images, and sends at most max_jobs jobs.
+It never deletes outside these, never builds or removes docker images, and sends at most max_jobs jobs (max_cores: reserved cores).
   ms q add --on NAME -- CMD   run this job there
   ms q add --on auto -- CMD   run here, or there when this machine is busy (offload = busy in remotes.conf)
   offload = prefer            every allowed job tries the server first; this machine when the server is full,

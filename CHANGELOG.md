@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.21.0 — 2026-11-08
+- `max_cores` (remotes.conf, per server; empty = no limit): at most this many cores reserved (`--cores`) by your
+  jobs running there together, beside `max_jobs`. On Titan, scripts that run one design after another used under
+  one core each, so `max_jobs = 12` left the server almost unused; with `max_jobs = 48` and `max_cores = 48`, 48
+  one-core jobs or 12 four-core jobs can run, and your share of the shared server stays 48 cores. A job bigger
+  than max_cores on its own still starts when none of yours runs there. `ms q explain` / the job's reason say which
+  limit holds a job back.
+- The AI rules say to reserve what a job really uses (`ms q show` of a finished server job shows it).
+
 ## 1.20.2 — 2026-11-07
 - `ms q show` / `ms q report` / the GUI showed, for a server job, the memory and CPU of the ssh link on this
   machine (e.g. "peak 0.29 GB (0%)", "used 0.04") as if it were the job's. For server jobs they now show what
