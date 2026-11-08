@@ -182,6 +182,33 @@ print("ok")
     assert "ok" in out
 
 
+def test_server_jobs_do_not_use_local_slots():
+    """Seen 8 Nov 2026: 17 jobs ran on Titan, 46 waited 'max_cores' although 30 cores were free there: every server
+    job also took one of this machine's job slots (16 = its threads) and its RAM reservation, so nothing more
+    started. Server jobs are limited only by max_jobs / max_cores; local jobs still get their slots and RAM."""
+    out, notes, tmp, ms, env = run(r'''
+from mysys import config
+config.num = (lambda f: (lambda k: 2 if k == "QUEUE_MAX_JOBS" else f(k)))(config.num)
+rc = os.path.join(os.environ["MY_SYSTEM"], "config", "remotes.conf")
+txt = open(rc).read().replace("max_jobs = 2", "max_jobs = 4\nmax_cores = 8")
+open(rc, "w").write(txt)
+os.makedirs(os.path.join(W, "q"), exist_ok=True)
+ids = []
+for i in range(4):                     # one by one: each must start while the others already run
+    ids.append(queue.submit("sleep 20", cwd=os.path.join(W, "q"), name=f"r{i}", mem_gb=30, cores=1, remote="titan")["id"])
+    assert until(lambda: st(ids[-1]) == "running", 20), queue.load(ids[-1])["reason"]
+assert until(lambda: sum(st(i) == "running" for i in ids) == 4, 40), [queue.load(i)["reason"] for i in ids]
+cap = S.capacity(queue.all_jobs())
+assert cap["free_mem"] > 40 * G, "server jobs' 30 GB each are not reserved here"
+loc = queue.submit("sleep 1", cwd=os.path.join(W, "q"), name="local", mem_gb=1, cores=1, remote="here")
+assert until(lambda: st(loc["id"]) in ("running", "done"), 20), queue.load(loc["id"])["reason"]
+for i in ids:
+    queue.cancel(i)
+print("SLOTS-OK")
+''')
+    assert "SLOTS-OK" in out
+
+
 def test_auto_offload_when_busy():
     out, notes, *_ = run(r'''
 probes.meminfo = lambda: {"MemTotal": 16 * G, "MemAvailable": 3 * G, "SwapTotal": 0, "SwapFree": 0}

@@ -857,8 +857,10 @@ def explain(jid):
     out.append((not pb, "system pressure", pb or f"memory stalls {cap['psi_mem_full']:.0f}%, I/O stalls {cap['psi_io_some']:.0f}%"))
     out.append((not resources.swapping(), "swapping", "swapping heavily" if resources.swapping() else "no"))
     out.append((not cap["no_new"], "reserved time window", "a reservation blocks new jobs" if cap["no_new"] else "none active"))
-    running = len([x for x in jobs if x["state"] == "running"])
-    out.append((running < cap["max_slots"], "job slots", f"{running} of {int(cap['max_slots'])} used"))
+    running = len([x for x in jobs if x["state"] == "running" and not x.get("remote")])
+    out.append((running < cap["max_slots"] or bool(j.get("remote")), "job slots",
+                f"{running} of {int(cap['max_slots'])} used on this machine"
+                + (" (server jobs do not need one)" if j.get("remote") else "")))
     need_t = min(max(1.0, float(j["cores"])), cap["threads"] * 0.75)
     need_m = float(j["mem_gb"]) * GiB
     out.append((cap["free_threads"] >= need_t, "CPU", f"needs {need_t:.1f} threads, {max(0, cap['free_threads']):.1f} free"
@@ -979,7 +981,7 @@ class Scheduler:
         recent_cores = 0.0
         settle = float(config.num("QUEUE_MEM_SETTLE_MIN") or 20) * 60
         for j in jobs:
-            if j["state"] == "running":
+            if j["state"] == "running" and not j.get("remote"):   # a server job uses the server's CPU/RAM
                 rss = j.get("rss") or 0
                 want = float(j["mem_gb"]) * GiB
                 # after the job has settled, expect it to grow only a little above its peak so far (Slurm --mem-update)
@@ -1243,7 +1245,8 @@ class Scheduler:
         ready = [j for j in jobs if j["state"] == "queued" and (j.get("not_before") or 0) <= now
                  and (j.get("begin") or 0) <= now and self.deps_ready(j, byid)]
         ready.sort(key=lambda j: (-int(j.get("order") or 0), -int(j.get("priority") or 0), j["id"]))
-        slots = cap["max_slots"] - len([j for j in running if j["state"] == "running"])
+        # local job slots: jobs running on a server do not take one (max_jobs / max_cores limit those)
+        slots = cap["max_slots"] - len([j for j in running if j["state"] == "running" and not j.get("remote")])
         free_t, free_m = cap["free_threads"], cap["free_mem"]
         res_def = resources.load()
         next_res = resources.minutes_to_next_reservation(now)
@@ -1265,9 +1268,10 @@ class Scheduler:
         protect = None                    # (job, need_t, need_m): room kept free for a job that waited too long
         starve = float(config.num("QUEUE_STARVE_MIN") or 0) * 60
         short = float(config.num("QUEUE_BACKFILL_MIN") or 0) * 60
+        prefer_on = bool(rms) and not pause.paused("remote") and any(r["offload"] == "prefer" for r in rms.values())
         for j in ready:
-            if slots <= 0:
-                break
+            if slots <= 0 and not j.get("remote") and not prefer_on:
+                continue                   # no local slot; a server job (or one that may go to one) can still start
             g = j.get("group")
             if g and g in glim and gcount.get(g, 0) >= glim[g]:
                 msg = f"waiting: group {g} already runs {glim[g]} job(s)"
@@ -1291,6 +1295,8 @@ class Scheduler:
                     j = load(j["id"])
                 elif note and j.get("prefer_note") != f"not sent: {note}":
                     update(j["id"], prefer_note=f"not sent: {note}")
+            if slots <= 0 and not j.get("remote"):
+                continue
             if j.get("remote") and pause.paused("remote"):
                 msg = "waiting: sending jobs to servers is paused (ms resume remote)"
                 if j.get("reason") != msg:

@@ -73,7 +73,7 @@ def in_use(jobs):
     """{resource: units held by running/suspended queue jobs} (licenses stay held while suspended)."""
     use = {}
     for j in jobs:
-        if j["state"] in ("running", "suspended"):
+        if j["state"] in ("running", "suspended") and not j.get("remote"):   # server jobs use the server's
             for k, v in (j.get("resources") or {}).items():
                 use[k] = use.get(k, 0) + int(v)
             if j.get("tool"):

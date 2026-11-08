@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.21.1 — 2026-11-08
+- **Server jobs took this machine's job slots and RAM.** Every job running on a server counted as a local job:
+  it used one of this machine's job slots (QUEUE_MAX_JOBS, default = its threads, 16) and its `--mem` was held as
+  RAM here. With 17 jobs on Titan nothing more started — neither on Titan (46 jobs waited with an old
+  "max_cores" message although 41 of 48 cores were reserved) nor here (17 × 18–36 GB "in use"). Server jobs are now
+  limited only by `max_jobs` / `max_cores`; local slots, local RAM, local tool caps and license seats count only
+  jobs running on this machine. `ms q explain` says so for a server job.
+
 ## 1.21.0 — 2026-11-08
 - `max_cores` (remotes.conf, per server; empty = no limit): at most this many cores reserved (`--cores`) by your
   jobs running there together, beside `max_jobs`. On Titan, scripts that run one design after another used under

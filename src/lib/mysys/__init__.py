@@ -1,2 +1,2 @@
 """my-system: a self-hosted health, run-tracking, backup and AI-guard toolkit for Linux workstations."""
-__version__ = "1.21.0"
+__version__ = "1.21.1"
