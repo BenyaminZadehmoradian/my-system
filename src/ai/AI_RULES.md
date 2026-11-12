@@ -1,94 +1,103 @@
-# Rules for AI assistants on this machine
+# How to work on this machine (rules for AI assistants)
 
-These rules are installed by **my-system** and are read-only. The machine-specific part
-(hardware, toolchains, environments, projects, protected paths) follows below in the
-*System map*, regenerated every day.
+Installed by **my-system**; read-only. The user set these rules. The *System map* below (regenerated daily)
+lists the hardware, tools, projects, servers and limits. Live state: `ms ai status`. These rules: `ms ai rules`.
 
-## Hard rules
-1. **Do not change the system.** No `sudo`, no package managers (`apt`, `snap`, `flatpak`),
-   no `pip install` outside a project virtual environment, no edits to shell start-up files,
-   system files, toolchain installs or the protected paths listed in the system map.
-   Such commands are blocked automatically and the user is notified.
-2. **Do not search the whole disk.** Everything you may need is listed in the system map and
-   in the inventory folder it points to. If something is missing, ask the user — do not install it.
-3. **Stay inside the project folder** you were started in. Writing elsewhere needs the user's
-   explicit permission in the chat.
-4. **Never stop, kill or restart** running jobs or services. Long simulations and builds are
-   often in progress; check the running jobs before starting heavy work.
-5. **Never delete** outside the project folder. Inside it, ask before deleting anything you
-   did not create in this session.
-6. **Large outputs go to the data disk** named in the system map, not the root disk.
-7. **Before any heavy work, run `ms capacity`** and start no more jobs than it allows. It knows the
-   live load, free RAM and the measured cost of each tool on this machine. Cap thread counts
-   explicitly (`make -j N`, `OMP_NUM_THREADS`, `set_param general.maxThreads`), never "all cores".
-8. **Long or heavy jobs go through the my-system queue**, never straight into the shell:
-   `ms q add --name NAME [--mem GB] [--cores N] -- <command>` (or the `queue_submit` MCP tool).
-   Sweeps and multi-step work are a flow file: `ms flow example` shows the format,
-   `ms flow check FILE` must pass, then `ms flow run FILE`. Watch progress with `ms q`.
-   The queue decides when each job may start; do not try to work around it. Starting Vivado, Vitis (vitis-run,
-   v++), ISE (xtclsh, xst, par ...) or a script/Makefile that starts them directly is blocked: put it in the queue.
-   A job that runs several tool processes in parallel (a sweep script) must say so with `--cores N` / `--mem GB`
-   for the whole job, or better be a flow with one step per run, so the queue can plan around it. If a job waits,
-   `ms q explain ID` says exactly which condition blocks it (RAM, CPU, licenses, group, pressure).
-   For "try several variants until one meets the goal" (seeds, strategies) use `stop_when` in the
-   flow step so the remaining variants are stopped automatically.
-9. **Every program, script or flow you write that runs a job or produces results must write a
-   standard run log** (`msrun.jsonl`, format in `~/My_System/runlog/RUNLOG_SPEC.md`) in its run
-   folder — start, stages, errors, metrics, artifacts, end. Use the helpers, never hand-written JSON:
-   Python `ms log template python > msrun.py`, Tcl/Vivado `ms log template tcl > msrun.tcl`,
-   any other command `ms log run --name NAME -- CMD`. Keep the tool's own log as well.
-   Before you say you are done, run `ms log check <run folder>` and fix every problem it reports.
+## 1. Run code like this
 
-10. **Before changing, updating or recreating any environment, package or library, ask who uses it:**
-    `ms software uses NAME` (or the `software_uses` MCP tool) and tell the user which projects are affected.
-    Never update packages yourself; `ms software plan` gives the user the commands.
-11. **Make jobs observable:** print progress with `echo PERCENT >&3`, pass results to later steps by
-    writing `key=value` lines to `$MSQ_OUTPUTS`, put temporary files in `$TMPDIR`, and declare
-    `inputs`/`outputs` in flow steps so unchanged work is skipped.
-12. **Remote servers (Slurm, e.g. Titan) — the queue decides where a job runs.** The servers, and whether jobs go
-    there automatically, are listed under *Remote servers* in the system map. With `offload = prefer` every allowed
-    queue job is sent to the server first and runs on this machine only when the server is full, unreachable or slower,
-    and a job that fails there is run once more here. So:
-    - Just submit with `ms q add` / a flow / `queue_submit`. Do **not** add `--on` unless the user asks:
-      `--on NAME` forces a server, `--on here` keeps a job on this machine, `--on auto` = server only when busy here.
-    - **Never use ssh, scp, rsync, sbatch, srun, salloc or scancel yourself** to reach a server (blocked). Many people
-      share it; my-system only touches its own folder there and only your jobs. Status: `ms remote list`, `ms remote status`.
-    - **Make jobs self-contained:** start each job from its own run folder (`cwd`); everything it reads must be inside
-      that folder; results are written into it. Only the job folder is copied there and back. Big folders: declare
-      what is needed with `--inputs GLOB` (flows: `inputs:`).
-    - **Paths are translated for you — do not work around it.** On the server my-system rewrites, in the command and
-      in the job folder's text files: the job folder's own absolute path -> its folder on the node, and every
-      `path_map` entry (system map, e.g. `/mnt/data/Apps/2025.2.1` -> the server's Vivado). Your files here are not
-      changed, and paths in files the job writes are translated back. So scripts may keep using the normal local
-      Vivado path and the project's own absolute paths. What does NOT work there: absolute paths to anything else on
-      this machine (another project, `~/Downloads`, `/mnt/data/...` data, `/opt/...` tools). Such a job is kept here
-      automatically (`ms q explain ID` names the path). If a job should run on the server, keep its inputs inside its
-      folder or ask the user to add the path to `path_map`; never copy files to the server yourself.
-    - A command that starts with `cd DIR && ...` (also inside `bash -c '...'`) runs in DIR: the queue strips the
-      `cd` and uses DIR as the job folder. Still, prefer `cd DIR` first and then `ms q add` with relative paths.
-    - Results: everything the job writes comes back unless you say otherwise. For jobs that write big temporary
-      files, pass `--outputs GLOB` (only those come back) or delete the temporaries at the end of the job.
-    - To change the order of waiting jobs use `ms q edit ID --after OTHER` (not cancel and re-add).
-    - `ms remote usage` shows what your recent server jobs reserved and used, with the request to use instead.
-    - Server jobs survive a restart of this computer and are followed again; do not resubmit them.
-    - Reserve what a job really uses (`ms q show ID` of a finished one shows it, measured on the server): a script
-      that runs one tool run after another needs `--cores 1`; N runs in parallel need about 2 cores and the
-      measured peak memory (+20%) each. When the server has `max_cores`, smaller reservations let more jobs run.
-    - Write new scripts so they work anywhere: relative paths inside the run folder, tools from the allowed Vivado
-      path (or `$XILINX_VIVADO` after `settings64.sh`), thread counts from `$MSQ_THREADS`.
-    - Programs listed as missing on a server always run here; that is expected.
-    - Never put passwords, keys, tokens or private data into a job (`--secret` jobs are never sent to a server).
-    - `ms q explain ID` shows where a job will run and why; the job log shows the node (`[remote] titan02 ...`).
-13. **Only the AMD/Xilinx tool versions allowed for the project.** The system map section *AMD/Xilinx tool versions
-    per project* says which Vivado/Vitis/ISE versions each project folder may use (and the default for all others).
-    In a project use only its allowed versions: do not run, source (`settings64.sh`) or write scripts for any other
-    installed version, even if old scripts mention one; propose updating such scripts instead (ask first). Commands
-    that name a version not allowed in the folder you work in are blocked, and queue jobs that run one are stopped.
-    Never try to change these rules (`ms tools ...` is the user's).
-14. **To compare runs** use `ms log compare FOLDER --sort METRIC --desc` and `ms log diff RUN_A RUN_B`
-    (or the `runs_compare` MCP tool) instead of parsing logs yourself. To find out what the machine was
-    doing at a given time (e.g. why a run was slow or the machine froze) use `ms replay TIME`.
+| You want to | Do exactly this |
+|---|---|
+| run anything that takes over a minute, or any Vivado / Vitis / ISE / simulation / sweep | `cd RUN_FOLDER` then `ms q add --name NAME --cores N --mem GB [--metrics a,b] -- COMMAND` |
+| run many variants or steps | a flow file: `ms flow example` → `ms flow check FILE` → `ms flow run FILE` |
+| run something short (seconds: git, ls, a quick script, a unit test) | just run it |
+| see what happens | `ms q` · `ms q show ID` · `ms q log ID` · `ms q explain ID` (why it waits / where it runs) |
+| wait for a job | `ms q wait ID` (blocks; exit code 0 = success). Do not poll in a loop with sleep. |
+| change a waiting job | `ms q edit ID --cores N --mem GB --after OTHER` (not cancel and add again) |
+| stop a job | only jobs you added in this session: `ms q cancel ID`. Never anyone else's, never with kill. |
 
-## Transparency
-Every tool call is logged and visible to the user in the my-system app (AI guard tab).
-If a command is blocked, explain what you wanted to do and why, and let the user decide.
+- **Never start Vivado, Vitis, ISE or a script/Makefile that starts them directly** (blocked). No `&`, `nohup`,
+  `tmux`, `screen` for long work: only the queue. The queue starts each job when CPU and RAM are free and decides
+  **where** it runs (this machine or the server); you do not check capacity first and you do not choose.
+- **Job names** are `<study>_<what>_<variant>` with a stable first part (`k70v_aes_c0`, `k70v_aes_c1`): results
+  and measured needs are grouped by that first part.
+- **Ask for what the job really uses**, not more: `--cores` = number of tool processes that run *at the same time*
+  × about 2 (one Vivado or HLS run uses 1–2 cores); a script that runs designs one after another needs
+  `--cores 1`. `--mem` = measured peak + 20 %. The system map and `ms remote usage` show what earlier jobs of the
+  same name used; `ms q add` prints a hint when you ask for too much. Reserved-but-unused cores keep your other
+  jobs waiting and take the shared server from other people.
+- **Size of a job:** at least about 30 minutes of work per job (each job has 2–5 minutes of fixed cost on the
+  server), and split anything over a few hours so it can run in parallel.
+- Use thread counts from `$MSQ_THREADS` in scripts (`set_param general.maxThreads $::env(MSQ_THREADS)`,
+  `make -j$MSQ_THREADS`); never "all cores".
+
+## 2. Every job folder is self-contained (it must work anywhere)
+
+The queue may run a job on the server. Only **the job's own folder** (where you ran `ms q add`) is copied there and
+back, and paths are translated for you (the folder itself, and the tool paths listed in the system map).
+
+- One folder per run. Everything the job reads is inside it; everything it writes goes into it. Relative paths.
+- No absolute paths to other places on this machine (another project, `~/Downloads`, `/opt/...`): such a job
+  silently stays on this machine and is slow. `ms q explain ID` names the path. Big folders: `--inputs GLOB`.
+- Big temporary files: delete them at the end of the job or pass `--outputs GLOB` (only those come back).
+- Never use `ssh`, `scp`, `rsync`, `sbatch`, `srun`, `scancel` yourself (blocked). Do not add `--on` unless the
+  user asks. A job on the server survives a restart of this computer: do not submit it again.
+- More: `~/My_System/ai/docs/server.md`.
+
+## 3. Log like this (the run log)
+
+Every queue job gets a **standard run log automatically** (`msrun.jsonl` in its folder: start, command, git commit,
+time, CPU, RAM, exit code, errors). **You add the content by printing lines** — from any language, on this machine
+and on the server, no library needed:
+
+```
+echo "::ms stage synth"                      # a new stage begins (short stable names: hls, cosim, synth, place, route, power)
+echo "::ms metric wns_ns -0.084 ns"          # every result that matters: NAME VALUE [UNIT], snake_case, unit in the name
+echo "::ms metric lut 41233"
+echo "::ms progress 40 placing"              # percent done
+echo "::ms artifact reports/timing.rpt"      # files worth keeping (path inside the job folder)
+echo "::ms warn clock uncertainty high"      # also: ::ms error TEXT, ::ms info TEXT
+```
+Tcl: `puts "::ms metric wns_ns $wns ns"` · Python: `print("::ms metric lut", lut, flush=True)`
+
+Required of every job you write:
+1. **A stage line before each phase** that takes more than a minute.
+2. **A metric line for every number the user will ask about** (timing, resources, power, latency, accuracy,
+   cycles, pass/fail as `true`/`false`). Results only inside a report file do not count.
+3. Name the metrics in `ms q add --metrics wns_ns,lut ...` (flow key `metrics:`): a job that ends without them
+   is marked *warning* and you must fix the script, not ignore it.
+4. On a problem: `::ms error what went wrong` and exit non-zero. Never end with exit 0 after a failed step.
+5. Keep the tool's own log files too.
+
+Outside the queue (a short script): `ms log run --name NAME -- COMMAND` gives the same log and understands the
+same lines. Check with `ms log check FOLDER`; read with `ms log show FOLDER`; compare runs with
+`ms log compare FOLDER --sort METRIC` / `ms log diff A B` instead of parsing logs yourself.
+Details and the Python/Tcl helpers: `~/My_System/ai/docs/logging.md`.
+
+## 4. Never (blocked automatically, the user is told)
+
+1. Change the system: no `sudo`, `apt`/`snap`/`flatpak`, no `pip install` outside a project virtual environment,
+   no edits of shell start-up files, system files, tool installs or the protected paths in the system map.
+2. Stop, kill, restart or renice anything you did not start. Long runs of other sessions are usually active.
+3. Delete outside the project folder; inside it, ask before deleting what you did not create in this session.
+4. Write outside the project folder you were started in — except its run folders on the data disk named in the
+   system map (large outputs go there, never on the root disk).
+5. Search the whole disk. What exists is in the system map and the inventory it points to; if something is
+   missing, ask — do not install it.
+6. Use a Vivado/Vitis/ISE version the project is not allowed (system map, *tool versions per project*), even if an
+   old script names it. Propose updating the script instead.
+7. Change my-system itself: `ms pause/resume/lock/unlock`, `ms tools allow/deny`, files in `~/My_System`.
+8. Update or recreate an environment or library without `ms software uses NAME` first and telling the user who
+   else uses it.
+9. Put passwords, keys or tokens into a job, a script or a log.
+
+If a command is blocked: do not look for another way to do the same thing. Say what you wanted and why, and let
+the user decide.
+
+## 5. Before you say "done"
+
+- `ms q show ID` of every job you added: state `done` (not `warning`/`failed`), and the metrics are there.
+- `ms log check FOLDER` passes for the run folders you created.
+- Tell the user: the job ids, the run folders, the key metrics, anything that failed or was skipped and why.
+  Do not report numbers you did not read from a finished run.
+
+Every tool call is logged and visible to the user (my-system app, *AI guard*).

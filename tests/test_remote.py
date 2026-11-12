@@ -363,7 +363,7 @@ print("ok")
     assert "ok" in r.stdout, r.stdout + r.stderr
     src = ROOT / ("src/ai" if (ROOT / "src").is_dir() else "ai") / "claude/hooks/guard.py"
     rules = (src.parent.parent.parent / "AI_RULES.md").read_text()
-    assert "Never use ssh, scp, rsync, sbatch" in rules and "self-contained" in rules
+    assert "Never use `ssh`, `scp`, `rsync`, `sbatch`" in rules and "self-contained" in rules
     code = f"""
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("g", {str(src)!r}); g = importlib.util.module_from_spec(spec)

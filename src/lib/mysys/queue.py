@@ -387,6 +387,8 @@ def submit(cmd, cwd=None, name=None, **opt):
                   "created": time.time(), "attempt": 1, "started": None, "ended": None, "rc": None, "reason": "",
                   "pid": None, "peak_rss": 0, "cpu_s": 0.0, "env": opt.get("env") or {},
                   "depends": [int(x) for x in (opt.get("depends") or [])], "user": os.environ.get("USER", "")})
+        if os.environ.get("CLAUDECODE") or os.environ.get("MS_BY_AI"):     # added by an AI coding session
+            j.setdefault("submitted_by", "ai")
         if state == "approval":
             j["reason"] = f"waiting for your approval: {j['approval']}"
         try:                                    # XILINX_ALLOWED: refused at once, not after waiting in the queue

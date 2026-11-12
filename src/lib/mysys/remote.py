@@ -362,7 +362,8 @@ export MSQ_OUTPUTS="$W/.msq-{jid}-outputs" MSQ_JOB_ID={jid} MSQ_THREADS={cores} 
 : > .msq-{jid}-outputs
 ( while sleep 60; do [ "$SHARED" = 1 ] && cp msq-{jid}.log ../msq-{jid}.log || copy msq-{jid}.log "$HEAD:$REMOTE_DIR/msq-{jid}.log"; done ) &
 SYNC=$!
-{run_line} >> msq-{jid}.log 2>&1
+# "echo 40 >&3" (progress) works there as it does here: it becomes a "::ms progress" line in the job's output
+{{ {run_line} ; }} 3> >(while IFS= read -r p; do echo "::ms progress $p"; done >> msq-{jid}.log) >> msq-{jid}.log 2>&1
 RC=$?
 kill $SYNC 2>/dev/null
 echo "[remote] finished $(date '+%F %T') rc=$RC" >> msq-{jid}.log

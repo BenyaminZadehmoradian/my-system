@@ -108,7 +108,9 @@ def build():
               f"- Full tool/library inventory: `{_home(config.REPORTS / 'latest' / 'inventory')}/`",
               f"- Full system report (hardware, disks, memory, OS, software): `{_home(config.REPORTS / 'system' / 'latest.md')}`",
               f"- Past run results: `{_home(config.REPORTS / 'results.csv')}`",
-              f"- Run-log format every new program must write: `{_home(config.MS / 'runlog' / 'RUNLOG_SPEC.md')}` "
+              "- Live state (queue, server, what failed, limits): `ms ai status`",
+              f"- Run log: every queue job gets one; jobs add stages and results by printing `::ms ...` lines "
+              f"(`ms ai log`). Format: `{_home(config.MS / 'runlog' / 'RUNLOG_SPEC.md')}` "
               "(check with `ms log check <folder>`; list all runs with `ms log list`)"]
     return "\n".join(lines) + "\n"
 

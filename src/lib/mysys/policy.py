@@ -46,12 +46,18 @@ def build():
                       "Bash(ms q show *)", "Bash(ms q log *)", "Bash(ms q explain *)", "Bash(ms q edit *)",
                       "Bash(ms q --help)", "Bash(ms flow check *)", "Bash(ms flow run *)", "Bash(ms flow example)",
                       "Bash(ms log check *)", "Bash(ms log compare *)", "Bash(ms log diff *)", "Bash(ms capacity*)", "Bash(ms remote list)", "Bash(ms remote status*)",
-                      "Bash(ms tools)", "Bash(ms paused)", "Bash(ms replay *)"],
+                      "Bash(ms tools)", "Bash(ms paused)", "Bash(ms replay *)", "Bash(ms ai)", "Bash(ms ai *)",
+                      "Bash(ms q wait *)", "Bash(ms q list*)", "Bash(ms q history*)", "Bash(ms remote usage*)",
+                      "Bash(ms log show *)", "Bash(ms log list*)", "Bash(ms log template *)",
+                      "Bash(ms version)"],
             "ask": [f"Bash({a})" for a in BASH_ASK],
             "deny": list(dict.fromkeys(deny)),
         },
         "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
-            {"type": "command", "command": f"/usr/bin/python3 {guard}", "timeout": 10}]}]},
+            {"type": "command", "command": f"/usr/bin/python3 {guard}", "timeout": 10}]}],
+                  # every new, resumed or compacted session starts with the live state and the run/log template
+                  "SessionStart": [{"hooks": [
+                      {"type": "command", "command": f"{config.MS / 'bin' / 'ms'} ai status --hook", "timeout": 15}]}]},
     }
 
 

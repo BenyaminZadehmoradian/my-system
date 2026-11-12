@@ -135,6 +135,15 @@ class Runner:
                 self.logf = open(self.logp, "a")
                 self.size = 0
         s = line.strip()
+        if s.startswith("::ms"):                 # the job tells its stage / result / progress (RUNLOG_SPEC, "markers")
+            kind = self.msrun.marker(self.run, s) if getattr(self, "run", None) is not None else None
+            if kind == "progress":
+                pm = re.search(r"(\d+(?:\.\d+)?)", s[4:].replace("progress", "", 1))
+                if pm:
+                    self.progress = min(100.0, float(pm.group(1)))
+            if kind:
+                self.last_out = time.time()
+                return
         if s:
             self.last_line = s[:200]
             self.last_out = time.time()
@@ -366,6 +375,7 @@ class Runner:
     def execute(self):
         sys.path.insert(0, str(config.MS / "runlog"))
         import msrun
+        self.msrun = msrun
         j = self.j
         if not j:
             return 2
@@ -520,6 +530,14 @@ class Runner:
             for pat in j.get("outputs") or []:
                 if not glob.glob(os.path.join(j["cwd"], pat)) and j.get("require_outputs", True):
                     status, state, reason = "failed", "failed", f"declared output {pat} was not produced"
+        # ----- results the job was asked to report (--metrics / flow key metrics:)
+        if state == "done" and j.get("expect_metrics"):
+            have = set(self.run.reported) | {k for k, _ in _numify(outs)}
+            miss = [m for m in j["expect_metrics"] if m not in have]
+            if miss:
+                state, reason = "warning", ("did not report: " + ", ".join(miss) +
+                                            "  (print  ::ms metric NAME VALUE  or write NAME=VALUE to $MSQ_OUTPUTS)")
+                self.run.log("WARN", reason)
         # ----- tests
         ju = issues.junit(j.get("junit"), j["cwd"])
         if ju:

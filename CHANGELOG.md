@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.23.0 — 2026-11-12
+For AI coding sessions (Claude Code): clearer rules, everything they need in view, and a run log they can fill
+from anywhere.
+
+**Rules** (`ai/AI_RULES.md`, shown to every session; `ms ai rules`)
+- Rewritten: five short parts — how to run, the job folder, how to log, what never to do, what to check before
+  saying "done" — with the exact commands. Before there were two overlapping lists (14 rules + 10 in the system
+  map) that disagreed: "check `ms capacity` first" although the queue decides; "queue or tmux"; `nice -n 10`;
+  a fixed thread count instead of `$MSQ_THREADS`; "write your own run log with the helper" although every queue
+  job has one and the helper does not exist on the server; `echo PERCENT >&3`, which failed on the server.
+- New in the rules: reserve what was measured (jobs used ~40 % of their reserved cores), stable job-name prefixes,
+  job size (not under ~30 min on the server), `ms q wait` instead of polling, do not look for another way when a
+  command is blocked, report only numbers read from a finished run. Long detail moved to pages read on demand:
+  `ms ai log`, `ms ai server`.
+
+**Visible at run time**
+- New `ms ai status`: queue (running here / on the server, why jobs wait), server limits in use, jobs that ended
+  badly in the last 24 h, measured "reserve less" hints, pauses, allowed tool versions, and the run + log
+  template. It is printed into **every new, resumed or compacted Claude Code session** (SessionStart hook in the
+  managed policy), so a session starts with the real state instead of guessing.
+- Allowed without a question: `ms ai *`, `ms q wait`, `ms q list/history`, `ms remote usage`, `ms log show/list`.
+- The guard no longer blocks Claude's own project memory, plans and todos under `~/.claude` (it did, three times);
+  settings and CLAUDE.md there stay protected.
+
+**Run log**
+- **A job reports by printing lines**: `::ms stage NAME`, `::ms metric NAME VALUE [UNIT]`, `::ms progress N`,
+  `::ms artifact PATH`, `::ms info|warn|error TEXT`. Any language, no library, and it works on the server (where
+  the helpers never existed, so server jobs had no stages or results in their log). A line that is not understood
+  becomes a warning, never a failure. `ms log run` understands the same lines.
+- **Required results**: `ms q add --metrics wns_ns,lut` (flow key `metrics:`). A job that ends without them is
+  marked *warning* with the names that are missing.
+- `ms q show` lists the stages with their times and the results the job reported.
+- `ms log check` adds notes for valid logs that say too little (a long run without stages or results, metric
+  names that are not snake_case, "ok" after errors); `--strict` fails on them.
+- `echo N >&3` (progress) works on the server too. Jobs added by an AI session are marked (`submitted_by: ai`).
+
 ## 1.22.0 — 2026-11-12
 A full review against real use (1250 jobs, up to 72 at once on Titan) and the notification log of two weeks.
 

@@ -21,6 +21,9 @@ Q_HELP = """ms q — job queue that starts jobs only when CPU, RAM, licenses and
                 --retry-backoff 2  --timeout 2h|auto|300%  --idle-timeout 20m  --signal-before USR1@300
                 --kill-seq TERM,30,KILL  --exit-code 1=warning  --warn-pattern REGEX
     files       --follow vivado.log  --scratch [ram|PATH]  --outputs GLOB  --inputs GLOB
+    results     --metrics wns_ns,lut   the job must report these (it prints  ::ms metric wns_ns -0.08 ); a job that
+                ends without them becomes "warning". Other lines a job may print:  ::ms stage NAME ·
+                ::ms progress 40 · ::ms artifact FILE · ::ms warn|error TEXT   (ms log template spec)
     other       --name N  --nice N  --no-limit  --container IMG  --host SSH  --env K=V  --require "mounted /mnt/data"
                 --approval "text" (wait for ms q approve)  --notify always|failure|never  --secret NAME  --wait
                 --group G (limit per group in config/groups.conf)  --label L  --stdin (accept ms q send)
@@ -232,6 +235,9 @@ def parse_add(a):
         elif k == "--retry-on":
             opt["retry_on"] = v.split(",")
             i += 2
+        elif k == "--metrics":                    # results the job must report: wns_ns,lut  (missing -> warning)
+            opt["expect_metrics"] = (opt.get("expect_metrics") or []) + [x.strip() for x in (v or "").split(",") if x.strip()]
+            i += 2
         elif k == "--retry-codes":
             opt["retry_exit_codes"] = [int(x) for x in v.split(",")]
             i += 2
@@ -372,6 +378,25 @@ def q_cmd(a):
                 print(f"{'cpu':>10}: reserved {e['cores_req']}{where} · used {e['cores_used']}" + (f" ({e['cpu_eff']}%)" if e['cpu_eff'] is not None else ""))
             if j.get("io_read") is not None and not e.get("remote"):
                 print(f"{'disk I/O':>10}: read {j['io_read'] / 2**30:.2f} GB · written {j['io_write'] / 2**30:.2f} GB")
+            try:                                       # what the job itself reported (::ms lines, $MSQ_OUTPUTS)
+                from mysys import runlog
+                r = runlog.read(os.path.join(j["cwd"], runlog.FILENAME)).get(j.get("run_id") or "")
+            except Exception:
+                r = None
+            if r:
+                own = runlog.own_metrics(r)
+                if r["stages"]:
+                    print(f"{'stages':>10}: " + " · ".join(
+                        f"{s['stage']} {runlog.fmt_seconds((s['end'] or time.time()) - s['begin']) if s['begin'] else ''}".strip()
+                        + ("" if s["status"] in ("ok", "running") else f" ({s['status']})") for s in r["stages"][-12:]))
+                if own:
+                    print(f"{'results':>10}: " + " · ".join(
+                        f"{k}={r['metrics'][k]}" + (f" {r['units'][k]}" if r["units"].get(k) else "") for k in own[:30]))
+                miss = [m for m in (j.get("expect_metrics") or []) if m not in r["metrics"]]
+                if miss and j["state"] in queue.TERMINAL:
+                    print(f"{'missing':>10}: {', '.join(miss)} (asked for with --metrics)")
+                elif j["state"] in queue.TERMINAL and not own and (queue.runtime(j) or 0) >= 600:
+                    print(f"{'results':>10}: none reported — print `::ms metric NAME VALUE` in the job (ms ai log)")
             if j.get("issues"):
                 print(f"{'issues':>10}: {j['issues']}")
             if j.get("diagnosis"):

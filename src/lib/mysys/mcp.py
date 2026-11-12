@@ -2,7 +2,7 @@
 
 Registered for Claude Code by install.sh as `my-system` (command: ms mcp). Tools:
   capacity, queue_list, queue_submit, queue_cancel, queue_explain, runs_list, run_detail, runs_compare, flow_check,
-  flow_run, software_uses, software_updates, vulnerabilities, replay, system_map
+  flow_run, software_uses, software_updates, vulnerabilities, replay, system_map, ai_status
 Submitting goes through the same queue as everything else, so an assistant can never overload the machine.
 """
 import json
@@ -44,14 +44,21 @@ def _inside_home(p):
     return any(real == a or real.startswith(a + "/") for a in allowed)
 
 
-def t_queue_submit(cmd, cwd, name=None, mem_gb=None, cores=None, after=None, retries=0, timeout=None, priority=0, on=None):
+def t_ai_status():
+    from . import aihelp
+    return aihelp.status_text()
+
+
+def t_queue_submit(cmd, cwd, name=None, mem_gb=None, cores=None, after=None, retries=0, timeout=None, priority=0, on=None,
+                   metrics=None):
     if not _inside_home(cwd):
         raise ValueError(f"cwd must be inside your home or the data disk and not protected: {cwd}")
     if on and on not in ("auto", "here", "local"):
         from . import remote
         remote.get(on)                       # only servers the user configured
     j = queue.submit(cmd, cwd=cwd, name=name, mem_gb=mem_gb, cores=cores, depends=after or [], retries=retries,
-                     timeout_s=timeout, priority=min(int(priority or 0), 0), submitted_by="ai", remote=on or None)
+                     timeout_s=timeout, priority=min(int(priority or 0), 0), submitted_by="ai", remote=on or None,
+                     expect_metrics=[str(m) for m in metrics] if metrics else None)
     if j["state"] == "failed":
         return f"refused (job {j['id']}): {j['reason']}"
     return (f"queued job {j['id']} ({j['mem_gb']} GB, {j['cores']} cores). Check with queue_list; "
@@ -162,13 +169,19 @@ I = {"type": "integer"}
 N = {"type": "number"}
 B = {"type": "boolean"}
 TOOLS = {
-    "capacity": (t_capacity, "Live load, free RAM and how many more jobs of each tool fit right now. Call before heavy work.",
+    "capacity": (t_capacity, "Live load, free RAM and how many more jobs of each tool fit right now (information: the queue checks this itself).",
                  {"tool": S}, []),
+    "ai_status": (t_ai_status, "Live state for an AI session: queue, server use and limits, jobs that ended badly, what to "
+                               "reserve, and how to run and log here. Read it at the start of a task.", {}, []),
     "queue_list": (t_queue_list, "Jobs in the my-system queue (running, waiting, recently finished).", {"all": B}, []),
     "queue_submit": (t_queue_submit, "Queue a long or heavy shell command. It starts only when CPU and RAM are free; "
-                                     "it writes a standard run log. Use instead of starting heavy jobs directly.",
+                                     "it writes a standard run log, and the job adds stages and results by printing "
+                                     "`::ms stage NAME` / `::ms metric NAME VALUE [UNIT]`. Use instead of starting "
+                                     "heavy jobs directly.",
                      {"cmd": S, "cwd": S, "name": S, "mem_gb": N, "cores": N, "after": {"type": "array", "items": I},
                       "retries": I, "timeout": S, "priority": I,
+                      "metrics": {"type": "array", "items": S, "description": "results the job must report with "
+                                  "`::ms metric`, e.g. [\"wns_ns\", \"lut\"]; missing ones mark the job as warning"},
                       "on": {"type": "string", "description": "usually omit: the queue decides (with offload = prefer it tries the "
                                                                  "server first by itself). NAME = force that server, 'auto' = there "
                                                                  "only when this machine is busy, 'here' = never on a server"}},

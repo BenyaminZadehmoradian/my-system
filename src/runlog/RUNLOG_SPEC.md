@@ -57,7 +57,28 @@ Extra keys are allowed only when they start with `x_` (e.g. `x_seed`).
 {"v":1,"ts":"2026-10-28T15:40:05+01:00","run":"s18_doe3-20261028T143502-a1f3","ev":"end","status":"ok","rc":0,"seconds":3903}
 ```
 
-## Writing it — use the helpers, do not hand-roll JSON
+## Writing it
+
+### From a queue job: print lines (the normal way)
+
+Every job started with `ms q add` or a flow already has its run log: my-system writes `start`, the measurements
+(time, CPU, RAM, I/O), warnings and errors found in the output, and `end`. The job adds its own content by
+**printing lines that start with `::ms`** to standard output — in any language, without a library, on this machine
+and on a remote server alike:
+
+| Printed line | Becomes |
+|---|---|
+| `::ms stage NAME` | `stage` begin (and `end` of the stage before) |
+| `::ms metric NAME VALUE [UNIT]` · `::ms metric NAME=VALUE` | `metric` (number, `true`/`false` or text) |
+| `::ms progress PCT [TEXT]` | `progress` |
+| `::ms artifact PATH [KIND]` | `artifact` (kind guessed from the file name when left out) |
+| `::ms info TEXT` · `::ms warn TEXT` · `::ms error TEXT` | `log` with that level |
+
+A `::ms` line that cannot be understood becomes a `WARN` in the log and never stops the job. The lines stay in
+the job's output. Results a job must report are named when it is queued (`ms q add --metrics wns_ns,lut`, flow key
+`metrics:`); a job that ends without them is marked *warning*. `ms log run -- CMD` understands the same lines.
+
+### From a program that is not a queue job: the helpers (do not hand-roll JSON)
 
 - **Python** (stdlib only, copy into the project or import from my-system):
   `ms log template python > msrun.py`
@@ -87,5 +108,7 @@ Extra keys are allowed only when they start with `x_` (e.g. `x_seed`).
 ## Checking it
 
 `ms log check <folder or file>` validates every line and run against this spec and exits non-zero
-on any violation. `ms log show <folder>` prints a readable timeline. The *Run logs* page of the
+on any violation. It also prints *notes* for valid logs that say too little (a long run without stages or
+without any result of its own, metric names that are not snake_case, a run that ended ok after errors);
+`--strict` makes notes fail too. `ms log show <folder>` prints a readable timeline. The *Run logs* page of the
 my-system app lists every run found.

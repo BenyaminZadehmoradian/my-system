@@ -140,6 +140,36 @@ def validate(path):
 
 
 # ---------------------------------------------------------------- read
+# written by the queue for every job: they say how the run went, not what it found
+AUTO_METRICS = {"queue_wait_s", "runtime_s", "peak_rss_gb", "cpu_s", "io_read_gb", "io_write_gb", "critical_warnings",
+                "warnings", "new_critical_warnings", "fixed_issues", "cores_used", "cpu_eff_pct", "remote_wait_s",
+                "upload_s", "download_s", "max_rss_gb"}
+NAME_OK = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def own_metrics(r):
+    return [k for k in r.get("metrics", {}) if k not in AUTO_METRICS and not str(k).startswith("bench_")]
+
+
+def quality(r, long_s=600):
+    """Notes on a finished run that is valid but tells too little or names things badly (not violations)."""
+    out = []
+    own = own_metrics(r)
+    secs = r.get("seconds") or 0
+    if r.get("status") == "ok" and secs >= long_s and not own:
+        out.append(f"ran {fmt_seconds(secs)} and reported no result: print `::ms metric NAME VALUE` for every number "
+                   "that matters")
+    if r.get("status") == "ok" and secs >= long_s and not r.get("stages"):
+        out.append("no stages: print `::ms stage NAME` before each phase, so the time can be seen per phase")
+    bad = [k for k in own if not NAME_OK.match(str(k))]
+    if bad:
+        out.append("metric names should be snake_case with the unit as suffix (wns_ns, power_w): "
+                   + ", ".join(map(str, bad[:5])))
+    if r.get("status") == "ok" and r.get("errors"):
+        out.append(f"ended ok although {r['errors']} error line(s) were logged: {r.get('first_error', '')[:80]}")
+    return out
+
+
 def _alive(pid, host):
     if not pid or (host and host != socket.gethostname()):
         return None

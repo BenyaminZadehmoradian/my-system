@@ -205,15 +205,17 @@ def log_cmd(rest):
         sys.stdout.write((MS / "runlog" / f).read_text())
         return 0
     if sub == "check":
-        target = Path(a[0] if a else ".")
+        strict = "--strict" in a
+        target = Path(next((x for x in a if not x.startswith("--")), "."))
         files = [target] if target.is_file() else sorted(target.rglob(runlog.FILENAME))
         if not files:
             print(f"no {runlog.FILENAME} found in {target}")
             return 1
-        bad = 0
+        bad = weak = 0
         for f in files:
             probs = runlog.validate(f)
-            n = len(runlog.read(f))
+            runs = runlog.read(f)
+            n = len(runs)
             if probs:
                 bad += 1
                 print(f"FAIL {f}  ({n} run(s), {len(probs)} problem(s))")
@@ -221,7 +223,14 @@ def log_cmd(rest):
                     print(f"     line {ln}: {msg}")
             else:
                 print(f"ok   {f}  ({n} run(s))")
-        return 1 if bad else 0
+            last = sorted(runs.values(), key=lambda r: r.get("start_ts") or 0)[-3:]     # the newest runs of the folder
+            for r in last:
+                for note in runlog.quality(r):
+                    weak += 1
+                    print(f"     note ({r['name'] or r['run']}): {note}")
+        if weak and not bad:
+            print(f"{weak} note(s): the log is valid but says too little" + (" (--strict: failed)" if strict else ""))
+        return 1 if bad or (strict and weak) else 0
     if sub == "show":
         target = Path(a[0] if a else ".")
         n = int(a[1]) if len(a) > 1 else 5
@@ -271,6 +280,8 @@ def log_cmd(rest):
                     sys.stdout.write(line)
                     out.write(line)
                     s_ = line.strip()
+                    if s_.startswith("::ms") and msrun.marker(r, s_):
+                        continue
                     if _re.match(r"^(ERROR|FATAL|Error|Fatal)\b", s_) and errs < 100:
                         errs += 1
                         r.log("ERROR", s_[:1000], src=Path(cmd[0]).name)
@@ -481,6 +492,9 @@ def main(argv):
     elif cmd == "mcp":
         from mysys import mcp
         mcp.serve()
+    elif cmd == "ai":
+        from mysys import aihelp
+        return aihelp.main(rest)
     elif cmd == "capacity":
         if "--json" in rest:
             import json

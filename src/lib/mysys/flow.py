@@ -52,7 +52,7 @@ STEP_KEYS = {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix
              "protect", "ensure", "keep_incomplete", "publish", "junit", "quality_gate", "follow", "exit_codes",
              "warn_patterns", "resources", "disk_gb", "disk_path", "benchmark", "cache_mode", "rerun_on", "cache",
              "on_error", "secrets", "notify", "begin", "deadline", "collapse_key", "max_parallel", "require_outputs",
-             "respect_reservations", "stop_when", "stop_after", "group", "labels", "stdin", "remote"}
+             "respect_reservations", "stop_when", "stop_after", "group", "labels", "stdin", "remote", "metrics"}
 DEFAULT_KEYS = STEP_KEYS - {"name", "cmd", "matrix", "matrix_exclude", "matrix_filter", "matrix_mode", "matrix_csv",
                             "folder", "depends", "description", "foreach", "flow", "with", "wait", "approval"}
 PASS_KEYS = ["mem_gb", "cores", "gpus", "priority", "retries", "retry_on", "retry_delay", "retry_backoff",
@@ -353,6 +353,9 @@ def expand(flow, overrides=None, sample=None, seed=None):
                 spec["follow"] = [_fill(x, vals, iw, errors) for x in opts["follow"]]
             if opts.get("junit"):
                 spec["junit"] = [_fill(x, vals, iw, errors) for x in opts["junit"]]
+            if opts.get("metrics"):                   # results every job of the step must report
+                mm = opts["metrics"]
+                spec["expect_metrics"] = [str(x).strip() for x in (mm.split(",") if isinstance(mm, str) else mm) if str(x).strip()]
             pub = opts.get("publish") or flow.get("publish")
             if pub:
                 spec["publish"] = {**pub, "dir": os.path.join(base, os.path.expanduser(_fill(pub.get("dir", "results"), vals, iw, errors)))}
@@ -696,7 +699,7 @@ def _start_fanout(sched, j):
         folder = _fill(fo["folder"], vals, "foreach", errs) if fo.get("folder") else None
         cwd = os.path.normpath(os.path.join(j["cwd"], folder)) if folder else j["cwd"]
         opts = {k: v for k, v in j.items() if k in PASS_KEYS or k in ("inputs", "outputs", "temp", "require", "env",
-                                                                       "secrets", "publish", "follow", "junit", "timeout_s",
+                                                                       "secrets", "publish", "follow", "junit", "timeout_s", "expect_metrics",
                                                                        "idle_timeout_s", "assert")}
         opts["params"] = dict(j.get("params") or {}, item=it)
         opts["flow"] = dict(j.get("flow") or {}, item=dict((j.get("flow") or {}).get("item") or {}, item=it))

@@ -395,10 +395,15 @@ def check_bash(cmd, prot):
     return None
 
 
+AI_OWN = re.compile(re.escape(HOME) + r"/\.claude/(projects/[^/]+/memory/[^/]+\.md|plans/[^/]+\.md|todos/[^/]+)$")
+
+
 def check_path(path, prot):
     if not path:
         return None
     p = os.path.realpath(expand(path))
+    if AI_OWN.match(p):                # the assistant's own notes about a project (its memory), plans and todos
+        return None
     for pr in prot:
         if p == pr or p.startswith(pr + "/"):
             return f"editing {pr} is not allowed"

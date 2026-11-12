@@ -68,6 +68,69 @@ def _register(path, run_id):
             pass
 
 
+MARK = re.compile(r"^\s*::ms\s+(\w+)\s*(.*?)\s*$")
+
+
+def marker(run, line):
+    """A line a job prints to tell my-system something, in any language (echo, puts, print):
+
+        ::ms stage synth                       a new stage begins (ends the previous one)
+        ::ms metric wns_ns -0.084 [ns]         a result (number, true/false or text)
+        ::ms progress 40 [placing]             percent done
+        ::ms artifact reports/timing.rpt [report|bitstream|checkpoint|netlist|plot|data|log|other]
+        ::ms info|warn|error TEXT              a message with its level
+
+    Returns the kind of event written to the run log, None for an ordinary line, or "bad: why" for a marker line
+    that could not be understood (it is then kept as a warning, never an exception)."""
+    m = MARK.match(line)
+    if not m:
+        return None
+    kind, rest = m.group(1).lower(), m.group(2)
+    try:
+        if kind == "stage" and rest:
+            run.stage(re.sub(r"[^A-Za-z0-9_.+-]", "_", rest)[:60])
+        elif kind == "metric":
+            parts = rest.split()
+            name = parts[0].replace("=", " ").split()[0] if parts else ""
+            vals = rest.replace("=", " ", 1).split()[1:]
+            if not name or not vals:
+                raise ValueError("use: ::ms metric NAME VALUE [UNIT]")
+            v = vals[0]
+            try:
+                val = int(v) if re.fullmatch(r"[-+]?\d+", v) else float(v)
+                if val != val or val in (float("inf"), float("-inf")):
+                    val = v
+            except ValueError:
+                val = {"true": True, "false": False}.get(v.lower(), " ".join(vals) if len(vals) > 2 else v)
+            unit = vals[1] if len(vals) == 2 and not isinstance(val, str) else None
+            run.metric(re.sub(r"[^a-z0-9_]", "_", name.lower()).lstrip("_0123456789") or "value", val, unit)
+        elif kind == "progress":
+            pm = re.match(r"(\d+(?:\.\d+)?)\s*%?\s*(.*)$", rest)
+            if not pm:
+                raise ValueError("use: ::ms progress PERCENT [text]")
+            run.progress(float(pm.group(1)), pm.group(2) or None)
+        elif kind == "artifact" and rest:
+            parts = rest.rsplit(None, 1)
+            if len(parts) == 2 and parts[1] in KINDS:
+                run.artifact(parts[0], parts[1])
+            else:
+                ext = os.path.splitext(rest)[1].lower()
+                run.artifact(rest, {".rpt": "report", ".bit": "bitstream", ".dcp": "checkpoint", ".png": "plot",
+                                    ".pdf": "plot", ".svg": "plot", ".csv": "data", ".json": "data", ".log": "log",
+                                    ".v": "netlist", ".edf": "netlist", ".md": "report"}.get(ext, "other"))
+        elif kind in ("info", "warn", "warning", "error", "debug") and rest:
+            run.log({"warning": "WARN"}.get(kind, kind.upper()), rest[:1000])
+        else:
+            raise ValueError(f"unknown or empty marker '{kind}' (stage, metric, progress, artifact, info, warn, error)")
+    except (ValueError, RuntimeError, IndexError) as e:
+        try:
+            run.log("WARN", f"marker not understood: {line.strip()[:200]} — {e}", src="ms")
+        except Exception:
+            pass
+        return f"bad: {e}"
+    return "log" if kind in ("info", "warn", "warning", "error", "debug") else kind
+
+
 class Run:
     def __init__(self, name, params=None, folder=None, project=None, cmd=None, echo=False, extra=None):
         if not re.match(r"^[A-Za-z0-9_.+-]+$", name or ""):
@@ -84,6 +147,8 @@ class Run:
         self.extra = {("x_" + k if not k.startswith("x_") else k): v for k, v in (extra or {}).items()}
         self._t0 = None
         self._stage = None
+        self.reported = set()            # names of the metrics written so far
+        self.stages = 0
         self._ended = False
         self._f = None
 
@@ -112,6 +177,7 @@ class Run:
         """Begin stage `name`; ends the current stage (with `status`) first."""
         self.end_stage(status)
         self._stage = name
+        self.stages += 1
         self._w("stage", stage=name, state="begin")
 
     def end_stage(self, status="ok"):
@@ -137,6 +203,7 @@ class Run:
     def metric(self, name, value, unit=None):
         if not re.match(r"^[a-z][a-z0-9_]*$", name):
             raise ValueError("metric name: snake_case, e.g. wns_ns, lut, power_w")
+        self.reported.add(name)
         self._w("metric", name=name, value=value, unit=unit, stage=self._stage)
 
     def artifact(self, path, kind="other"):
