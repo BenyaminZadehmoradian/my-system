@@ -1885,7 +1885,7 @@ def cli(a):
         return 0
     if sub == "_run":
         return run_job(int(a[1]))
-    if len(a) < 2:
+    if len(a) < 2 and sub not in ("usage", "status"):          # these two work without a server name
         print(HELP)
         return 2
     if sub == "tools":

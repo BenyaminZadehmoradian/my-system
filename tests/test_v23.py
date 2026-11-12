@@ -114,6 +114,10 @@ assert runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"runtime_s":
 assert len(runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"WNS": 1}, "stages": [{"stage": "s"}], "errors": 0})) == 1
 assert not runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"wns_ns": 1}, "stages": [{"stage": "s"}], "errors": 0})
 assert not runlog.quality({"status": "ok", "seconds": 20, "metrics": {}, "stages": [], "errors": 0})
+u = subprocess.run(msbin + ["remote", "usage"], env=env, capture_output=True, text=True).stdout
+assert "no finished server jobs" in u and "ms remote setup" not in u, u          # it printed the help (1.23.0)
+u = subprocess.run(msbin + ["remote", "status"], env=env, capture_output=True, text=True).stdout
+assert "usage: ms remote status NAME" in u and "ms remote setup" not in u, u
 c = subprocess.run(msbin + ["log", "check", "--strict", d], env=env, capture_output=True, text=True)
 assert c.returncode == 0 and "ok " in c.stdout, c.stdout + c.stderr
 print("AI-OK")

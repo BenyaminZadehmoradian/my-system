@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.23.1 — 2026-11-12
+- `ms remote usage` and `ms remote status` without a server name printed the help text instead of their answer.
+
 ## 1.23.0 — 2026-11-12
 For AI coding sessions (Claude Code): clearer rules, everything they need in view, and a run log they can fill
 from anywhere.
