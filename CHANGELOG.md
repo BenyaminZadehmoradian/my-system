@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.2 — 2026-11-12
+- A failed job says why: "exit code 1 — FAIL: MISSING INPUT: …" (the line of its last output that looks like the
+  cause) instead of only "exit code 1", in the queue, the history, `ms ai status` and the notification.
+- Rules for AI sessions: a job that reads files made by another job must depend on it (`--after`, flow `needs:`),
+  and inputs are checked before a sweep is queued.
+
 ## 1.23.1 — 2026-11-12
 - `ms remote usage` and `ms remote status` without a server name printed the help text instead of their answer.
 

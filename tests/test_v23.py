@@ -114,6 +114,11 @@ assert runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"runtime_s":
 assert len(runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"WNS": 1}, "stages": [{"stage": "s"}], "errors": 0})) == 1
 assert not runlog.quality({"status": "ok", "seconds": 3600, "metrics": {"wns_ns": 1}, "stages": [{"stage": "s"}], "errors": 0})
 assert not runlog.quality({"status": "ok", "seconds": 20, "metrics": {}, "stages": [], "errors": 0})
+f = queue.submit("echo start; echo 'FAIL: MISSING INPUT: /x/reads_4106.txt'; echo bye; exit 1", cwd=d, name="gema_x", **small)
+k = queue.submit("echo '::ms stage a'; exit 3", cwd=d, name="quiet", **small)
+assert until(lambda: st(f["id"]) in queue.TERMINAL and st(k["id"]) in queue.TERMINAL, 40)
+assert queue.load(f["id"])["reason"] == "exit code 1 — FAIL: MISSING INPUT: /x/reads_4106.txt", queue.load(f["id"])["reason"]
+assert queue.load(k["id"])["reason"] == "exit code 3", queue.load(k["id"])["reason"]
 u = subprocess.run(msbin + ["remote", "usage"], env=env, capture_output=True, text=True).stdout
 assert "no finished server jobs" in u and "ms remote setup" not in u, u          # it printed the help (1.23.0)
 u = subprocess.run(msbin + ["remote", "status"], env=env, capture_output=True, text=True).stdout

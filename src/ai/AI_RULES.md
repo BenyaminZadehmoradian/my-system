@@ -27,6 +27,9 @@ lists the hardware, tools, projects, servers and limits. Live state: `ms ai stat
   jobs waiting and take the shared server from other people.
 - **Size of a job:** at least about 30 minutes of work per job (each job has 2–5 minutes of fixed cost on the
   server), and split anything over a few hours so it can run in parallel.
+- **A job that needs files made by another job waits for it:** `--after ID` (flow: `needs:`). Before queuing a
+  sweep, check that every input file it reads exists or is produced by a job it depends on — do not queue 13 jobs
+  that all stop in the first seconds on a missing input.
 - Use thread counts from `$MSQ_THREADS` in scripts (`set_param general.maxThreads $::env(MSQ_THREADS)`,
   `make -j$MSQ_THREADS`); never "all cores".
 

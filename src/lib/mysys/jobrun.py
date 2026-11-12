@@ -80,6 +80,19 @@ def parse_kill_seq(s):
     return out
 
 
+WHY = re.compile(r"\b(fail(ed|ure)?|error|fatal|missing|not found|no such file|cannot|can't|unable to|denied|"
+                 r"traceback|exception|abort(ed)?|invalid|undefined)\b", re.I)
+
+
+def said_why(text, last_line="", tail=15):
+    """The line of a failed job's last output that says why: the last one that looks like an error, else the last."""
+    lines = [x.strip() for x in (text or "").splitlines()[-tail:] if x.strip() and not x.lstrip().startswith(("::ms", "=== ", "[remote]", "[queue]"))]
+    for x in reversed(lines):
+        if WHY.search(x):
+            return x[:160]
+    return (last_line or (lines[-1] if lines else "")).strip()[:160]
+
+
 class Runner:
     def __init__(self, jid):
         self.jid = jid
@@ -585,6 +598,10 @@ class Runner:
             if diag:
                 reason = f"{reason} — likely cause: {diag['name']}. {diag['fix']}"
                 self.run.log("INFO", f"known failure: {diag['name']}: {diag['line']}")
+            elif state == "failed" and reason.startswith("exit code"):
+                said = said_why(text, self.last_line)          # "exit code 1" alone sends the reader to the log
+                if said:
+                    reason = f"{reason} — {said}"
             if not j.get("keep_incomplete") and j.get("outputs"):
                 for pat in j["outputs"]:
                     for f in glob.glob(os.path.join(j["cwd"], pat)):
