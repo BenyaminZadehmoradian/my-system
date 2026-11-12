@@ -137,6 +137,29 @@ def fmt(r, wide=True):
 
 
 # ---------------------------------------------------------------- unexpected stop
+def _clean_stops():
+    """{boot_id: time of its clean stop} for the last few boots."""
+    try:
+        d = json.loads(CLEAN.read_text())
+    except (OSError, ValueError):
+        return {}
+    stops = dict(d.get("stops") or {})
+    if d.get("boot_id") and d["boot_id"] not in stops:        # file written by versions before 1.22
+        stops[d["boot_id"]] = d.get("t", 0)
+    return stops
+
+
+def mark_clean_stop():
+    """Called when the queue service is stopped by systemd (shutdown, reboot, logout). One entry per boot: two
+    reboots within a minute (e.g. into the BIOS and back) must not hide that the first one was clean."""
+    stops = _clean_stops()
+    stops[probes.boot_id()] = time.time()
+    stops = dict(sorted(stops.items(), key=lambda kv: kv[1])[-8:])
+    tmp = CLEAN.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"t": time.time(), "boot_id": probes.boot_id(), "stops": stops}))
+    tmp.replace(CLEAN)
+
+
 def check_unclean(notify):
     """Run once per watcher tick: if the previous boot ended without a clean stop, report what was going on."""
     try:
@@ -147,14 +170,11 @@ def check_unclean(notify):
     if not last.get("boot_id") or last["boot_id"] == cur:
         return None
     smp = last.get("sample") or {}
-    try:
-        clean = json.loads(CLEAN.read_text())
-    except (OSError, ValueError):
-        clean = {}
+    stops = _clean_stops()
     # mark as handled first, so a failure below never repeats the report
     LAST.write_text(json.dumps({"boot_id": cur, "sample": smp, "handled_prev": last["boot_id"]}))
     # clean only if the stop came at the very end (a restart of the service earlier that day does not count)
-    if clean.get("boot_id") == last["boot_id"] and clean.get("t", 0) >= smp.get("t", 0) - 120:
+    if stops.get(last["boot_id"], 0) >= smp.get("t", 0) - 120:
         return {"clean": True}
     try:
         from . import queue

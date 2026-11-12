@@ -1331,7 +1331,7 @@ def report_html(fid):
     rows = []
     for st, jl in per_step.items():
         ts = [queue.runtime(j) / 60 for j in jl if j.get("started") and j.get("ended")]
-        pk = [(j.get("peak_rss") or 0) / queue.GiB for j in jl if j.get("peak_rss")]
+        pk = [queue.efficiency(j)["mem_peak_gb"] for j in jl if queue.efficiency(j)["mem_peak_gb"]]
         eff = [queue.efficiency(j)["mem_eff"] for j in jl if queue.efficiency(j)["mem_eff"]]
         rows.append(f"<tr><td>{html.escape(st)}</td><td>{len(jl)}</td><td>{', '.join(f'{v} {k}' for k, v in states[st].items())}</td>"
                     f"<td>{min(ts):.1f} / {stt.median(ts):.1f} / {max(ts):.1f}</td>" if ts else

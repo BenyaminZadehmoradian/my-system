@@ -89,15 +89,43 @@ def update(jid, **kw):
         return j
 
 
+_JOB_CACHE = {}                       # file name -> (mtime_ns, size, job) for finished jobs only
+
+
 def all_jobs():
+    """Every job, by id. Finished jobs are read once and then served from memory until their file changes: with
+    over a thousand jobs kept, reading and parsing each file several times per scheduler tick (and per refresh
+    of the app) took a second of CPU every few seconds."""
     _ensure()
-    out = []
-    for f in JOBS.glob("*.json"):
-        try:
-            out.append(json.loads(f.read_text()))
-        except (OSError, ValueError):
+    out, seen = [], set()
+    try:
+        entries = list(os.scandir(JOBS))
+    except OSError:
+        entries = []
+    for e in entries:
+        if not e.name.endswith(".json"):
             continue
-    return sorted(out, key=lambda j: j["id"])
+        seen.add(e.name)
+        try:
+            st = e.stat()
+            c = _JOB_CACHE.get(e.name)
+            if c and c[0] == st.st_mtime_ns and c[1] == st.st_size:
+                out.append(dict(c[2]))
+                continue
+            with open(e.path) as fh:
+                j = json.loads(fh.read())
+            if j.get("state") in TERMINAL:
+                _JOB_CACHE[e.name] = (st.st_mtime_ns, st.st_size, j)
+                out.append(dict(j))
+            else:
+                _JOB_CACHE.pop(e.name, None)
+                out.append(j)
+        except (OSError, ValueError, AttributeError):
+            continue
+    if len(_JOB_CACHE) > len(seen):
+        for k in [k for k in _JOB_CACHE if k not in seen]:
+            _JOB_CACHE.pop(k, None)
+    return sorted((j for j in out if isinstance(j, dict) and "id" in j and "state" in j), key=lambda j: j["id"])
 
 
 def _next_id():
@@ -331,12 +359,14 @@ def submit(cmd, cwd=None, name=None, **opt):
     if j.get("cores") is None:
         j["cores"] = prof.get("cores") or 1.0
     # never ask for more than the machine has (Nextflow resourceLimits)
+    for_server = j.get("remote") not in (None, "", "here", "local", "auto")
     total = probes.meminfo().get("MemTotal", 0)
-    if total:
+    if total and not for_server:         # a job for a server may ask for more than this machine has
         cap_gb = (total - capacity.reserve_bytes(total)) / GiB
         if float(j["mem_gb"]) > cap_gb:
             j["mem_gb"], j["clamped"] = round(cap_gb, 1), True
-    j["cores"] = min(float(j["cores"]), float(probes.threads()))
+    if not for_server:
+        j["cores"] = min(float(j["cores"]), float(probes.threads()))
     j["timeout_s"] = resolve_timeout(j.get("timeout_s"), prof)
     if isinstance(j.get("idle_timeout_s"), str):
         j["idle_timeout_s"] = parse_duration(j["idle_timeout_s"])
@@ -675,8 +705,9 @@ def up_to_date(j):
 
 
 # ---------------------------------------------------------------- scheduler
-def _launch(j, gpu_ids=None):
-    upd = {"state": "running", "started": time.time(), "reason": "", "gpu_ids": gpu_ids}
+def _launch(j, gpu_ids=None, keep_start=False):
+    upd = {"state": "running", "started": (j.get("started") if keep_start else None) or time.time(), "reason": "",
+           "gpu_ids": gpu_ids}
     update(j["id"], **upd)
     devnull = open(os.devnull, "w")
     p = subprocess.Popen([sys.executable, str(config.MS / "bin" / "ms"), "q", "_exec", str(j["id"])],
@@ -684,6 +715,22 @@ def _launch(j, gpu_ids=None):
                          env=dict(os.environ, MY_SYSTEM=str(config.MS)))
     update(j["id"], pid=p.pid, sid=p.pid)
     return p.pid
+
+
+FALLBACK_BURST = 8                     # this many server-side failures within 10 minutes pause sending for an hour
+# exit codes of the link to the server, not of the job's own command: 3 upload, 4 sbatch, 5 no results came back,
+# 90-92 the node could not prepare the job (remote.EARLY_EXIT), 126/127 program not found or not runnable there
+SERVER_SIDE_RC = {3, 4, 5, 90, 91, 92, 126, 127}
+
+
+def server_side_failure(j):
+    """True when a job sent to a server failed because of the server or the way there, not its own command."""
+    if j.get("rc") in SERVER_SIDE_RC:
+        return True
+    d = j.get("diagnosis") or {}
+    txt = " ".join(str(x or "") for x in (j.get("reason"), j.get("last_line"), d.get("name"), d.get("line")))
+    return bool(re.search(r"command not found|No such file or directory|Missing file|not installed|"
+                          r"cannot open shared object|license", txt, re.I))
 
 
 # ---------------------------------------------------------------- 1.6 helpers: pressure, groups, fairness, pinning
@@ -919,6 +966,9 @@ def edit(jid, **kw):
             kw["depends"] = deps
         j.update(kw)
         j["edited"] = time.time()
+        if j["state"] == "queued" and ({"mem_gb", "cores"} & set(kw)):
+            # what it waited for no longer describes it: the next scheduler pass says why it still waits, if it does
+            j.update(reason="", max_free_t=None, max_free_gb=None, waiting_told=False)
         save(j)
     return True, f"job {jid} updated: " + ", ".join(sorted(kw))
 
@@ -1044,10 +1094,28 @@ class Scheduler:
         for j in jobs:
             if j["state"] not in ("failed", "timeout") or j.get("retried"):
                 continue
-            if j["state"] == "failed" and j.get("remote_auto") and not j.get("fell_back") and j.get("remote"):
-                # sent to a server automatically and failed there (missing program, file outside the folder,
-                # upload or sbatch problem...): run it here once before calling it a failure
+            if j["state"] == "failed" and j.get("remote_auto") and not j.get("fell_back") and j.get("remote") \
+                    and server_side_failure(j):
+                # sent to a server automatically and it could not run there (upload or sbatch problem, missing
+                # program or file, node could not fetch the job...): run it here once before calling it a failure.
+                # A job whose own command failed there (a real error in the design or script) is NOT run again:
+                # it would fail here too and only load this machine.
                 srv = j["remote"]
+                recent = [t for t in getattr(self, "fallbacks", []) if now - t < 600] + [now]
+                self.fallbacks = recent
+                if len(recent) >= FALLBACK_BURST and not getattr(self, "fallback_told", 0) > now - 3600:
+                    self.fallback_told = now
+                    try:
+                        from . import pause
+                        pause.DIR.mkdir(parents=True, exist_ok=True)
+                        (pause.DIR / "remote").write_text(str(int(now + 3600)) + "\n")
+                    except Exception:
+                        pass
+                    self.notify(f"{srv}: {len(recent)} jobs could not run there in 10 minutes",
+                                f"Last: #{j['id']} {j['name']}: {j.get('reason') or 'failed'}. Sending jobs to servers is "
+                                f"paused for 1 hour so they do not all pile onto this machine "
+                                f"(ms resume remote to continue now; ms remote check {srv} shows what is wrong).",
+                                "high", "warning")
                 update(j["id"], state="queued", attempt=j["attempt"] + 1, started=None, ended=None, rc=None,
                        remote=None, remote_auto=False, remote_never=True, fell_back=True, remote_job=None,
                        remote_dir=None, remote_state=None, remote_node=None, cpus=None, waiting_told=False,
@@ -1087,8 +1155,11 @@ class Scheduler:
                 self.notify(f"Job failed: {j['name']}", f"#{j['id']} · {j['reason']} · {short(j['cwd'])}", "high", "x")
         for j in jobs:          # successful single jobs: notify only when asked
             if j["state"] in ("done", "warning") and not j.get("flow") and j.get("notify") == "always" \
-                    and f"ok{j['id']}" not in self.told:
+                    and not j.get("told_done") and f"ok{j['id']}" not in self.told:
                 self.told.add(f"ok{j['id']}")
+                update(j["id"], told_done=True)      # kept in the job: a restart of the scheduler must not tell it again
+                if j.get("ended") and now - j["ended"] > 6 * 3600:
+                    continue                         # finished long ago (before this was remembered): say nothing
                 self.notify(f"Job {j['state']}: {j['name']}", f"#{j['id']} · {short(j['cwd'])} {j.get('reason', '')}",
                             "default", "white_check_mark")
 
@@ -1173,7 +1244,8 @@ class Scheduler:
     def pressure(self, jobs, cap, now):
         if self.heat(jobs, now):
             return True
-        running = [j for j in jobs if j["state"] == "running"]
+        # only jobs running on this machine: pausing the link to a server job frees no memory here
+        running = [j for j in jobs if j["state"] == "running" and not j.get("remote")]
         exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
         lim = float(config.num("QUEUE_PSI_MEM_FULL"))
         thrash = lim > 0 and cap.get("psi_mem_full", 0) >= 2 * lim and cap.get("psi_mem_full60", 0) >= lim
@@ -1418,7 +1490,7 @@ class Scheduler:
                 update(j["id"], **{key: round(max(0.0, val), 1)})
             # keep room only where it helps: when the missing CPU/RAM is held by other queue jobs that will finish.
             # Missing cores used by programs outside the queue would block the whole queue for nothing.
-            q_run = [r for r in running if r["state"] == "running"]
+            q_run = [r for r in running if r["state"] == "running" and not r.get("remote")]
             q_t = sum(float(r.get("cores") or 0) for r in q_run)
             q_m = sum(float(r.get("mem_gb") or 0) * GiB for r in q_run)
             helps = (q_m >= need_m - free_m) if why == "RAM" else (q_t >= need_t - free_t)
@@ -1426,7 +1498,8 @@ class Scheduler:
                 protect = (j, need_t, need_m)
             if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
                 exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
-                low = sorted([r for r in running if r["state"] == "running" and int(r.get("priority") or 0) < int(j.get("priority") or 0)
+                low = sorted([r for r in running if r["state"] == "running" and not r.get("remote")
+                              and int(r.get("priority") or 0) < int(j.get("priority") or 0)
                               and now - (r.get("started") or now) >= exempt],
                              key=lambda r: (int(r.get("priority") or 0), -(r.get("started") or 0)))
                 if low:
@@ -1472,7 +1545,18 @@ class Scheduler:
                 time.sleep(0.3)
                 k = load(j["id"])
                 if k and k["state"] in ACTIVE:
-                    update(j["id"], state="failed", ended=now, reason="runner stopped unexpectedly")
+                    if k.get("remote") and str(k.get("remote_job") or "").isdigit() and int(k.get("reattached") or 0) < 5:
+                        # its Slurm job is still on the server (this computer or the scheduler restarted):
+                        # follow it again instead of failing it and running everything a second time here
+                        update(j["id"], reattached=int(k.get("reattached") or 0) + 1, state="running", reason="",
+                               start_note=f"followed again after a restart (Slurm job {k['remote_job']})")
+                        _launch(load(j["id"]), k.get("gpu_ids"), keep_start=True)
+                    elif k.get("remote") and not k.get("remote_job"):
+                        # it was still being packed/uploaded: nothing runs there yet — simply queue it again
+                        update(j["id"], state="queued", pid=None, started=None, reason="queued again after a restart "
+                                                                                       "(it had not been submitted yet)")
+                    else:
+                        update(j["id"], state="failed", ended=now, reason="runner stopped unexpectedly")
             elif j["state"] == "cancelled" and not j.get("ended") and j.get("pid") and not _alive(j["pid"]):
                 update(j["id"], ended=now)
         jobs = all_jobs()
@@ -1516,10 +1600,18 @@ class Scheduler:
     def loop(self):
         _ensure()
         last_sched = 0
+        try:                                   # upload archives left by runners that were killed mid-way
+            from . import remote as _RM
+            for f in list(_RM.STATE.glob("in-*.tar.gz")) + list(_RM.STATE.glob("out-*.tar.gz")):
+                if time.time() - f.stat().st_mtime > 6 * 3600:
+                    f.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         def stopping(signum, frame):     # a clean shutdown/logout stops this service: remember it (crash detection)
             try:
-                (config.STATE / "clean_stop.json").write_text(json.dumps({"t": time.time(), "boot_id": probes.boot_id()}))
+                from . import history
+                history.mark_clean_stop()
             except OSError:
                 pass
             sys.exit(0)
@@ -1698,7 +1790,7 @@ def clear(older_than_days=0):
                 continue
             _path(j["id"]).unlink(missing_ok=True)
             for p in (LOGS / f"{j['id']}.log", LOGS / f"{j['id']}.log.1", Q / "series" / f"{j['id']}.csv",
-                      Q / "outputs" / f"{j['id']}.env"):
+                      Q / "outputs" / f"{j['id']}.env", Q / "issues" / f"{j['id']}.json"):
                 p.unlink(missing_ok=True)
             n += 1
     return n
@@ -1715,7 +1807,8 @@ def efficiency(j):
         req_c = float(j.get("remote_cores") or j.get("cores") or 0)
         return {"mem_req_gb": req_m, "mem_peak_gb": round(peak, 2),
                 "mem_eff": round(peak / req_m * 100) if peak and req_m else None, "cores_req": req_c,
-                "cores_used": round(cu, 2) if cu else None, "cpu_eff": round(cu / req_c * 100) if cu and req_c else None,
+                "cores_used": round(cu, 2) if cu is not None else None,
+                "cpu_eff": round(cu / req_c * 100) if cu is not None and req_c else None,
                 "seconds": round(j.get("remote_elapsed_s") or secs), "remote": True}
     peak = (j.get("peak_rss") or 0) / GiB
     cu = j.get("cores_used")

@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.22.0 — 2026-11-12
+A full review against real use (1250 jobs, up to 72 at once on Titan) and the notification log of two weeks.
+
+**The app (crashes and freezes)**
+- **It froze for half a minute at every refresh.** Table columns were measured again for every cell that was set
+  (Qt ResizeToContents): 300 queue jobs took 35 s per refresh, on every page with a table, on every 15-s tick and
+  on every key typed into a filter. Tables are now filled first and fitted once: 1300 jobs in 0.2 s.
+- **It ended when anything went wrong in a click, a timer or a selection** (PyQt6 ends the program when a Python
+  error escapes a handler). Errors are now caught: the footer says what happened, the details go to
+  state/gui_errors.log, and the app keeps running. Hard crashes inside Qt leave their stack in state/gui_crash.log.
+- It ended 15 s after switching the theme, and when the window was closed while a dialog was open (timers of the
+  closed window kept firing). A page that cannot be built no longer keeps the app from opening.
+- Fixed errors found on the way: selecting a run whose log has an entry without level; filtering Results with a
+  short row in results.csv; run logs with odd fields; a program that cannot start left "Building…" forever;
+  helper commands without a time limit could block the window (now at most 30–60 s, with a message).
+- New page **Servers**: jobs running there, cores reserved against max_cores, idle CPUs, how much of the reserved
+  cores finished jobs really used, what to ask for instead ("--cores 2 --mem 14"), and why jobs stayed here.
+- Queue: new column **Where** (here / titan · node), a line with the server's use, buttons that wrap instead of
+  pushing the table out of the window, the selection and scroll position survive refreshes, results.csv is read
+  only when it changed. Empty tables say why they are empty. Server jobs no longer show the RAM of the ssh link.
+
+**Server jobs**
+- **A restart of this computer no longer loses them.** Before: shutdown sent SIGTERM to every link, each one ran
+  `scancel` (the reboot cancelled your jobs on the server), and whatever survived was marked failed and run a
+  second time on this machine. Now a shutdown/logout leaves the Slurm jobs alone, and after the restart each one
+  is followed again where its log stopped (a job still uploading is queued again). Nothing is submitted twice.
+- A Slurm controller that answers nothing for 5 minutes no longer fails jobs that still run (it did, and with
+  offload = prefer all of them were then started again here).
+- Only failures of the server or the way there fall back to this machine (upload, sbatch, node could not fetch,
+  program or file missing there). A job whose own command failed there is not run again here. Eight such
+  failures in ten minutes pause sending for an hour and tell you, instead of piling everything onto this machine.
+- Uploads: at most 6 at a time (60 jobs released together started 60 compressors), compression level 1 (3x
+  faster, same size for sources/logs), the archive is streamed instead of read into RAM, connection errors are
+  retried, leftovers of killed uploads are removed. The idle-CPU count is corrected by what was sent since.
+- The time limit of a server job is Slurm's (from the start on the node): upload and waiting in Slurm's queue
+  no longer count, and "no output for N s" is not applied while it waits there.
+- `ms remote usage`: what finished server jobs reserved and used, per kind of job, with a better request.
+  `ms q add` prints that hint for a job named like earlier ones, and AI assistants get it in their system map.
+- RAM-low and "preempt" never pause the link to a server job (it freed nothing); starvation protection counts
+  only local jobs; jobs for a server may ask for more cores/RAM than this machine has; --cores 0.5 counts as 1.
+
+**Messages**
+- "Job done" came again after every restart of the scheduler — 36 times for one job in ten days. Told once now.
+- A failed queue job produced two messages ("Job failed" and "Run failed"). One now.
+- Two reboots within a minute (into the BIOS and back) were reported as "power loss or hard freeze".
+
+**Speed**
+- The job list is kept in memory for finished jobs (read again only when a file changes): the scheduler read
+  and parsed 1250 files 5–125 times per 3-s tick.
+
 ## 1.21.1 — 2026-11-08
 - **Server jobs took this machine's job slots and RAM.** Every job running on a server counted as a local job:
   it used one of this machine's job slots (QUEUE_MAX_JOBS, default = its threads, 16) and its `--mem` was held as

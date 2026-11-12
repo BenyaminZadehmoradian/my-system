@@ -146,6 +146,17 @@ def remote_lines():
                 + ("".join(f"; `{a}` -> `{b}`" for a, b in remote.parse_path_map(r)) if r.get("path_map") else "")
                 + ". Jobs that use other absolute paths of this machine stay here (rule 12).",
                 f"  - Keep a job on this machine: `--on here`. Force the server: `--on {n}`. Status: `ms remote list`."]
+    try:                               # measured use of recent server jobs: reserve what jobs really need
+        u = remote.usage_summary(3)
+        bad = [x for x in u["groups"] if x["advice"]][:6]
+        if u["n"]:
+            out.append(f"  - Measured (last 3 days, {u['n']} server jobs): {u['cpu_eff']}% of the reserved core-hours "
+                       f"were used." + (" Reserve less for these (it lets more jobs run at once):" if bad else ""))
+            out += [f"    - jobs named `{x['family']}…`: reserved {x['cores']:.0f} cores, used {x['used']:.1f} on average "
+                    f"(peak RAM {x['peak_gb'] or '?'} GB) -> `{x['advice']}`" for x in bad]
+            out.append("    - Full table: `ms remote usage`.")
+    except Exception:
+        pass
     return out
 
 

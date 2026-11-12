@@ -173,7 +173,7 @@ def running():
                 bits.append(f"~{_dur(left)} left" if left > 60 else "should end soon" if left > -usual * 0.5 else "slower than usual")
         except Exception:
             pass
-        if j.get("rss"):
+        if j.get("rss") and not j.get("remote"):       # a server job's memory is on the server, not this number
             bits.append(f"{j['rss'] / GiB:.1f} GB")
         st = " PAUSED" if j["state"] == "suspended" else ""
         if j.get("remote"):

@@ -267,6 +267,12 @@ class Runner:
             tf.start()
         to = j.get("timeout_s") if isinstance(j.get("timeout_s"), (int, float)) else None
         idle_to = j.get("idle_timeout_s")
+        if j.get("remote"):
+            # on a server the time limit is Slurm's (--time, counted from the start on the node). Counting it here
+            # would include the upload and the wait in Slurm's queue, and a waiting job prints nothing: jobs
+            # released together were stopped as "timeout" / "no output" before they had started there.
+            to = to + 6 * 3600 if to else None        # only a far backstop, should Slurm never answer
+            idle_to = None
         sig_before = j.get("signal_before")        # "USR1@300"
         sent_before, told = False, set()
         why = None
@@ -414,6 +420,8 @@ class Runner:
                              project=(j.get("flow") or {}).get("name"), extra={"provenance": Q_.provenance(j)})
         self.run.start()
         t0 = time.time()
+        if j.get("reattached") and j.get("remote_job") and j.get("started"):
+            t0 = j["started"]                  # following a server job again after a restart: it started back then
         queue.update(jid, run_id=self.run.run, started=t0, sid=os.getsid(0), pid=os.getpid())
         if j.get("created"):
             self.run.metric("queue_wait_s", round(t0 - j["created"]), "s")
@@ -437,6 +445,14 @@ class Runner:
             self.write_out(f"cannot start: {e}\n")
         secs = time.time() - t0
         cur = queue.load(jid) or j
+        if j.get("remote") and rc in (143, -15) and cur.get("state") != "cancelled" and cur.get("remote_job"):
+            from . import remote as _rm
+            if _rm.session_stopping():        # shutdown/logout: the Slurm job lives on; the scheduler follows it
+                try:                          # again after the restart (state stays "running")
+                    self.logf.flush()
+                except (ValueError, OSError):
+                    pass
+                os._exit(0)
         # SIGKILL (-9/137) that the runner did not send: in a memory-limited scope that is the kernel's OOM killer
         # (the scope is gone by now, so memory.events may be unreadable and the last RSS sample may be old)
         # SIGKILL (-9/137) that the runner did not send is an out-of-memory kill only with evidence: the kernel's

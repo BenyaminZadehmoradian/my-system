@@ -499,8 +499,18 @@ def tick():
     try:
         from . import runlog
         since = s.get("runlog_since") or now - 120
-        for r in runlog.new_endings(since):
-            if r["status"] == "failed" and r["run"] not in s.setdefault("runlog_told", []):
+        ends = [r for r in runlog.new_endings(since) if r["status"] == "failed"]
+        queue_runs = set()
+        if ends:                       # a queue job's own run log: the queue already reports that failure
+            try:
+                from . import queue as _q
+                queue_runs = {j.get("run_id") for j in _q.all_jobs() if j.get("run_id")}
+            except Exception:
+                queue_runs = set()
+        for r in ends:
+            if r["run"] in queue_runs:
+                continue
+            if r["run"] not in s.setdefault("runlog_told", []):
                 notify(f"Run failed: {r['name']}", f"{short(r['folder'])} · {runlog.fmt_seconds(r['seconds'])} · "
                                                    f"{r['first_error'] or 'see msrun.jsonl'}", "high", "x")
                 s["runlog_told"] = (s["runlog_told"] + [r["run"]])[-200:]

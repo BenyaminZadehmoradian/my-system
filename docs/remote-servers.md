@@ -170,6 +170,18 @@ max_cores = 48
 and submit sequential scripts with `--cores 1 --mem 18`: 48 of them can run, or 12 jobs of `--cores 4` — your
 share of the shared server stays 48 cores either way. `ms q show ID` shows what a finished job really used there.
 
+### Seeing how well the server is used
+
+`ms remote usage [--days 3]` (and the Servers page of the app) lists, per kind of job, the cores reserved, the
+cores really used (Slurm accounting), peak memory and a better request. `ms q add` prints the same hint when a
+new job is named like earlier ones that used far less than they reserved.
+
+### Restarts
+
+A shutdown, reboot or logout of this computer does not cancel jobs on the server. When the scheduler is back it
+follows each one again (`following Slurm job N again` in the job log). Only `ms q cancel` and a time limit cancel
+a job there.
+
 ### When the tools do not work there
 
 First run `bash tests/live/titan_diagnose.sh titan` (works without my-system 1.18; really synthesizes with Vivado and

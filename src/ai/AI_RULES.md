@@ -69,6 +69,8 @@ These rules are installed by **my-system** and are read-only. The machine-specif
     - Results: everything the job writes comes back unless you say otherwise. For jobs that write big temporary
       files, pass `--outputs GLOB` (only those come back) or delete the temporaries at the end of the job.
     - To change the order of waiting jobs use `ms q edit ID --after OTHER` (not cancel and re-add).
+    - `ms remote usage` shows what your recent server jobs reserved and used, with the request to use instead.
+    - Server jobs survive a restart of this computer and are followed again; do not resubmit them.
     - Reserve what a job really uses (`ms q show ID` of a finished one shows it, measured on the server): a script
       that runs one tool run after another needs `--cores 1`; N runs in parallel need about 2 cores and the
       measured peak memory (+20%) each. When the server has `max_cores`, smaller reservations let more jobs run.

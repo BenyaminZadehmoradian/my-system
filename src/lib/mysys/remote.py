@@ -159,19 +159,99 @@ def _ssh_base(r):
             "-o", "ControlMaster=auto", "-o", f"ControlPath={STATE}/cm-%r@%h-%p", "-o", "ControlPersist=10m", r["ssh"]]
 
 
-def ssh(r, cmd, timeout=60, input_=None, text=True):
-    """Run a shell command on the head node: (rc, stdout, stderr). Never prompts for a password."""
+def ssh(r, cmd, timeout=60, input_=None, text=True, stdin_path=None):
+    """Run a shell command on the head node: (rc, stdout, stderr). Never prompts for a password.
+    stdin_path: send this file as the command's input (streamed, not read into memory)."""
+    fh = None
     try:
+        kw = {}
+        if stdin_path is not None:
+            fh = open(stdin_path, "rb")
+            kw["stdin"] = fh
+        else:
+            kw["input"] = input_
         if text:      # tool logs are not always UTF-8 (and a copy can end mid-character): never crash on them
             p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, timeout=timeout, encoding="utf-8",
-                               errors="replace", input=input_)
+                               errors="replace", **kw)
         else:
-            p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, timeout=timeout, input=input_)
+            p = subprocess.run(_ssh_base(r) + [cmd], capture_output=True, timeout=timeout, **kw)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, "" if text else b"", "timed out"
     except OSError as e:
         return 127, "" if text else b"", str(e)
+    finally:
+        if fh is not None:
+            fh.close()
+
+
+def ssh_retry(r, cmd, timeout=60, tries=3, wait=None, say=None, **kw):
+    """ssh() again when the link itself failed (ssh exit 255: refused, reset, too many sessions; 124: timed out).
+    A command that ran and failed is not repeated. Many jobs share one connection, and a busy head node drops
+    some attempts: one dropped attempt must not fail a job."""
+    wait = float(os.environ.get("MSQ_SSH_RETRY_WAIT", "5")) if wait is None else wait
+    rc, out, err = 255, "", ""
+    for k in range(max(1, tries)):
+        rc, out, err = ssh(r, cmd, timeout, **kw)
+        if rc not in (255, 124):
+            return rc, out, err
+        if k + 1 < tries:
+            if say:
+                e = err.decode(errors="replace") if isinstance(err, bytes) else (err or "")
+                say(f"connection problem ({e.strip()[:120] or 'no answer'}): trying again in {wait * (k + 1):.0f} s")
+            time.sleep(wait * (k + 1))
+    return rc, out, err
+
+
+def session_stopping():
+    """True while the system is shutting down / rebooting, or the user's session is ending (logout)."""
+    if os.environ.get("MSQ_FAKE_STOPPING"):
+        return os.environ["MSQ_FAKE_STOPPING"] == "1"
+    for cmd in (["systemctl", "is-system-running"], ["systemctl", "--user", "is-system-running"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out == "stopping":
+            return True
+    return False
+
+
+UPLOAD_SLOTS = 6
+
+
+class upload_slot:
+    """At most UPLOAD_SLOTS jobs pack and upload at the same time (the others wait their turn): 60 jobs released
+    together would otherwise run 60 compressors and 60 uploads through one ssh connection."""
+
+    def __init__(self, say=None, stop=None):
+        self.say, self.stop, self.fh = say, stop, None
+
+    def __enter__(self):
+        import fcntl
+        STATE.mkdir(parents=True, exist_ok=True)
+        n = int(os.environ.get("MSQ_UPLOAD_SLOTS", UPLOAD_SLOTS))
+        told = False
+        while True:
+            for k in range(n):
+                fh = open(STATE / f"upload-{k}.lock", "w")
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.fh = fh
+                    return self
+                except OSError:
+                    fh.close()
+            if self.stop and self.stop():
+                return self
+            if not told and self.say:
+                self.say(f"waiting for an upload slot ({n} uploads at a time)")
+                told = True
+            time.sleep(1.0)
+
+    def __exit__(self, *a):
+        if self.fh is not None:
+            self.fh.close()          # closing releases the lock
+        return False
 
 
 def _excluded(rel, patterns):
@@ -185,7 +265,8 @@ def pack(src, dest_tar, patterns=None, only=None):
     import glob
     patterns = patterns or []
     n = size = 0
-    with tarfile.open(dest_tar, "w:gz") as tf:
+    # level 1: three times faster than the default level 9, and about the same size for sources and logs
+    with tarfile.open(dest_tar, "w:gz", compresslevel=1) as tf:
         if only:
             files = sorted({os.path.relpath(f, src) for g in only for f in glob.glob(os.path.join(src, g), recursive=True)})
         else:
@@ -225,7 +306,7 @@ def folder_size(src, patterns):
 
 # ---------------------------------------------------------------- the job script that runs on the node
 JOB_SH = r"""#!/bin/bash
-#SBATCH --job-name=msq-{jid}
+#SBATCH --job-name=msq-{jid}-{attempt}
 {sbatch_lines}
 # my-system remote job {jid} (attempt {attempt}) — generated, do not edit
 REMOTE_DIR={remote_dir}
@@ -474,7 +555,7 @@ def link_lines(r):
 
 
 def job_script(r, j, remote_dir):
-    cores = max(1, int(round(float(j.get("cores") or 1))))
+    cores = slurm_cores(j)
     mem = max(1, int(float(j.get("mem_gb") or 2) * 1.1 + 0.999))
     lines = [f"#SBATCH --cpus-per-task={cores}"] + ([f"#SBATCH --mem={mem}G"] if r.get("_slurm_mem", True) else []) + [
              f"#SBATCH --time={_slurm_time(j['timeout_s']) if isinstance(j.get('timeout_s'), (int, float)) else r['default_time']}",
@@ -555,14 +636,16 @@ ENDED = ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_F
 
 def _slurm_ended(r, sid, rdir, jid):
     """True when Slurm's accounting says the job ended, or its results are already there. False while sacct still
-    reports it pending/running, or when nothing can be told (the caller then waits a few more polls)."""
+    reports it pending/running (or the link failed). None when accounting gives no answer at all."""
     rc, out, _ = ssh(r, f"sacct -n -X -P -j {int(sid)} -o State 2>/dev/null | head -1; "
-                        f"test -e {shlex.quote(rdir)}/out.tar.gz && echo HAVE_OUT", 60)
+                        f"test -e {shlex.quote(rdir)}/out.tar.gz && echo HAVE_OUT; true", 60)
     if rc != 0:
-        return False
+        return False                     # the link failed: not a sign that the job ended
     if "HAVE_OUT" in out:
         return True
-    state = (out.split() or [""])[0].upper()
+    state = (out.replace("HAVE_OUT", "").split() or [""])[0].upper()
+    if not state:
+        return None                      # no accounting answer: the caller gives up only after several quiet polls
     return state.startswith(ENDED)
 
 
@@ -636,34 +719,68 @@ def run_job(jid):
     signal.signal(signal.SIGINT, on_term)
     src = os.getcwd()
     pats = r["exclude"].split()
-    if not j.get("inputs"):
-        sz = folder_size(src, pats)
-        if sz > float(r["max_upload_gb"]) * GiB:
-            print(f"[{r['name']}] the job folder is {sz / GiB:.1f} GB (limit {r['max_upload_gb']} GB). Declare what the job "
-                  f"needs with --inputs GLOB (flows: inputs:), or raise max_upload_gb.", flush=True)
-            return 2
-    STATE.mkdir(parents=True, exist_ok=True)
-    tmp = STATE / f"in-{jid}-{j['attempt']}.tar.gz"
-    only = (j.get("inputs") or []) + (j.get("remote_extra") or []) if j.get("inputs") else None
-    n, size = pack(src, tmp, pats, only)
     rdir = f"{r['workdir'].rstrip('/')}/{jid}-{j['attempt']}"
-    print(f"[{r['name']}] sending {n} files ({size / 2**20:.1f} MB) to {r['ssh']}:{rdir}", flush=True)
-    rc, _, err = ssh(r, f"mkdir -p {shlex.quote(rdir)} && cat > {shlex.quote(rdir)}/in.tar.gz", 1800,
-                     input_=tmp.read_bytes(), text=False)
-    tmp.unlink(missing_ok=True)
-    if rc != 0:
-        print(f"[{r['name']}] upload failed: {(err or b'').decode(errors='replace') if isinstance(err, bytes) else err}", flush=True)
-        return 3
-    if stop["now"]:
-        print(f"[{r['name']}] cancelled before it was submitted", flush=True)
-        if _own_job_dir(r, rdir):
-            ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
-        return 130
-    r["_slurm_mem"] = mem_supported(r)
-    script = job_script(r, j, rdir)
-    rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120,
-                       input_=script)
-    sid = (out or "").strip().split(";")[0].strip()
+    tagname = f"msq-{jid}-{j['attempt']}"
+
+    def say(msg):
+        print(f"[{r['name']}] {msg}", flush=True)
+
+    def cancel_unknown():
+        """Cancelled while sbatch may have gone through without us seeing its id: cancel by the job's own name."""
+        ssh(r, f"scancel --account={shlex.quote(r['account'])} --name={tagname} 2>/dev/null; true", 60)
+
+    sid, offset = "", 0
+    rc, out, err = 0, "", ""
+    r["_slurm_mem"] = False
+    if str(j.get("remote_job") or "").isdigit() and j.get("remote_dir") == rdir:
+        # this job was already submitted (the computer or the scheduler restarted meanwhile): follow it again
+        sid, offset = str(j["remote_job"]), int(j.get("remote_log_off") or 0)
+        say(f"following Slurm job {sid} again (it kept running on the server while this computer restarted)")
+    if not sid:
+        if not j.get("inputs"):
+            sz = folder_size(src, pats)
+            if sz > float(r["max_upload_gb"]) * GiB:
+                say(f"the job folder is {sz / GiB:.1f} GB (limit {r['max_upload_gb']} GB). Declare what the job "
+                    f"needs with --inputs GLOB (flows: inputs:), or raise max_upload_gb.")
+                return 2
+        STATE.mkdir(parents=True, exist_ok=True)
+        tmp = STATE / f"in-{jid}-{j['attempt']}.tar.gz"
+        only = (j.get("inputs") or []) + (j.get("remote_extra") or []) if j.get("inputs") else None
+        with upload_slot(say, lambda: stop["now"]):
+            if stop["now"]:
+                say("cancelled before anything was sent")
+                return 130
+            try:
+                n, size = pack(src, tmp, pats, only)
+                say(f"sending {n} files ({size / 2**20:.1f} MB) to {r['ssh']}:{rdir}")
+                rc, _, err = ssh_retry(r, f"mkdir -p {shlex.quote(rdir)} && cat > {shlex.quote(rdir)}/in.tar.gz", 1800,
+                                       say=say, text=False, stdin_path=tmp)
+            finally:
+                tmp.unlink(missing_ok=True)
+        if rc != 0:
+            say(f"upload failed: {(err or b'').decode(errors='replace') if isinstance(err, bytes) else err}")
+            return 3
+        if stop["now"]:
+            say("cancelled before it was submitted")
+            if _own_job_dir(r, rdir):
+                ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
+            return 130
+        r["_slurm_mem"] = mem_supported(r)
+        script = job_script(r, j, rdir)
+        # one attempt only: a second sbatch after a lost answer could start the job twice
+        rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120,
+                           input_=script)
+        sid = (out or "").strip().split(";")[0].strip()
+        if rc in (255, 124) and not sid.isdigit():
+            # the link broke around sbatch: it may or may not have been submitted — ask Slurm by the job's name
+            time.sleep(float(os.environ.get("MSQ_SSH_RETRY_WAIT", "5")))
+            rc2, out2, _ = ssh_retry(r, f"squeue -h --name={tagname} -o %i 2>/dev/null | head -1", 60, say=say)
+            cand = (out2 or "").strip()
+            if rc2 == 0 and cand.isdigit():
+                rc, sid = 0, cand
+            elif rc2 == 0:
+                rc, out, err = ssh_retry(r, f"cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120, say=say)
+                sid = (out or "").strip().split(";")[0].strip()
     if (rc != 0 or not sid.isdigit()) and r["_slurm_mem"] and "memory" in (err or "").lower() \
             and (r.get("slurm_mem") or "auto").lower() == "auto":
         # the nodes report no RAM (like Titan) but sinfo could not tell us: again without --mem, and remember it
@@ -674,17 +791,29 @@ def run_job(jid):
                            120, input_=job_script(r, j, rdir))
         sid = (out or "").strip().split(";")[0].strip()
     if rc != 0 or not sid.isdigit():
+        if stop["now"]:
+            cancel_unknown()
+            say("cancelled while it was being submitted")
+            return 130
         print(f"[{r['name']}] sbatch failed: {(err or out).strip()[:500]}", flush=True)
         return 4
-    queue.update(jid, remote_job=sid, remote_dir=rdir)
-    print(f"[{r['name']}] submitted as Slurm job {sid}", flush=True)
+    if not (str(j.get("remote_job") or "") == sid):
+        queue.update(jid, remote_job=sid, remote_dir=rdir, remote_log_off=0)
+        print(f"[{r['name']}] submitted as Slurm job {sid}", flush=True)
 
     import codecs
-    seen, last_state, offset = 0, "", 0
+    seen, last_state, saved_off, prev_off = 0, "", offset, offset
     lic_buf, no_lic = "", set()
     dec = codecs.getincrementaldecoder("utf-8")(errors="replace")   # a character cut between two polls stays whole
     while True:
         if stop["now"]:
+            cur = queue.load(jid) or {}
+            if cur.get("state") != "cancelled" and session_stopping():
+                # not cancelled by you: this computer is shutting down or you are logging out. The job keeps
+                # running on the server and is followed again when the scheduler is back.
+                print(f"[{r['name']}] this computer is stopping: Slurm job {sid} keeps running on the server "
+                      f"and will be followed again after the restart", flush=True)
+                return 143
             # only this job, and only if it runs under your account
             crc, _, cerr = ssh(r, f"scancel --account={shlex.quote(r['account'])} {int(sid)}", 60)
             print(f"[{r['name']}] cancelled Slurm job {sid}" + ("" if crc == 0 else f" — scancel said: {cerr.strip()[:200]}"),
@@ -714,10 +843,19 @@ def run_job(jid):
                 seen += 1
                 # squeue says nothing both for a finished job and when the controller is busy: ask sacct, and only
                 # give up waiting when Slurm says the job ended (or, without accounting, after a few quiet polls)
-                if seen >= 2 and (_slurm_ended(r, sid, rdir, jid) or seen >= 10):
-                    break
+                # (None = sacct could not tell; False = it says the job is still pending/running: keep waiting)
+                if seen >= 2:
+                    ended = _slurm_ended(r, sid, rdir, jid)
+                    if ended or (ended is None and seen >= 10):
+                        break
             else:
                 seen = 0
+            # where the log stands, for a restart. One poll behind on purpose: the lines of the newest poll may still
+            # sit in a buffer on their way to the log file, and repeating a few lines is better than losing them.
+            if prev_off != saved_off:
+                queue.update(jid, remote_log_off=prev_off)
+                saved_off = prev_off
+            prev_off = offset
         # wait in short steps: a cancel (SIGTERM) must reach scancel long before the SIGKILL that follows it
         t_end = time.time() + float(os.environ.get("MSQ_REMOTE_POLL", "30"))
         while time.time() < t_end and not stop["now"]:
@@ -733,7 +871,7 @@ def run_job(jid):
               f"{'it' if len(no_lic) == 1 else 'them'} run here (a license for the server, e.g. "
               f"XILINXD_LICENSE_FILE in setup, lifts this)", flush=True)
     # results
-    rc, out, _ = ssh(r, f"sacct -n -P -j {sid} -o State,ExitCode,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS 2>/dev/null", 60)
+    rc, out, _ = ssh_retry(r, f"sacct -n -P -j {sid} -o State,ExitCode,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS 2>/dev/null", 60)
     acct, use = slurm_usage(out)
     if use:
         queue.update(jid, remote_state=acct.split("|")[0] or None, **use)
@@ -741,12 +879,25 @@ def run_job(jid):
               + (f", peak RAM {use['remote_peak_gb']:.1f} GB" if use.get("remote_peak_gb") else "")
               + f" ({use['remote_elapsed_s'] / 3600:.1f} h)", flush=True)
     tmp = STATE / f"out-{jid}.tar.gz"
-    with open(tmp, "wb") as fh:                    # streamed to disk: results can be many GB
-        data = subprocess.run(_ssh_base(r) + [f"cat {shlex.quote(rdir)}/out.tar.gz"], stdout=fh,
-                              stderr=subprocess.DEVNULL, timeout=6 * 3600)
+    got = False
+    for k in range(3):                             # streamed to disk: results can be many GB
+        try:
+            with open(tmp, "wb") as fh:
+                data = subprocess.run(_ssh_base(r) + [f"cat {shlex.quote(rdir)}/out.tar.gz"], stdout=fh,
+                                      stderr=subprocess.DEVNULL, timeout=6 * 3600)
+            drc = data.returncode
+        except subprocess.TimeoutExpired:
+            drc = 124
+        except OSError:
+            drc = 127
+        got = drc == 0 and tmp.stat().st_size > 0
+        if got or drc not in (255, 124) or k == 2:
+            break
+        say(f"connection problem while fetching the results: trying again ({k + 2} of 3)")
+        time.sleep(float(os.environ.get("MSQ_SSH_RETRY_WAIT", "5")) * (k + 1))
     job_rc = None
     kept = False
-    if data.returncode == 0 and tmp.stat().st_size > 0:
+    if got:
         skipped = _extract_results(tmp, src)
         if skipped:
             print(f"[{r['name']}] not copied back ({len(skipped)}): " + "; ".join(skipped[:5]), flush=True)
@@ -789,10 +940,13 @@ def _cache(name):
         return {}
 
 
+STATUS_TTL = 120
+
+
 def status(r, fresh=False):
-    """{'ok', 'idle_cpus', 'total_cpus', 'mine', 'nodes', 'error', 't'} — cached for 5 minutes."""
+    """{'ok', 'idle_cpus', 'total_cpus', 'mine', 'nodes', 'error', 't'} — cached for 2 minutes."""
     c = _cache(r["name"])
-    if not fresh and time.time() - c.get("t", 0) < 300:
+    if not fresh and time.time() - c.get("t", 0) < STATUS_TTL:
         return c
     part = f"-p {shlex.quote(r['partition'])} " if r.get("partition") else ""   # only CPUs you may use
     rc, out, err = ssh(r, f"sinfo -h {part}-o '%C' 2>&1 | tail -1; echo ===; squeue -h " + (f"-A {shlex.quote(r['account'])} " if r["account"] else "")
@@ -818,14 +972,27 @@ def status(r, fresh=False):
     return res
 
 
+def idle_now(name, st, jobs):
+    """Idle CPUs of the server, less what was sent there since that number was read (it is refreshed every few
+    minutes): 60 jobs released together must not all be sent because 10 CPUs were idle a minute ago."""
+    t = st.get("t", 0)
+    sent = sum(slurm_cores(x) for x in jobs if x.get("remote") == name and x["state"] in ("running", "suspended")
+               and (x.get("started") or 0) > t and x.get("remote_state") != "RUNNING")
+    return st.get("idle_cpus", 0) - sent
+
+
 def running_here(name, jobs):
     return sum(1 for x in jobs if x.get("remote") == name and x["state"] in ("running", "suspended"))
 
 
 def cores_there(name, jobs):
     """Cores reserved (--cores) by your jobs running on server `name`."""
-    return sum(float(x.get("cores") or 1) for x in jobs
-               if x.get("remote") == name and x["state"] in ("running", "suspended"))
+    return sum(slurm_cores(x) for x in jobs if x.get("remote") == name and x["state"] in ("running", "suspended"))
+
+
+def slurm_cores(j):
+    """Whole cores Slurm reserves for a job (--cpus-per-task): 0.5 -> 1, 2.4 -> 2."""
+    return max(1, int(round(float(j.get("cores") or 1))))
 
 
 def full(name, r, j, jobs):
@@ -841,7 +1008,7 @@ def full(name, r, j, jobs):
         except ValueError:
             return None
         used = cores_there(name, jobs)
-        need = float(j.get("cores") or 1)
+        need = slurm_cores(j)
         if n and used + need > cap_f:
             return f"{name}: your jobs there reserve {used:g} cores, +{need:g} would pass max_cores = {cap}"
     return None
@@ -1052,8 +1219,8 @@ def prefer_target(j, jobs):
         if not st.get("ok"):
             why = f"{name} not reachable"
             continue
-        if st.get("idle_cpus", 0) < max(1, int(round(float(j.get("cores") or 1)))):
-            why = f"{name} has no free CPUs"
+        if idle_now(name, st, jobs) < slurm_cores(j):
+            why = f"{name} has no free CPUs right now"
             continue
         wn = why_not(j, r)
         if wn:
@@ -1083,7 +1250,7 @@ def offload_target(j, jobs, waited_s, local_cap):
         if full(name, r, j, jobs):
             continue
         st = status(r)
-        if st.get("ok") and st.get("idle_cpus", 0) >= max(1, int(round(float(j.get("cores") or 1)))):
+        if st.get("ok") and idle_now(name, st, jobs) >= slurm_cores(j):
             return name
     return None
 
@@ -1227,6 +1394,87 @@ def measure(j):
     queue.update(j["id"], remote_state=acct.split("|")[0] or None, **use)
     j.update(use)
     return True
+
+
+# ---------------------------------------------------------------- how well the server is used
+def family(name):
+    """Jobs that belong together: the name up to its first '_' or digit run ('k70v_aes_c0' -> 'k70v',
+    'rom_stencil3d_s2' -> 'rom', 'titan_lit_ncubed_xc7a200t2' -> 'titan')."""
+    m = re.match(r"[A-Za-z]+\d*[A-Za-z]*", name or "")
+    return (m.group(0) if m else (name or "?"))[:24]
+
+
+def usage_summary(days=3, jobs=None, now=None):
+    """What finished server jobs of the last `days` days reserved and really used (Slurm accounting).
+    {'groups': [{family, n, cores, used, peak_gb, mem_gb, hours, cpu_eff, advice}], 'reserved_h', 'used_h',
+     'cpu_eff', 'n'} — groups sorted by wasted core-hours."""
+    from . import queue
+    now = now or time.time()
+    jobs = queue.all_jobs() if jobs is None else jobs
+    g = {}
+    for j in jobs:
+        if j.get("remote_cores_used") is None or not j.get("remote_elapsed_s") or (j.get("ended") or 0) < now - days * 86400:
+            continue
+        if j["remote_elapsed_s"] < 300:                 # too short to say anything about its needs
+            continue
+        res = float(j.get("remote_cores") or j.get("cores") or 1)
+        d = g.setdefault((family(j.get("name")), res), {"n": 0, "res_h": 0.0, "used_h": 0.0, "used": [], "peak": [],
+                                                        "mem": float(j.get("mem_gb") or 0)})
+        h = j["remote_elapsed_s"] / 3600
+        d["n"] += 1
+        d["res_h"] += res * h
+        d["used_h"] += float(j["remote_cores_used"]) * h
+        d["used"].append(float(j["remote_cores_used"]))
+        if j.get("remote_peak_gb"):
+            d["peak"].append(float(j["remote_peak_gb"]))
+    groups = []
+    for (fam, res), d in g.items():
+        used = sorted(d["used"])
+        hi = used[min(len(used) - 1, int(len(used) * 0.9))]          # what 9 of 10 jobs stay under
+        want = max(1, int(hi + 0.7))                                   # 1.2 -> 1, 1.9 -> 2, 2.4 -> 3
+        peak = max(d["peak"]) if d["peak"] else None
+        advice = ""
+        if d["n"] >= 2 and want < res:
+            advice = f"--cores {want}" + (f" --mem {max(2, int(peak * 1.25 + 1))}" if peak else "")
+        groups.append({"family": fam, "n": d["n"], "cores": res, "used": round(sum(used) / len(used), 2),
+                       "used_hi": round(hi, 2), "peak_gb": round(peak, 1) if peak else None, "mem_gb": d["mem"],
+                       "hours": round(d["res_h"] / res, 1), "wasted_h": round(d["res_h"] - d["used_h"], 1),
+                       "cpu_eff": round(d["used_h"] / d["res_h"] * 100) if d["res_h"] else None, "advice": advice})
+    groups.sort(key=lambda x: -x["wasted_h"])
+    res_h = sum(d["res_h"] for d in g.values())
+    used_h = sum(d["used_h"] for d in g.values())
+    return {"groups": groups, "reserved_h": round(res_h, 1), "used_h": round(used_h, 1),
+            "cpu_eff": round(used_h / res_h * 100) if res_h else None, "n": sum(d["n"] for d in g.values())}
+
+
+def usage_text(days=3, limit=12):
+    u = usage_summary(days)
+    if not u["n"]:
+        return f"no finished server jobs with measurements in the last {days} day(s)"
+    L = [f"server jobs of the last {days} day(s): {u['n']} measured · reserved {u['reserved_h']:.0f} core-hours, "
+         f"used {u['used_h']:.0f} ({u['cpu_eff']}%)",
+         f"{'jobs like':<24} {'n':>4} {'reserved':>9} {'used avg':>9} {'9 of 10 <':>10} {'peak GB':>8} {'cpu%':>5}  better"]
+    for x in u["groups"][:limit]:
+        L.append(f"{x['family']:<24} {x['n']:>4} {x['cores']:>7.0f} c {x['used']:>9.2f} {x['used_hi']:>10.2f} "
+                 f"{(str(x['peak_gb']) if x['peak_gb'] else '–'):>8} {str(x['cpu_eff'] or '–'):>5}  {x['advice'] or 'ok'}")
+    if any(x["advice"] for x in u["groups"]):
+        L.append("'better' = what such jobs really needed. Fewer reserved cores let more of your jobs run at once "
+                 "(max_cores) and take less from other users of the server.")
+    return "\n".join(L)
+
+
+def advice_for(name, cores, jobs=None):
+    """A one-line hint for a new job named like earlier server jobs that used far less than they reserved."""
+    try:
+        u = usage_summary(7, jobs)
+    except Exception:
+        return None
+    fam = family(name)
+    for x in u["groups"]:
+        if x["family"] == fam and x["advice"] and float(cores or 1) >= x["cores"] and x["n"] >= 3:
+            return (f"jobs like '{fam}…' used {x['used']:.1f} of {x['cores']:.0f} reserved cores on the server "
+                    f"({x['n']} measured): {x['advice']} would let more of them run at once")
+    return None
 
 
 def _probe_job(r, probe, name, cores=1, mem_gb=1, timeout_s=None):
@@ -1586,7 +1834,8 @@ HELP = """ms remote — run queue jobs on a Slurm cluster (e.g. Titan) when this
                               the parts your recent queue jobs use); jobs for unlicensed parts then stay here
   ms remote tools NAME        start Vivado/Vitis on a node exactly like a job (setup, links, path_map) and say
                               what is missing: settings, permissions, libraries, locale, HLS, devices
-  ms remote status NAME       free CPUs there and your jobs
+  ms remote status [NAME]     free CPUs there and your jobs
+  ms remote usage [--days 3]  what your finished server jobs reserved and really used, and what to ask for
   ms remote clean NAME [--days 7]   remove your own old job folders there (kept after failed jobs)
 
 On a shared server my-system only touches: its own folder (workdir, e.g. ~/jobs/msq/benyamin) on the head node,
@@ -1662,7 +1911,19 @@ def cli(a):
             ssh(r, f"rm -rf {shlex.quote(w + '/' + d)}", 120)
         print(f"removed {len(old_dirs)} old job folder(s) from {r['ssh']}:{w} (kept after failures): {', '.join(old_dirs[:20])}")
         return 0
+    if sub == "usage":
+        days = 3
+        if "--days" in a and a.index("--days") + 1 < len(a) and a[a.index("--days") + 1].isdigit():
+            days = int(a[a.index("--days") + 1])
+        print(usage_text(days))
+        return 0
     if sub == "status":
+        if len(a) < 2:
+            rs = list(remotes())
+            if len(rs) != 1:
+                print("usage: ms remote status NAME" + (f"   (servers: {', '.join(rs)})" if rs else ""))
+                return 2
+            a = [a[0], rs[0]]
         r = get(a[1])
         st = status(r, fresh=True)
         if not st.get("ok"):

@@ -165,7 +165,8 @@ def activity(n_done=5):
             where += f" · on {j['remote']}" + (f" ({j['remote_node']})" if j.get("remote_node") else "") + \
                 (f", {j['remote_state'].lower()}" if j.get("remote_state") and j["remote_state"] != "RUNNING" else "")
         running.append({"name": f"#{j['id']} {j['name']}", "where": where, "elapsed": _dur(el),
-                        "progress": j.get("progress"), "ram": (j.get("rss") or 0) / GiB, "source": "queue",
+                        "progress": j.get("progress"), "ram": None if j.get("remote") else (j.get("rss") or 0) / GiB,
+                        "source": "queue",
                         "paused": j["state"] == "suspended", "start": j.get("started") or 0,
                         "left": _dur(usual - el) if usual and usual > el else None})
     try:

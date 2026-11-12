@@ -329,6 +329,13 @@ def q_cmd(a):
         if j["state"] == "failed":
             print(f"refused: {j['reason']}", file=sys.stderr)
             return 1
+        try:                       # earlier jobs like this one reserved far more than they used on the server
+            from . import remote as _rm
+            hint = _rm.advice_for(j.get("name"), j.get("cores")) if _rm.remotes() and j.get("remote") != "here" else None
+            if hint:
+                print(f"note: {hint}", file=sys.stderr)
+        except Exception:
+            pass
         if j.get("clamped"):
             print(f"note: memory request lowered to {j['mem_gb']} GB (what this machine can give)", file=sys.stderr)
         if queue.daemon_state()[0] != "running":
@@ -343,7 +350,8 @@ def q_cmd(a):
             if not j:
                 print(f"no job {jid}")
                 continue
-            if j.get("remote_job") and j.get("remote_cores_used") is None and j["state"] in queue.TERMINAL:
+            if j.get("remote_job") and j.get("remote_cores_used") is None and j["state"] in queue.TERMINAL \
+                    and not os.environ.get("MS_GUI"):          # (the app must not wait for a server)
                 try:
                     from mysys import remote
                     remote.measure(j)                  # older server jobs: ask Slurm what they used
@@ -529,8 +537,9 @@ def q_cmd(a):
             e = queue.efficiency(j)
             if not j.get("started"):
                 continue
-            tot_req += e["mem_req_gb"]
-            tot_peak += e["mem_peak_gb"]
+            if e["mem_peak_gb"]:               # only jobs with a measurement (a running server job has none yet)
+                tot_req += e["mem_req_gb"]
+                tot_peak += e["mem_peak_gb"]
             wait = flow.queue_hms(j["started"] - j["created"]) if j.get("created") else "–"
             print(f"{j['id']:>5} {j['name'][:26]:<26} {j['state']:<8} {flow.queue_hms(e['seconds']):>7} {wait:>6} {e['mem_req_gb']:>6.1f}G "
                   f"{e['mem_peak_gb']:>5.1f}G {str(e['mem_eff'] or '–'):>5} {e['cores_req']:>7.1f} {str(e['cores_used'] or '–'):>5} "

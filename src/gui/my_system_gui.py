@@ -15,12 +15,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PyQt6.QtCore import QDateTime, QPointF, QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QDateTime, QPoint, QPointF, QProcess, QProcessEnvironment, QRect, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter,
                          QPainterPath, QPalette, QPen)
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit, QDialog, QFileDialog, QFormLayout, QFrame,
-    QSpinBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
+    QSpinBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView, QLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -345,19 +345,175 @@ def mono(w):
     return w
 
 
-def table(headers, stretch=0):
-    t = QTableWidget(0, len(headers))
-    t.setHorizontalHeaderLabels(headers)
-    t.verticalHeader().hide()
-    t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    t.setAlternatingRowColors(True)
-    t.setShowGrid(False)
-    t.verticalHeader().setDefaultSectionSize(30)
-    h = t.horizontalHeader()
-    for i in range(len(headers)):
-        h.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if i == stretch else QHeaderView.ResizeMode.ResizeToContents)
-    return t
+class FastTable(QTableWidget):
+    """A table that stays quick with thousands of rows and says so when it is empty.
+
+    Qt's ResizeToContents measures a whole column again for every cell that is set, so filling N rows cost N²:
+    300 queue jobs took 35 s per refresh and the window looked frozen ("not responding"). Here the columns are
+    plain (Interactive) while the table is filled and are fitted once afterwards; a column you resize by hand
+    keeps your width."""
+    MAX_W = 460
+
+    def __init__(self, headers, stretch=0, empty="Nothing to show yet"):
+        super().__init__(0, len(headers))
+        self.stretch_col, self.empty_text = stretch, empty
+        self.manual, self._fitting, self._fit_pending = set(), False, False
+        self.setHorizontalHeaderLabels(headers)
+        self.verticalHeader().hide()
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setAlternatingRowColors(True)
+        self.setShowGrid(False)
+        self.setWordWrap(False)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.verticalHeader().setDefaultSectionSize(30)
+        h = self.horizontalHeader()
+        h.setHighlightSections(False)
+        for i in range(len(headers)):
+            h.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if i == stretch else QHeaderView.ResizeMode.Interactive)
+        h.sectionResized.connect(self._resized)
+
+    def _resized(self, col, _old, _new):
+        # only a drag with the mouse counts as "you chose this width" (layout changes fire the same signal)
+        if not self._fitting and QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self.manual.add(col)
+
+    def setRowCount(self, n):                 # every fill starts here: fit the columns once, after the fill
+        super().setRowCount(n)
+        if not self._fit_pending:
+            self._fit_pending = True
+            QTimer.singleShot(0, self.fit)
+
+    def fit(self):
+        self._fit_pending = False
+        self._fitting = True
+        try:
+            h = self.horizontalHeader()
+            for i in range(self.columnCount()):
+                if i == self.stretch_col or i in self.manual or self.isColumnHidden(i):
+                    continue
+                w = max(self.sizeHintForColumn(i), h.sectionSizeHint(i)) + 10
+                self.setColumnWidth(i, max(44, min(self.MAX_W, w)))
+        except RuntimeError:                  # the table was deleted meanwhile (window closed)
+            pass
+        finally:
+            self._fitting = False
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.rowCount() == 0 and self.empty_text:
+            p = QPainter(self.viewport())
+            p.setPen(QColor(T["muted"]))
+            p.drawText(self.viewport().rect().adjusted(16, 16, -16, -16),
+                       Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.empty_text)
+            p.end()
+
+    def keep_selection(self, fill, key_col=0, role=Qt.ItemDataRole.UserRole):
+        """Run fill() (which rebuilds the rows) and keep what was selected and where the view was scrolled to."""
+        def key(r):
+            it = self.item(r, key_col)
+            return None if it is None else (it.data(role) if it.data(role) is not None else it.text())
+        keep = {key(i.row()) for i in self.selectedItems()}
+        pos = self.verticalScrollBar().value()
+        self.blockSignals(True)
+        try:
+            fill()
+            if keep:
+                sm, model = self.selectionModel(), self.model()
+                for r in range(self.rowCount()):
+                    if key(r) in keep:
+                        sm.select(model.index(r, 0), sm.SelectionFlag.Select | sm.SelectionFlag.Rows)
+            self.verticalScrollBar().setValue(pos)
+        finally:
+            self.blockSignals(False)
+
+
+def table(headers, stretch=0, empty="Nothing to show yet"):
+    return FastTable(headers, stretch, empty)
+
+
+class FlowLayout(QLayout):
+    """Buttons in a row that wraps to the next line when the window is narrow (instead of making the page wider
+    than the window, which cut off the table and the buttons at the right)."""
+
+    def __init__(self, spacing=6):
+        super().__init__()
+        self.items, self.sp = [], spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, it):
+        self.items.append(it)
+
+    def count(self):
+        return len(self.items)
+
+    def itemAt(self, i):
+        return self.items[i] if 0 <= i < len(self.items) else None
+
+    def takeAt(self, i):
+        return self.items.pop(i) if 0 <= i < len(self.items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return self._layout(QRect(0, 0, w, 0), False)
+
+    def setGeometry(self, r):
+        super().setGeometry(r)
+        self._layout(r, True)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        s = QSize(0, 0)
+        for it in self.items:
+            s = s.expandedTo(it.minimumSize())
+        return s
+
+    def _layout(self, rect, apply):
+        x, y, row_h = rect.x(), rect.y(), 0
+        for it in self.items:
+            hint = it.sizeHint()
+            if x + hint.width() > rect.right() + 1 and row_h > 0:
+                x, y, row_h = rect.x(), y + row_h + self.sp, 0
+            if apply:
+                it.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self.sp
+            row_h = max(row_h, hint.height())
+        return y + row_h - rect.y()
+
+
+def later(owner, fn, ms=250):
+    """A slot that runs fn once, `ms` after the last call: typing in a filter refills a big table once, not per key."""
+    t = QTimer(owner)
+    t.setSingleShot(True)
+    t.setInterval(ms)
+    t.timeout.connect(fn)
+    return lambda *_: t.start()
+
+
+def run_rc(cmd, timeout=30):
+    """(exit code, output) of a helper command for a dialog. Never raises: a command that hangs or is missing
+    gives a message (exit code 124 / 127) instead of an error that would stop the handler half-way."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout,
+                           env=dict(os.environ, MS_GUI="1"))
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 124, (f"No answer within {timeout} s: {' '.join(str(c) for c in cmd[-4:])}\n"
+                     "(the machine or a server is busy; try again in a moment)")
+    except OSError as e:
+        return 127, f"Could not run {cmd[0]}: {e}"
+
+
+def run_text(cmd, timeout=30):
+    return run_rc(cmd, timeout)[1]
 
 
 def cell(text, level=None, bold=False):
@@ -400,6 +556,24 @@ class Page(QWidget):
     def nav_status(self):
         """(subtitle, level) shown under the sidebar entry."""
         return "", None
+
+
+class BrokenPage(Page):
+    """Stands in for a page whose construction failed, so the rest of the app still opens."""
+
+    def __init__(self, win, cls, err):
+        super().__init__(win)
+        self.title, self.icon = getattr(cls, "title", cls.__name__), getattr(cls, "icon", "")
+        lay = QVBoxLayout(self)
+        lay.addLayout(header(self.title, "This page could not be opened"))
+        msg = QLabel(f"{type(err).__name__}: {err}\n\nThe other pages work. Details: {STATE / 'gui_errors.log'}")
+        msg.setWordWrap(True)
+        msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(msg)
+        lay.addStretch(1)
+
+    def nav_status(self):
+        return "could not open", "bad"
 
 
 # ======================= pages =======================
@@ -614,8 +788,7 @@ class RunsPage(Page):
             self.live.setItem(i, 5, cell(human(j["rss"])))
             self.live.setItem(i, 6, cell(", ".join(map(str, j["pids"][:3]))))
         if shutil.which("tsp"):
-            r = subprocess.run(["tsp"], capture_output=True, text=True, errors="replace")
-            self.queue.setPlainText(r.stdout.strip() or "queue empty")
+            self.queue.setPlainText(run_text(["tsp"], 5).strip() or "queue empty")
         else:
             self.queue.setPlainText("task-spooler not installed")
         rows = list(reversed(jsonl(REPORTS / "runs.jsonl", 200)))
@@ -774,8 +947,7 @@ class BackupPage(Page):
 
     @staticmethod
     def active(unit):
-        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, errors="replace")
-        return r.stdout.strip() in ("active", "activating")
+        return run_text(["systemctl", "--user", "is-active", unit], 5).strip() in ("active", "activating")
 
     def refresh(self):
         b = kv(STATE / "backup_status")
@@ -812,7 +984,7 @@ class BackupPage(Page):
             (STATE / "backup_force").write_text("1\n")      # runs even while backups are paused
         except OSError:
             pass
-        subprocess.run(["systemctl", "--user", "start", "--no-block", "my-system-backup.service"])
+        run_text(["systemctl", "--user", "start", "--no-block", "my-system-backup.service"], 10)
         self.out.setPlainText("Backup started in the background (lowest priority)…")
         QTimer.singleShot(2000, self.refresh)
 
@@ -821,7 +993,7 @@ class BackupPage(Page):
             (STATE / "backup_force").write_text("1\n")      # runs even while backups are paused
         except OSError:
             pass
-        subprocess.run(["systemctl", "--user", "start", "--no-block", "my-system-verify.service"])
+        run_text(["systemctl", "--user", "start", "--no-block", "my-system-verify.service"], 10)
         self.out.setPlainText("Restore test started in the background — result appears here and on your phone.")
 
     def list_archives(self):
@@ -876,7 +1048,7 @@ class GuardPage(Page):
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("search…")
         self.filter.setMaximumWidth(220)
-        self.filter.textChanged.connect(self.refresh)
+        self.filter.textChanged.connect(later(self, self.refresh))
         fr.addWidget(self.only_blocked)
         fr.addWidget(self.filter)
         tl.addLayout(fr)
@@ -1028,6 +1200,12 @@ class ToolAccessPage(Page):
             return
         V = self.vmod()
         self.loading = True
+        try:
+            self._fill(V)
+        finally:
+            self.loading = False           # an error while filling must not leave the page deaf to clicks
+
+    def _fill(self, V):
         r = V.rules()
         self.cols = self.columns()
         heads = ["Project"] + [" / ".join(n for n, _ in names) for _, names in self.cols] + ["Rule"]
@@ -1385,19 +1563,16 @@ class SoftwarePage(Page):
                              lambda: (setattr(self, "_sig", None), self.refresh()))
 
     def plan(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "plan"], capture_output=True, text=True, errors="replace", timeout=120)
-        self.view.setPlainText(r.stdout or r.stderr)
+        self.view.setPlainText(run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "plan"], 60))
 
     def who(self):
         q = self.q.text().strip()
         if q:
-            r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "uses", q], capture_output=True, text=True, errors="replace", timeout=120)
-            self.view.setPlainText(r.stdout or r.stderr)
+            self.view.setPlainText(run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "uses", q], 60))
 
     def project(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "project", self.proj.currentText()],
-                           capture_output=True, text=True, errors="replace", timeout=120)
-        self.view.setPlainText(r.stdout or r.stderr)
+        self.view.setPlainText(run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "software", "project",
+                                         self.proj.currentText()], 60))
 
     def nav_status(self):
         from mysys import software as SW
@@ -1549,14 +1724,14 @@ class NotifyPage(Page):
             self.log.setItem(i, 3, cell(msg))
 
     def brief_preview(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief"], capture_output=True, text=True, errors="replace", timeout=60)
+        text = run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "brief"], 45)
         d = QDialog(self)
         d.setWindowTitle("Status report (as it appears on the phone)")
         d.resize(520, 640)
         l_ = QVBoxLayout(d)
         v = mono(QPlainTextEdit())
         v.setReadOnly(True)
-        v.setPlainText(r.stdout + r.stderr)
+        v.setPlainText(text)
         l_.addWidget(v, 1)
         l_.addWidget(btn("Close", d.close))
         d.exec()
@@ -1664,9 +1839,190 @@ class Gantt(QWidget):
                    time.strftime("%m-%d %H:%M", time.localtime(t1)))
 
 
+def server_line(jobs):
+    """One line on how the servers are used right now: 'titan: 34 running · 41 of 72 cores · 12 waiting'."""
+    try:
+        from mysys import remote as RM
+        out = []
+        for n, r in RM.remotes().items():
+            run = [j for j in jobs if j.get("remote") == n and j["state"] == "running"]
+            wait = sum(1 for j in jobs if j.get("remote") == n and j["state"] == "queued")
+            cap = str(r.get("max_cores") or "").strip()
+            cores = sum(RM.slurm_cores(j) for j in run)
+            out.append(f"{n}: {len(run)} running" + (f" · {cores} of {cap} cores" if cap else f" of {r['max_jobs']}")
+                       + (f" · {wait} waiting for room there" if wait else ""))
+        return "    ".join(out)
+    except Exception:
+        return ""
+
+
+class ServersPage(Page):
+    title, icon, fallback = "Servers", "network-server", "network-workgroup"
+    GCOLS = ["Jobs like", "Jobs", "Reserved", "Used avg", "9 of 10 <", "Peak GB", "Used %", "Unused core-h",
+             "Better request"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addLayout(header("Servers", "How much of the server your jobs use. The queue sends jobs there by itself; here you "
+                                        "see whether the limits are reached, what your jobs reserved and what they really "
+                                        "used, and why some jobs stayed on this computer."))
+        cards = QHBoxLayout()
+        self.c_run, self.c_cores, self.c_idle, self.c_eff = (Card("Running there"), Card("Cores reserved"),
+                                                             Card("Idle CPUs on the server"), Card("Reserved cores really used"))
+        for c in (self.c_run, self.c_cores, self.c_idle, self.c_eff):
+            cards.addWidget(c)
+        lay.addLayout(cards)
+        self.bar = Bar(8)
+        lay.addWidget(self.bar)
+        self.hint = QLabel()
+        self.hint.setObjectName("banner")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        row = QHBoxLayout()
+        self.days = QComboBox()
+        for d, t in ((1, "last 24 hours"), (3, "last 3 days"), (7, "last 7 days"), (30, "last 30 days")):
+            self.days.addItem(t, d)
+        self.days.setCurrentIndex(1)
+        self.days.currentIndexChanged.connect(lambda _: self.refresh())
+        row.addWidget(QLabel("Measured use of finished jobs,"))
+        row.addWidget(self.days)
+        row.addStretch()
+        row.addWidget(btn("Check connection", self.check))
+        row.addWidget(btn("Ask the server now", self.ask))
+        lay.addLayout(row)
+        self.tab = table(self.GCOLS, 8, "No finished server job with measurements in this period.")
+        self.tab.setSortingEnabled(True)
+        lay.addWidget(self.tab, 2)
+        h2 = QLabel("WHY JOBS STAYED ON THIS COMPUTER (last 7 days)")
+        h2.setObjectName("cardTitle")
+        lay.addWidget(h2)
+        self.why = table(["Jobs", "Reason", "Example"], 1, "Every job that could go to the server went there.")
+        lay.addWidget(self.why, 1)
+        self.setMinimumHeight(720)
+
+    def refresh(self):
+        from mysys import queue as Qm, remote as RM
+        rms = RM.remotes()
+        if not rms:
+            for c in (self.c_run, self.c_cores, self.c_idle, self.c_eff):
+                c.set("–")
+            banner(self.hint, "No server is set up. In a terminal:  ms remote setup titan   (then: ms remote check titan)", "info")
+            self.tab.setRowCount(0)
+            self.why.setRowCount(0)
+            return
+        jobs = Qm.all_jobs()
+        name, r = next(iter(rms.items()))
+        st = RM._cache(name)
+        run = [j for j in jobs if j.get("remote") == name and j["state"] == "running"]
+        wait = [j for j in jobs if j.get("remote") == name and j["state"] == "queued"]
+        pend = sum(1 for j in run if j.get("remote_state") == "PENDING")
+        cores = sum(RM.slurm_cores(j) for j in run)
+        cap = str(r.get("max_cores") or "").strip()
+        self.c_run.set(str(len(run)), f"of at most {r['max_jobs']} (max_jobs)"
+                       + (f" · {pend} waiting in the server's own queue" if pend else "")
+                       + (f" · {len(wait)} waiting here for room" if wait else ""), "info" if run else None)
+        if cap:
+            pct = cores / float(cap) * 100 if float(cap) else 0
+            self.c_cores.set(f"{cores} / {cap}", "max_cores: the most your jobs may reserve together",
+                             "warn" if pct >= 99 and wait else None)
+            self.bar.set(pct, "warn" if pct >= 99 and wait else "ok")
+        else:
+            self.c_cores.set(str(cores), "no max_cores set: only the number of jobs is limited")
+            self.bar.set(len(run) / max(1, int(r["max_jobs"])) * 100, "ok")
+        age = time.time() - st.get("t", 0)
+        if st.get("ok") and st.get("total_cpus"):
+            self.c_idle.set(str(st.get("idle_cpus", "?")), f"of {st['total_cpus']} · asked {ago(st.get('t'))}",
+                            "ok" if st.get("idle_cpus", 0) > 0 else "warn")
+        else:
+            self.c_idle.set("?", (st.get("error") or "not asked yet")[:90] if age < 3600 else "not asked recently",
+                            "bad" if st.get("error") else None)
+        u = RM.usage_summary(self.days.currentData() or 3, jobs)
+        self.c_eff.set(f"{u['cpu_eff']}%" if u["cpu_eff"] is not None else "–",
+                       f"{u['n']} jobs · {u['used_h']:.0f} of {u['reserved_h']:.0f} core-hours",
+                       None if u["cpu_eff"] is None else "ok" if u["cpu_eff"] >= 70 else "warn" if u["cpu_eff"] >= 40 else "bad")
+        # one plain sentence on what limits you right now
+        if wait and cap and cores >= float(cap) - 1:
+            waste = [x for x in u["groups"] if x["advice"]]
+            banner(self.hint, f"{len(wait)} job(s) wait because your running jobs reserve {cores} of {cap} cores (max_cores)."
+                   + (f" Recent jobs used only {u['cpu_eff']}% of what they reserved: asking for fewer cores per job "
+                      f"(see \"Better request\" below) lets more run at once." if waste and (u["cpu_eff"] or 100) < 70
+                      else " To run more at once, raise max_cores in Settings > remotes.conf (the server is shared)."), "warn")
+        elif wait:
+            banner(self.hint, f"{len(wait)} job(s) wait for room on the server: {wait[0].get('reason') or 'limit reached'}", "warn")
+        elif not run:
+            banner(self.hint, "Nothing of yours runs on the server right now. Jobs added to the queue go there by themselves "
+                              "when they can run there.", "info")
+        elif (u["cpu_eff"] or 100) < 60:
+            banner(self.hint, f"The limits are not reached ({cores} of {cap or '∞'} cores reserved). Recent jobs used "
+                              f"{u['cpu_eff']}% of the cores they reserved — the table shows what to ask for instead.", "info")
+        else:
+            banner(self.hint, f"The limits are not reached ({cores} of {cap or '∞'} cores reserved): more jobs could run there "
+                              "now if they were in the queue.", "ok")
+
+        def fill():
+            self.tab.setSortingEnabled(False)
+            self.tab.setRowCount(len(u["groups"]))
+            for i, x in enumerate(u["groups"]):
+                lvl = None if x["cpu_eff"] is None else "ok" if x["cpu_eff"] >= 70 else "warn" if x["cpu_eff"] >= 40 else "bad"
+                vals = [cell(x["family"] + "…", bold=True), NumItem(x["n"], "{:.0f}"), NumItem(x["cores"], "{:.0f}"),
+                        NumItem(x["used"], "{:.2f}"), NumItem(x["used_hi"], "{:.2f}"),
+                        NumItem(x["peak_gb"] if x["peak_gb"] is not None else "", "{:.1f}"),
+                        NumItem(x["cpu_eff"] if x["cpu_eff"] is not None else "", "{:.0f}", lvl),
+                        NumItem(x["wasted_h"], "{:.1f}"), cell(x["advice"] or "fits", "info" if x["advice"] else None)]
+                for k, it in enumerate(vals):
+                    self.tab.setItem(i, k, it)
+            self.tab.setSortingEnabled(True)
+        self.tab.keep_selection(fill, role=Qt.ItemDataRole.DisplayRole)
+        reasons = {}
+        for j in jobs:
+            note = j.get("prefer_note") or ""
+            if not note.startswith("not sent: ") or j.get("remote") or (j.get("created") or 0) < time.time() - 7 * 86400:
+                continue
+            why = re.sub(r"(/[\w.+~-]+){2,}[^\s,)]*", "PATH", note[10:])
+            why = re.sub(r"(PATH,? ?)+", "PATH ", why)
+            why = re.sub(r"\d+", "N", why)[:150]
+            d = reasons.setdefault(why, [0, f"#{j['id']} {j['name']}", note[10:]])
+            d[0] += 1
+        rows = sorted(reasons.items(), key=lambda kv: -kv[1][0])[:30]
+        self.why.setRowCount(len(rows))
+        for i, (why, (n, ex, full)) in enumerate(rows):
+            self.why.setItem(i, 0, NumItem(n, "{:.0f}"))
+            it = cell(why)
+            it.setToolTip(full)
+            self.why.setItem(i, 1, it)
+            self.why.setItem(i, 2, cell(ex))
+
+    def _name(self):
+        from mysys import remote as RM
+        return next(iter(RM.remotes()), None)
+
+    def check(self):
+        if self._name():
+            self.win.run_in_dialog("Connection check", ["/usr/bin/python3", str(SCRIPTS / "ms"), "remote", "check", self._name()])
+
+    def ask(self):
+        if self._name():
+            self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "remote", "status", self._name()], None, None, self.refresh)
+
+    def nav_status(self):
+        from mysys import queue as Qm, remote as RM
+        rms = RM.remotes()
+        if not rms:
+            return "not set up", None
+        n = next(iter(rms))
+        jobs = Qm.all_jobs()
+        run = sum(1 for j in jobs if j.get("remote") == n and j["state"] == "running")
+        wait = sum(1 for j in jobs if j.get("remote") == n and j["state"] == "queued")
+        if wait:
+            return f"{run} running · {wait} waiting", "warn"
+        return (f"{run} running on {n}", "info") if run else (f"{n}: idle", None)
+
+
 class QueuePage(Page):
     title, icon, fallback = "Queue", "view-list", "view-list"
-    COLS = ["ID", "State", "Prio", "Name", "Flow / step", "Mem GB", "Peak GB", "Cores", "CPU used", "Started", "Time", "Note"]
+    COLS = ["ID", "State", "Where", "Prio", "Name", "Flow / step", "Mem GB", "Peak GB", "Cores", "CPU used", "Started",
+            "Time", "Note"]
 
     def __init__(self, win):
         super().__init__(win)
@@ -1681,21 +2037,23 @@ class QueuePage(Page):
         self.show_all = QCheckBox("show finished")
         self.show_all.toggled.connect(lambda _: self.refresh())
         top.addWidget(self.show_all)
+        self.server = QLabel()
+        self.server.setObjectName("muted")
+        top.addWidget(self.server)
+        self.server.setWordWrap(True)
         top.addStretch()
-        top.addWidget(btn("Run flow file…", self.add_flow, "primary"))
-        top.addWidget(btn("Check flow…", self.check_flow))
-        top.addWidget(btn("Schedules", self.show_schedules))
         lay.addLayout(top)
-        row = QHBoxLayout()
+        row = FlowLayout()
+        row.addWidget(btn("Run flow file…", self.add_flow, "primary"))
+        row.addWidget(btn("Check flow…", self.check_flow))
+        row.addWidget(btn("Schedules", self.show_schedules))
         for label, fn in (("Approve", "approve"), ("Hold", "hold"), ("Release", "release"), ("Pause", "suspend"),
                           ("Continue", "resume"), ("Retry", "retry"), ("Run again", "clone"), ("To front", "top"),
                           ("Cancel", "cancel")):
             row.addWidget(btn(label, lambda _=False, f=fn: self.act(f)))
         row.addWidget(btn("Priority +", lambda: self.prio(+1)))
         row.addWidget(btn("Priority −", lambda: self.prio(-1)))
-        row.addStretch()
-        lay.addLayout(row)
-        row2 = QHBoxLayout()
+        row2 = row
         row2.addWidget(btn("Details", self.details))
         row2.addWidget(btn("Output", self.output))
         row2.addWidget(btn("Warnings", self.warnings))
@@ -1706,11 +2064,16 @@ class QueuePage(Page):
         row2.addWidget(btn("Groups / flaky", self.groups))
         row2.addWidget(btn("Edit flow file…", self.edit_flow))
         row2.addWidget(btn("Clear finished", self.clear))
-        row2.addStretch()
-        lay.addLayout(row2)
+        lay.addLayout(row)
         split = QSplitter(Qt.Orientation.Vertical)
-        self.tab = table(self.COLS, 11)
+        self.tab = table(self.COLS, 12, "No jobs. Add one in a terminal with  ms q add -- COMMAND  or use \"Run flow file…\".\n"
+                                         "Finished jobs older than 6 hours are hidden: tick \"show finished\".")
+        self.tab.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tab.setSortingEnabled(True)
+        for c, tip in ((2, "Where the job runs: this computer or a server (and the node there)"),
+                       (7, "Highest memory the job used. For a server job: measured by Slurm when it ends"),
+                       (9, "Cores really used on average. Much lower than \"Cores\" = it reserved too much")):
+            self.tab.horizontalHeaderItem(c).setToolTip(tip)
         split.addWidget(self.tab)
         bottom = QWidget()
         bl = QVBoxLayout(bottom)
@@ -1736,11 +2099,15 @@ class QueuePage(Page):
         st, d = Qm.daemon_state()
         set_pill(self.status, f"scheduler {st}" + (f": {d['error'][:60]}" if d and d.get("error") else ""),
                  "ok" if st == "running" else "bad")
-        sel = self.selected()
         jobs = Qm.all_jobs()
+        self.server.setText(server_line(jobs))
         if not self.show_all.isChecked():
             jobs = [j for j in jobs if j["state"] not in Qm.TERMINAL or time.time() - (j.get("ended") or 0) < 6 * 3600]
         self._jobs = jobs
+        self.tab.keep_selection(lambda: self._fill(jobs, Qm))
+        self.timeline()
+
+    def _fill(self, jobs, Qm):
         self.tab.setSortingEnabled(False)
         self.tab.setRowCount(len(jobs))
         lv = {"running": "info", "done": "ok", "cached": None, "failed": "bad", "timeout": "bad", "suspended": "warn",
@@ -1748,7 +2115,14 @@ class QueuePage(Page):
         for i, j in enumerate(reversed(jobs)):
             e = Qm.efficiency(j)
             fl = j.get("flow") or {}
+            if j.get("remote") and j.get("remote") not in ("here", "local", "auto"):
+                where = j["remote"] + (f" · {j['remote_node']}" if j.get("remote_node") and j["state"] == "running" else "")
+                if j["state"] == "running" and j.get("remote_state") and j["remote_state"] != "RUNNING":
+                    where += f" ({j['remote_state'].lower()})"
+            else:
+                where = "here" if j.get("started") else ""
             vals = [NumItem(j["id"], "{:.0f}"), cell(j["state"], lv.get(j["state"]), j["state"] in ("failed", "timeout")),
+                    cell(where, "info" if where not in ("", "here") else None),
                     NumItem(j.get("priority") or 0, "{:.0f}"), cell(j["name"], bold=True),
                     cell(f"{fl.get('name', '')} / {fl.get('step', '')}" if fl else ""),
                     NumItem(e["mem_req_gb"], "{:.1f}"), NumItem(e["mem_peak_gb"] or "", "{:.1f}"),
@@ -1760,13 +2134,9 @@ class QueuePage(Page):
             for k, it in enumerate(vals):
                 it.setData(Qt.ItemDataRole.UserRole, j["id"])
                 self.tab.setItem(i, k, it)
+            if j.get("prefer_note") and not j.get("remote"):
+                vals[2].setToolTip(j["prefer_note"])
         self.tab.setSortingEnabled(True)
-        if sel:
-            for r in range(self.tab.rowCount()):
-                if self.tab.item(r, 0) and self.tab.item(r, 0).data(Qt.ItemDataRole.UserRole) == sel[0]:
-                    self.tab.selectRow(r)
-                    break
-        self.timeline()
 
     @staticmethod
     def hms(s):
@@ -1816,8 +2186,7 @@ class QueuePage(Page):
         d.exec()
 
     def _ms(self, *args):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, errors="replace", timeout=120)
-        return r.stdout + r.stderr
+        return run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], 30)
 
     def details(self):
         from mysys import queue as Qm
@@ -1827,7 +2196,7 @@ class QueuePage(Page):
         txt = self._ms("q", "show", str(ids[0]))
         chart = None
         f = Qm.Q / "series" / f"{ids[0]}.csv"
-        if f.exists():
+        if f.exists() and not (Qm.load(ids[0]) or {}).get("remote"):     # (a server job: that file is only the link)
             vals = []
             for row in f.read_text().splitlines()[1:]:
                 try:
@@ -2003,16 +2372,16 @@ class QueuePage(Page):
         f = path or self._pick()
         if not f:
             return None
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "check", f], capture_output=True, text=True, errors="replace")
+        rc, text = run_rc(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "check", f], 60)
         d = QDialog(self)
         d.setWindowTitle("Flow plan")
         d.resize(1000, 600)
         l_ = QVBoxLayout(d)
         v = mono(QPlainTextEdit())
         v.setReadOnly(True)
-        v.setPlainText(r.stdout + r.stderr)
+        v.setPlainText(text)
         l_.addWidget(v)
-        ok = r.returncode == 0
+        ok = rc == 0
         if path:
             row = QHBoxLayout()
             row.addStretch()
@@ -2028,8 +2397,8 @@ class QueuePage(Page):
             self.win.run_process(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "run", f, "--resume"], None, None, self.refresh)
 
     def show_schedules(self):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "schedules"], capture_output=True, text=True, errors="replace")
-        QMessageBox.information(self, "Scheduled flows", (r.stdout.strip() or "No schedules.") +
+        text = run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "flow", "schedules"], 20)
+        QMessageBox.information(self, "Scheduled flows", (text.strip() or "No schedules.") +
                                 "\n\nAdd one in a terminal:\n  ms flow schedule FILE --cron \"17 2 * * *\"\n"
                                 "  ms flow schedule FILE --idle\n  ms flow schedule FILE --on-commit ~/project")
 
@@ -2060,7 +2429,7 @@ class RunLogsPage(Page):
         row = QHBoxLayout()
         self.q = QLineEdit()
         self.q.setPlaceholderText("Filter (project, run, status, metric)…")
-        self.q.textChanged.connect(lambda _: self.fill())
+        self.q.textChanged.connect(later(self, self.fill))
         self.count = QLabel()
         self.count.setObjectName("muted")
         row.addWidget(self.q, 1)
@@ -2127,7 +2496,8 @@ class RunLogsPage(Page):
         for i, r in enumerate(runs):
             st = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["start_ts"])) if r["start_ts"] else "?"
             lv = {"ok": "ok", "failed": "bad", "died": "bad", "cancelled": "warn", "running": "info"}.get(r["status"])
-            status = r["status"] + (f" {r['progress']:.0f}%" if r["status"] == "running" and r["progress"] is not None else "")
+            status = str(r.get("status") or "") + (f" {r['progress']:.0f}%" if r.get("status") == "running"
+                                                   and isinstance(r.get("progress"), (int, float)) else "")
             mets = ", ".join(f"{k}={v}{r['units'].get(k, '')}" for k, v in list(r["metrics"].items())[:5])
             vals = [cell(st), cell(r["project"]), cell(r["name"], bold=True), cell(status, lv, lv == "bad"),
                     self.dur_item(r["seconds"], RL.fmt_seconds(r["seconds"])),
@@ -2138,7 +2508,8 @@ class RunLogsPage(Page):
                 self.tab.setItem(i, j, it)
         self.tab.setSortingEnabled(True)
         self._shown = runs
-        names = sorted({k for r in runs for k, v in r["metrics"].items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        names = sorted({str(k) for r in runs for k, v in (r.get("metrics") or {}).items()
+                        if k is not None and isinstance(v, (int, float)) and not isinstance(v, bool)})
         cur = self.metric.currentText()
         self.metric.blockSignals(True)
         self.metric.clear()
@@ -2186,7 +2557,8 @@ class RunLogsPage(Page):
         lv = {"ok": "ok", "failed": "bad", "died": "bad", "cancelled": "warn", "running": "info"}.get(r["status"])
         h = [f"<h3>{esc(r['name'])} <span style='color:{tone(lv)}'>· {esc(r['status'])}</span></h3>",
              f"<p style='color:{T['muted']}'>{esc(r['folder'])} · {esc(r['cmd'])[:200]}"
-             + (f" · git {esc(r['git'].get('commit'))}{' (dirty)' if r['git'].get('dirty') else ''}" if r.get("git") else "") + "</p>"]
+             + (f" · git {esc(r['git'].get('commit'))}{' (dirty)' if r['git'].get('dirty') else ''}"
+                if isinstance(r.get("git"), dict) else f" · git {esc(r['git'])}" if r.get("git") else "") + "</p>"]
         if r["first_error"]:
             h.append(f"<p style='color:{T['bad']}'><b>Error:</b> {esc(r['first_error'])}</p>")
         if r["params"]:
@@ -2199,7 +2571,7 @@ class RunLogsPage(Page):
         if r["artifacts"]:
             h.append("<p><b>Files</b> (click to view): " + ", ".join(
                 f"<a href='{QUrl.fromLocalFile(os.path.join(r['folder'], p)).toString()}'>{esc(p)}</a> ({esc(k)})"
-                for p, k in r["artifacts"]) + "</p>")
+                for p, k in r["artifacts"] if p) + "</p>")
         h.append(f"<pre style='font-family:monospace; font-size:12px'>{esc(RL.timeline(r['file'], r['run']))}</pre>")
         self.view.setHtml("".join(h))
 
@@ -2248,7 +2620,7 @@ class RunLogsPage(Page):
         if not target:
             self.view.setPlainText("Select a run first.")
             return
-        out = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "check", target], capture_output=True, text=True, errors="replace").stdout
+        out = run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), "log", "check", target], 60)
         self.view.setPlainText(out or "(no output)")
 
     def open_folder(self):
@@ -2323,9 +2695,10 @@ class ResultsPage(Page):
         row = QHBoxLayout()
         self.q = QLineEdit()
         self.q.setPlaceholderText("Filter (batch, run, tool, status)…")
-        self.q.textChanged.connect(self.refresh)
+        self.q.textChanged.connect(later(self, self.refresh))
         self.only_timing = QCheckBox("only runs with timing")
-        self.only_timing.toggled.connect(self.refresh)
+        self.only_timing.toggled.connect(lambda _: self.refresh())
+        self._csv, self._shown = (None, []), None
         self.count = QLabel()
         self.count.setObjectName("muted")
         row.addWidget(self.q, 1)
@@ -2334,20 +2707,32 @@ class ResultsPage(Page):
         row.addWidget(btn("Open folder", self.open_folder))
         row.addWidget(btn("Open CSV", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(REPORTS / "results.csv")))))
         lay.addLayout(row)
-        self.tab = table([c[1] for c in self.COLS], -1)
+        self.tab = table([c[1] for c in self.COLS], -1,
+                         "No results yet. They appear here when a Vivado / HLS run that my-system tracks finishes.")
         self.tab.setSortingEnabled(True)
         lay.addWidget(self.tab, 1)
 
     def rows(self):
+        """results.csv, read again only when the file changed (it grows to several MB)."""
         f = REPORTS / "results.csv"
-        if not f.exists():
+        try:
+            st = f.stat()
+        except OSError:
             return []
-        with open(f) as fh:
-            return list(csv.DictReader(fh))
+        key = (st.st_mtime_ns, st.st_size)
+        if self._csv[0] != key:
+            with open(f, newline="", errors="replace") as fh:
+                self._csv = (key, list(csv.DictReader(fh)))
+        return self._csv[1]
 
     def refresh(self):
-        rows = list(reversed(self.rows()))
+        all_rows = self.rows()
         q = self.q.text().strip().lower()
+        shown = (self._csv[0], q, self.only_timing.isChecked())
+        if shown == self._shown:               # nothing changed since the table was filled
+            return
+        self._shown = shown
+        rows = list(reversed(all_rows))
         if q:
             rows = [r for r in rows if q in " ".join(str(r.get(k, "")) for k in ("batch", "run", "tool", "status", "folder")).lower()]
         if self.only_timing.isChecked():
@@ -2365,14 +2750,14 @@ class ResultsPage(Page):
                     lv = None
                     try:
                         lv = "bad" if float(v) < 0 else "ok"
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
                     it = NumItem(v, "{:+.3f}", lv)
                 elif k == "seconds":
                     it = NumItem(v, "{:.0f}")
                     try:
                         it.setText(dur(float(v)) if float(v) else "")
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
                 elif k in ("time", "tool", "batch", "run"):
                     it = cell(v)
@@ -2645,8 +3030,7 @@ class HistoryPage(Page):
         self._shown = False
 
     def _run(self, args):
-        r = subprocess.run(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], capture_output=True, text=True, errors="replace", timeout=60)
-        self.view.setPlainText(r.stdout + r.stderr)
+        self.view.setPlainText(run_text(["/usr/bin/python3", str(SCRIPTS / "ms"), *args], 30))
 
     def show_time(self):
         self._run(["replay", self.when.dateTime().toString("yyyy-MM-dd HH:mm"), "--span", f"{self.span.value()}m"])
@@ -2693,7 +3077,7 @@ class NavItem(QWidget):
 
 # ======================= main window =======================
 class Main(QMainWindow):
-    GROUPS = [("WORK", [OverviewPage, RunsPage, QueuePage, RunLogsPage, ResultsPage, HistoryPage]),
+    GROUPS = [("WORK", [OverviewPage, RunsPage, QueuePage, ServersPage, RunLogsPage, ResultsPage, HistoryPage]),
               ("THIS COMPUTER", [SystemPage, StoragePage, SoftwarePage, InventoryPage, ProjectsPage]),
               ("PROTECTION", [BackupPage, GuardPage, ToolAccessPage]),
               ("MESSAGES & SETTINGS", [ReportsPage, NotifyPage, SettingsPage])]
@@ -2753,7 +3137,12 @@ class Main(QMainWindow):
                 hd.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
                 self.nav.addItem(hd)
             t_init = time.time()
-            page = cls(self)
+            try:
+                page = cls(self)
+            except Exception as e:           # one page that cannot be built must not stop the app from opening
+                import traceback
+                log_error(f"page {cls.__name__} could not be built", traceback.format_exc())
+                page = BrokenPage(self, cls, e)
             self.prof.setdefault(cls.__name__, {"init": 0.0, "refresh": [], "nav": []})["init"] = time.time() - t_init
             wrap = QScrollArea()
             wrap.setWidgetResizable(True)
@@ -2789,13 +3178,14 @@ class Main(QMainWindow):
         h.addWidget(bw, 1)
         self.setCentralWidget(central)
         self.nav.setCurrentRow(min(self.row_page))
+        self.closed = False
         QTimer.singleShot(0, self.refresh_nav)       # the window shows first; the sidebar fills in when ready
-        poll = QTimer(self)
-        poll.timeout.connect(self.apply_nav)
-        poll.start(200)
-        t = QTimer(self)
-        t.timeout.connect(self.tick)
-        t.start(15000)
+        self.poll_timer = QTimer(self)
+        self.poll_timer.timeout.connect(self.apply_nav)
+        self.poll_timer.start(200)
+        self.tick_timer = QTimer(self)
+        self.tick_timer.timeout.connect(self.tick)
+        self.tick_timer.start(15000)
 
     def switch(self, row):
         if row not in self.row_page:
@@ -2806,6 +3196,8 @@ class Main(QMainWindow):
     SLOW_S = 0.7                         # a page whose refresh takes longer is refreshed once a minute, not every 15 s
 
     def refresh(self, force=False):
+        if getattr(self, "closed", False):
+            return
         i = self.stack.currentIndex()
         slow = self.slow.get(i, 0) > self.SLOW_S
         if slow and not force and self.ticks % 4:
@@ -2815,7 +3207,10 @@ class Main(QMainWindow):
         try:
             page.refresh()
         except Exception as e:  # never let one bad file kill the app
-            self.foot.setText(f"refresh error: {e}")
+            import traceback
+            log_error(f"refresh of {type(page).__name__}", traceback.format_exc())
+            self.foot.setText(f"Could not update this page: {type(e).__name__}: {str(e)[:140]}  ·  details in {GUI_ERRORS}")
+            self.slow[i] = 0
             return
         took = time.time() - t0
         self.slow[i] = took
@@ -2825,7 +3220,7 @@ class Main(QMainWindow):
 
     def refresh_nav(self):
         """Sidebar statuses are computed in a background thread, so a slow one never freezes the window."""
-        if self.nav_future is not None and not self.nav_future.done():
+        if self.closed or (self.nav_future is not None and not self.nav_future.done()):
             return
         pages = list(self.pages)
 
@@ -2839,7 +3234,10 @@ class Main(QMainWindow):
                     v = ("", None)
                 out.append((v, time.time() - t0))
             return out
-        self.nav_future = self.nav_pool.submit(work)
+        try:
+            self.nav_future = self.nav_pool.submit(work)
+        except RuntimeError:               # the pool was shut down (the window is closing)
+            return
         self.nav_future.applied = False
 
     def apply_nav(self):
@@ -2856,6 +3254,8 @@ class Main(QMainWindow):
             self.prof.setdefault(type(p).__name__, {"init": 0.0, "refresh": [], "nav": []})["nav"].append(took)
 
     def tick(self):
+        if self.closed:
+            return
         self.ticks += 1
         self.refresh()
         self.refresh_nav()
@@ -2878,6 +3278,11 @@ class Main(QMainWindow):
             pass
 
     def closeEvent(self, e):
+        # stop everything that would call back into this window: a timer firing after the close used to end the
+        # whole app ("cannot schedule new futures after shutdown"), e.g. 15 s after switching the theme
+        self.closed = True
+        for t in (self.poll_timer, self.tick_timer):
+            t.stop()
         if PROFILE:
             self.write_profile()
         self.nav_pool.shutdown(wait=False, cancel_futures=True)
@@ -2894,6 +3299,7 @@ class Main(QMainWindow):
         w.show()
         QApplication.instance()._main = w
         self.close()
+        self.deleteLater()
 
     def run_process(self, cmd, output=None, env=None, done=None):
         p = QProcess(self)
@@ -2919,10 +3325,21 @@ class Main(QMainWindow):
                 self.procs.remove(p)
             if done:
                 done()
-            self.tick()
+            if not self.closed:
+                self.tick()
+
+        def failed(err):
+            if err == QProcess.ProcessError.FailedToStart:        # finished() never comes in this case
+                if output is not None:
+                    output.appendPlainText(f"\nCould not start {cmd[0]} — is it installed?")
+                if p in self.procs:
+                    self.procs.remove(p)
+                if done:
+                    done()
 
         p.readyRead.connect(out)
         p.finished.connect(fin)
+        p.errorOccurred.connect(failed)
         self.procs.append(p)
         p.start(cmd[0], cmd[1:])
 
@@ -2959,7 +3376,62 @@ def apply_theme(app):
     app.setStyleSheet(stylesheet())
 
 
+GUI_ERRORS = STATE / "gui_errors.log"
+_last_error = {"t": 0.0, "n": 0}
+
+
+def log_error(kind, text):
+    """Append one problem of the app to state/gui_errors.log (kept under ~300 kB). Never raises."""
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        if GUI_ERRORS.exists() and GUI_ERRORS.stat().st_size > 300_000:
+            GUI_ERRORS.write_text(GUI_ERRORS.read_text(errors="replace")[-150_000:])
+        with open(GUI_ERRORS, "a") as f:
+            f.write(f"=== {time.strftime('%F %T')} {kind}\n{text.rstrip()}\n")
+    except OSError:
+        pass
+
+
+def install_crash_guards():
+    """PyQt6 ends the whole program when a Python error escapes from a button, timer or paint handler
+    (it calls qFatal). With an excepthook installed the error is logged and shown in the footer, and the app
+    keeps running. Hard crashes inside Qt/C code leave their stack in state/gui_crash.log (faulthandler)."""
+    import faulthandler
+    import threading
+    import traceback
+
+    def hook(etype, value, tb):
+        if issubclass(etype, KeyboardInterrupt):
+            QApplication.quit()
+            return
+        text = "".join(traceback.format_exception(etype, value, tb))
+        log_error("error", text)
+        sys.stderr.write(text)
+        _last_error["t"], _last_error["n"] = time.time(), _last_error["n"] + 1
+        try:
+            w = getattr(QApplication.instance(), "_main", None)
+            if w is not None:
+                where = traceback.extract_tb(tb)[-1] if tb else None
+                at = f" ({where.name}, line {where.lineno})" if where else ""
+                w.foot.setText(f"Problem: {etype.__name__}: {str(value)[:140]}{at}  ·  the app keeps running; "
+                               f"details in {GUI_ERRORS}")
+        except Exception:
+            pass
+    sys.excepthook = hook
+    threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        crash = STATE / "gui_crash.log"
+        if crash.exists() and crash.stat().st_size > 0:        # the previous start ended in a hard crash: keep it
+            log_error("hard crash of the previous start (stack from faulthandler)", crash.read_text(errors="replace")[-6000:])
+        install_crash_guards.fh = open(crash, "w")
+        faulthandler.enable(file=install_crash_guards.fh, all_threads=True)
+    except OSError:
+        pass
+
+
 def main():
+    install_crash_guards()
     app = QApplication(sys.argv)
     app.setApplicationName("My System")
     app.setDesktopFileName("my-system")

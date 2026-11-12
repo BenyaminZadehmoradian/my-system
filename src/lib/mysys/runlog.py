@@ -327,7 +327,7 @@ def timeline(path, run_id):
         elif ev == "stage":
             L.append(f"{t}  {'▶' if d.get('state') == 'begin' else '■'} {d.get('stage')}" + (f"  [{d.get('status')}]" if d.get("status") else ""))
         elif ev == "log":
-            L.append(f"{t}    {d.get('level'):5} {d.get('msg')}")
+            L.append(f"{t}    {str(d.get('level') or ''):5} {d.get('msg')}")
         elif ev == "metric":
             L.append(f"{t}    = {d.get('name')} = {d.get('value')}{' ' + d['unit'] if d.get('unit') else ''}")
         elif ev == "artifact":
