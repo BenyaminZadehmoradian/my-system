@@ -24,6 +24,24 @@ print("SWEEP-OK")
     assert "SWEEP-OK" in out, out
 
 
+def test_a_big_job_behind_a_sweep_does_not_block_small_jobs():
+    """k79 (32 GB) behind 60 ISE jobs: room kept for it never reaches it (the sweep ahead takes it), so small jobs
+    behind it must still run."""
+    out, notes, tmp = py(r'''
+open(os.path.join(MS, "config", "queue.conf"), "w").write("QUEUE_STARVE_MIN=0.05\nQUEUE_BACKFILL_MIN=0\n")
+d = os.path.join(W, "bg"); os.makedirs(d)
+sweep = [queue.submit("sleep 4", cwd=d, name=f"sw_{i}", mem_gb=18, cores=1) for i in range(8)]
+big = queue.submit("sleep 1", cwd=d, name="big", mem_gb=40, cores=1)
+time.sleep(4)
+small = queue.submit("echo small", cwd=d, name="small", mem_gb=2, cores=1)
+assert until(lambda: st(small["id"]) == "done", 20), queue.load(small["id"])["reason"]
+assert st(big["id"]) == "queued"
+assert until(lambda: st(big["id"]) == "done", 90), queue.load(big["id"])["reason"]
+print("BIG-OK")
+''')
+    assert "BIG-OK" in out, out
+
+
 def test_backfill_before_the_first_running_job_ends():
     out, notes, tmp = py(r'''
 S2 = queue.Scheduler

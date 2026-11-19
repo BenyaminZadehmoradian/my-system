@@ -1370,6 +1370,7 @@ class Scheduler:
         except Exception:
             rms = {}
         protect = None                    # (job, need_t, need_m): room kept free for a job that waited too long
+        waiting_ahead = False             # a job earlier in the order already waits for CPU/RAM here
         starve = float(config.num("QUEUE_STARVE_MIN") or 0) * 60
         short = float(config.num("QUEUE_BACKFILL_MIN") or 0) * 60
         prefer_on = bool(rms) and not pause.paused("remote") and any(r["offload"] == "prefer" for r in rms.values())
@@ -1526,8 +1527,13 @@ class Scheduler:
             q_t = sum(float(r.get("cores") or 0) for r in q_run)
             q_m = sum(float(r.get("mem_gb") or 0) * GiB for r in q_run)
             helps = (q_m >= need_m - free_m) if why == "RAM" else (q_t >= need_t - free_t)
-            if protect is None and starve and waited >= starve and helps and not self.served_recently(j, need_t, need_m, running, now, starve):
+            # Room kept for a job only helps when no job ahead of it in the order also waits: freed room goes to the
+            # jobs ahead first, so holding it back from the jobs behind would only leave it empty (after `ms q edit
+            # --priority 0` a big job behind a long sweep blocked every small job for the whole sweep).
+            if (protect is None and not waiting_ahead and starve and waited >= starve and helps
+                    and not self.served_recently(j, need_t, need_m, running, now, starve)):
                 protect = (j, need_t, need_m)
+            waiting_ahead = True
             if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
                 exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
                 low = sorted([r for r in running if r["state"] == "running" and not r.get("remote")

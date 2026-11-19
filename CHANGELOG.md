@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.24.1 — 2026-11-19
+- Room is kept for a starved job only when no job ahead of it in the queue also waits. A big job behind a long sweep
+  (same priority) got room kept free that the sweep ahead took every time, while every small job behind it waited.
+
 ## 1.24.0 — 2026-11-19
 - **A long sweep no longer blocks every other job for days.** A job that waited longer than QUEUE_STARVE_MIN got
   room kept free for it, and smaller jobs that would have fitted beside it had to wait. In a sweep of 480 equal jobs
