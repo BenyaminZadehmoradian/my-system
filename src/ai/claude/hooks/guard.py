@@ -32,6 +32,8 @@ HARD = [
     (re.compile(r"(^|[;&|(\s])(reboot|shutdown|poweroff|halt)(\s|$)"), "rebooting is not allowed"),
     (re.compile(r"\bcrontab\s+(-r|-e|\S+\s*$)"), "changing crontab is not allowed"),
     (re.compile(r"(^|[;&|(\s/])ms\s+(pause|resume|unlock|lock)\b"), "only the user may pause, resume, unlock or lock my-system"),
+    (re.compile(r"(^|[;&|(\s/])ms\s+feedback\s+(accept|reject|done)\b"),
+     "only the user decides on reports about my-system (ms feedback accept/reject/done)"),
     (re.compile(r"(^|[;&|(\s/])ms\s+tools\s+(allow|deny|default|reset)\b"),
      "only the user may change which tool versions a project may use"),
     (re.compile(r"\bpip3?\s+install\b.*--break-system-packages"), "installing into system Python is not allowed"),

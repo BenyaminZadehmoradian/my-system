@@ -94,9 +94,22 @@ Details and the Python/Tcl helpers: `~/My_System/ai/docs/logging.md`.
 9. Put passwords, keys or tokens into a job, a script or a log.
 
 If a command is blocked: do not look for another way to do the same thing. Say what you wanted and why, and let
-the user decide.
+the user decide; if you think the block is wrong, file a report (section 5).
 
-## 5. Before you say "done"
+## 5. When my-system itself is in your way
+
+A problem with my-system — the queue, the server, these rules, the run log, a block you think is wrong, something
+missing — is reported, not worked around:
+
+```
+ms feedback add --kind bug|wish|rule --job ID "short title" -- what happened, what you expected, what would help
+```
+
+Check `ms feedback list` first: the same title adds your case to the existing report. The user accepts or rejects
+it; answers are shown in `ms ai status` — do not ask again for something that was rejected. Then carry on with the
+task as far as you can and tell the user the report number. Not for bugs of the project you work on.
+
+## 6. Before you say "done"
 
 - `ms q show ID` of every job you added: state `done` (not `warning`/`failed`), and the metrics are there.
 - `ms log check FOLDER` passes for the run folders you created.

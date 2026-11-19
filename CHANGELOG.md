@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.26.0 — 2026-11-19
+**Reports from AI sessions about my-system** (`ms feedback`)
+- A Claude session that runs into a problem with my-system (queue, server, rules, run log, a block it thinks is
+  wrong, something missing) files a report instead of working around it: `ms feedback add --kind bug|wish|rule
+  --job ID "title" -- details` (or the MCP tool feedback_add). The report keeps its context: folder, project,
+  version, and the jobs it names (state, reason, last output line). The same title again adds to the open report.
+- You decide: `ms feedback accept ID "why"` / `reject ID "why"` / `done ID`. AI sessions may not (the guard blocks
+  it). Answers are shown in `ms ai status` at the start of every session, so a rejected request is not repeated.
+- A version whose CHANGELOG names "(feedback #ID)" marks that report done when it is installed.
+- New reports come as a quiet phone notification; open ones are listed in the status summary.
+
 ## 1.25.0 — 2026-11-19
 Server: no more jobs sent there that can only fail.
 - Jobs of a project that may only use ISE 14.x are not sent to a server whose tool probe found no ISE (Titan has

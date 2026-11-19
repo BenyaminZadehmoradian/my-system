@@ -2,7 +2,7 @@
 
 Registered for Claude Code by install.sh as `my-system` (command: ms mcp). Tools:
   capacity, queue_list, queue_submit, queue_cancel, queue_explain, runs_list, run_detail, runs_compare, flow_check,
-  flow_run, software_uses, software_updates, vulnerabilities, replay, system_map, ai_status
+  flow_run, software_uses, software_updates, vulnerabilities, replay, system_map, ai_status, feedback_add, feedback_list
 Submitting goes through the same queue as everything else, so an assistant can never overload the machine.
 """
 import json
@@ -42,6 +42,19 @@ def _inside_home(p):
     if any(real == pr or real.startswith(pr + "/") for pr in protected):
         return False
     return any(real == a or real.startswith(a + "/") for a in allowed)
+
+
+def t_feedback_add(title, details="", kind="bug", jobs=None, cwd=None):
+    from . import feedback
+    f, same = feedback.add(title, details, kind, jobs or [], cwd=cwd, by="ai")
+    return (f"added to report #{f['id']} ({f['title']})" if same else
+            f"report #{f['id']} filed; the user decides (ms feedback show {f['id']})")
+
+
+def t_feedback_list(all=False):
+    from . import feedback
+    items = [f for f in feedback.all_items() if all or f["status"] in feedback.OPEN]
+    return "\n\n".join(feedback.show_text(f) for f in items) or "no open reports"
 
 
 def t_ai_status():
@@ -171,6 +184,13 @@ B = {"type": "boolean"}
 TOOLS = {
     "capacity": (t_capacity, "Live load, free RAM and how many more jobs of each tool fit right now (information: the queue checks this itself).",
                  {"tool": S}, []),
+    "feedback_add": (t_feedback_add, "Report a problem with my-system itself (queue, server, rules, run log, a block you "
+                                     "think is wrong, something missing) instead of working around it. The user accepts "
+                                     "or rejects it. Not for bugs of the project you work on.",
+                     {"title": S, "details": S, "kind": {"type": "string", "enum": ["bug", "wish", "rule", "question"]},
+                      "jobs": {"type": "array", "items": I}, "cwd": S}, ["title"]),
+    "feedback_list": (t_feedback_list, "Reports about my-system with their answers (open ones; all=true: also answered).",
+                      {"all": B}, []),
     "ai_status": (t_ai_status, "Live state for an AI session: queue, server use and limits, jobs that ended badly, what to "
                                "reserve, and how to run and log here. Read it at the start of a task.", {}, []),
     "queue_list": (t_queue_list, "Jobs in the my-system queue (running, waiting, recently finished).", {"all": B}, []),

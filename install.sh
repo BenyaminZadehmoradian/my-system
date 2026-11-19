@@ -54,6 +54,7 @@ for d in bin lib plugins gui ai runlog systemd root; do
 done
 rm -rf "${MS:?}/tests"; cp -r "$REPO_DIR/tests" "$MS/tests"      # used by: ms selftest
 cp "$REPO_DIR/README.md" "$MS/README.md"
+cp "$REPO_DIR/CHANGELOG.md" "$MS/CHANGELOG.md"
 chmod +x "$MS"/bin/* "$MS"/gui/*.py "$MS"/ai/claude/hooks/guard.py
 
 # ---- 4. config (only missing files are created) ------------------------------
@@ -120,6 +121,7 @@ if command -v claude >/dev/null; then
 fi
 
 # ---- 7. lock + baseline + first run ------------------------------------------
+"$PY" "$MS/bin/ms" feedback _changelog || true       # reports fixed by this version are marked done
 say "Locking code, rules and config (sudo)"
 "$MS/bin/lock.sh"
 "$MS/bin/accept_changes.sh"

@@ -146,6 +146,13 @@ def attention():
             out.append(f"{n} Python package(s) with known security issues")
     except (OSError, ValueError):
         pass
+    try:
+        from . import feedback
+        n = sum(1 for f in feedback.all_items() if f["status"] == "open")
+        if n:
+            out.append(f"{n} report(s) about my-system waiting for your decision (ms feedback list)")
+    except Exception:
+        pass
     from . import pause
     if pause.active():
         out.append("paused: " + pause.summary() + " (ms resume …)")

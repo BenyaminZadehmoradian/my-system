@@ -21,6 +21,8 @@
   ms q ...               job queue: starts jobs only when CPU and RAM are free (ms q help)
   ms flow ...            steps, sweeps and dependencies from a YAML file (ms flow help)
   ms mcp                 MCP server for AI assistants (stdio)
+  ms ai [status|rules|log|server]   what AI sessions see: live state, rules, how to log, server jobs
+  ms feedback ...        reports about my-system from AI sessions and you: add, list, show, accept, reject
   ms sem NAME[:N] -- CMD run CMD holding a named semaphore slot
   ms lineage FILE        which job produced / used this exact file
   ms secret list|set|rm  secrets for jobs (masked in logs)
@@ -492,6 +494,9 @@ def main(argv):
     elif cmd == "mcp":
         from mysys import mcp
         mcp.serve()
+    elif cmd == "feedback":
+        from mysys import feedback
+        return feedback.cli(rest)
     elif cmd == "ai":
         from mysys import aihelp
         return aihelp.main(rest)

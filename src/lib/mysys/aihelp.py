@@ -107,10 +107,17 @@ def status_text(cwd=None):
             L.append("Vivado/Vitis/ISE versions allowed in this folder: " + ", ".join(str(x) for x in v))
     except Exception:
         pass
+    try:
+        from . import feedback
+        L += feedback.ai_lines(cwd)
+    except Exception:
+        pass
     L.append("")
     L.append("Heavy or long work goes through the queue, and results are printed as `::ms` lines:")
     L.append(TEMPLATE)
     L.append("Rules: `ms ai rules` · logging: `ms ai log` · server jobs: `ms ai server` · this page: `ms ai status`")
+    L.append("A problem with my-system itself (queue, server, rules, log, a block you think is wrong)? Do not work "
+             "around it: `ms feedback add \"TITLE\" -- details` (`ms feedback help`).")
     return "\n".join(L)
 
 
