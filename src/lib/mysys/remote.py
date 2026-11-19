@@ -1135,6 +1135,41 @@ def missing_parts(j, name):
     return out
 
 
+ISE_PROGS = ("xtclsh", "ise", "xst", "ngdbuild", "map", "par", "trce", "bitgen", "netgen", "fuse", "isim", "planAhead")
+
+
+def server_has_ise(name):
+    """True/False from the last `ms remote tools NAME` probe; None when it was never probed."""
+    try:
+        txt = (STATE / f"{name}-tools.txt").read_text(errors="replace")
+    except OSError:
+        return None
+    return bool(re.search(r"/14\.\d/ISE_DS|ISE_DS/settings|tool\.xtclsh=/", txt))
+
+
+def ise_only(j):
+    """The job's project may only use ISE (Vivado/Vitis not allowed there): its tools are ISE 14.x."""
+    try:
+        from . import versions
+        v = versions.allowed_for(j.get("cwd"))
+    except Exception:
+        return False
+    return bool(v) and "*" not in v and all(str(x).startswith("14.") for x in v)
+
+
+def outside_relative(j):
+    """Files the command reaches with ../ outside the job folder (only the folder goes to the server)."""
+    cwd = os.path.realpath(j.get("cwd") or ".")
+    out = []
+    for w in re.split(r"[\s;&|()<>'\"=]+", j.get("cmd") or ""):
+        if ".." not in w.split("/") or "$" in w or w.startswith(("/", "~")):
+            continue
+        p = os.path.realpath(os.path.join(cwd, w))
+        if not (p == cwd or p.startswith(cwd + "/")) and w not in out:
+            out.append(w)
+    return out
+
+
 def why_not(j, r, scan=True):
     """Why this job may not go to server `r` automatically, or None when it may. scan=False skips the (slower)
     look into the job folder for paths that exist only here."""
@@ -1146,6 +1181,12 @@ def why_not(j, r, scan=True):
         return "it stays here (--on here, or it already failed on a server)"
     if int(j.get("gpus") or 0):
         return "it needs a GPU"
+    if ise_only(j) and server_has_ise(r["name"]) is False:
+        return "its project uses ISE 14.7, which the server does not have"
+    rel = outside_relative(j)
+    if rel:
+        return (f"it uses files outside its folder: {', '.join(rel[:3])} (only the job folder is sent; "
+                "copy them into it, or queue the job from the folder that holds them)")
     miss = set(r["missing_tools"].split())
     if _uses(j, miss):
         return f"it uses a program the server lacks (missing_tools: {' '.join(sorted(miss))})"

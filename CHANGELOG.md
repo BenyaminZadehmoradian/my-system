@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.25.0 — 2026-11-19
+Server: no more jobs sent there that can only fail.
+- Jobs of a project that may only use ISE 14.x are not sent to a server whose tool probe found no ISE (Titan has
+  none). Before, each of the 480 jobs of an ISE sweep went there first, failed with exit 127, and came back; the
+  burst of failures also paused sending other jobs to the server for an hour at a time.
+- A job whose command reaches files with `../` outside its folder (`bash ../../optbuild.sh`) stays here: only the
+  job folder is copied to the server. `ms q explain` says which file.
+
 ## 1.24.1 — 2026-11-19
 - Room is kept for a starved job only when no job ahead of it in the queue also waits. A big job behind a long sweep
   (same priority) got room kept free that the sweep ahead took every time, while every small job behind it waited.

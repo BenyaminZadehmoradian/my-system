@@ -42,6 +42,35 @@ print("BIG-OK")
     assert "BIG-OK" in out, out
 
 
+def test_jobs_that_can_only_fail_there_are_not_sent():
+    """ISE-only projects (Titan has no ISE) and jobs that call ../ outside their folder stay here; others still go."""
+    import test_remote as TR
+    out, notes, tmp, ms, env = TR.run(r'''
+import json
+from mysys import remote, versions
+ise = os.path.join(W, "mcg", "run1"); other = os.path.join(W, "lab", "r1"); os.makedirs(ise); os.makedirs(other)
+open(os.path.join(W, "mcg", "optbuild.sh"), "w").write("echo hi\n")
+open(os.path.join(other, "go.sh"), "w").write("echo go\n")
+versions.FILE.write_text(json.dumps({"default": ["2025.2"], "projects": {os.path.join(W, "mcg"): ["14.7"]}}))
+r = remote.get("titan")
+remote.STATE.mkdir(parents=True, exist_ok=True)
+probe = remote.STATE / "titan-tools.txt"
+mk = lambda cmd, cwd: {"id": 0, "cmd": cmd, "cwd": cwd, "name": "x", "tool": None, "remote_ok": True}
+assert remote.server_has_ise("titan") is None and remote.why_not(mk("bash go.sh", ise), r, scan=False) is None   # never probed: allowed
+probe.write_text("T tool.vivado=/x/2025.2.1/Vivado/bin/vivado\n")
+assert "ISE 14.7" in remote.why_not(mk("bash go.sh", ise), r, scan=False)
+assert remote.why_not(mk("bash go.sh", other), r, scan=False) is None
+probe.write_text("T settings=/opt/Xilinx/14.7/ISE_DS/settings64.sh\n")
+assert remote.server_has_ise("titan") is True and remote.why_not(mk("bash go.sh", ise), r, scan=False) is None
+w = remote.why_not(mk("bash ../optbuild.sh m_r8 7", ise), r, scan=False)
+assert w and "outside its folder: ../optbuild.sh" in w, w
+for ok in ("bash ./go.sh", "cd sub/.. && bash go.sh", "bash $X/../a.sh", "python3 -c 'print(1)'"):
+    assert remote.why_not(mk(ok, other), r, scan=False) is None, (ok, remote.why_not(mk(ok, other), r, scan=False))
+print("NOSEND-OK")
+''', offload="prefer")
+    assert "NOSEND-OK" in out, out
+
+
 def test_backfill_before_the_first_running_job_ends():
     out, notes, tmp = py(r'''
 S2 = queue.Scheduler
