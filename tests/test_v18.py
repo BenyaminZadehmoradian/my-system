@@ -294,6 +294,8 @@ def test_live_titan_script_against_fake_cluster():
 
 def test_explain_says_why_a_job_was_not_sent_after_it_ran_here():
     out, *_ = run(r"""
+from mysys import remote as _RM
+_RM.here = lambda p: True                                               # /mnt/only_here exists on "this machine"
 os.makedirs(os.path.join(W, "o"), exist_ok=True)
 open(os.path.join(W, "o", "run.sh"), "w").write("cat /mnt/only_here/data.txt\n")   # a path that exists only here
 a = queue.submit("echo here > h.txt", cwd=os.path.join(W, "o"), name="stay", remote="auto", **small)

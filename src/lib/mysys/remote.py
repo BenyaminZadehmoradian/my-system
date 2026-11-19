@@ -486,6 +486,15 @@ OUTSIDE_RX = None
 _OUT_CACHE = {}
 
 
+def here(pth):
+    """Does `pth` exist on this machine, or is it a file to be made in a real folder (at least 3 levels deep)?
+    `/data/kit.js` in a web page or `/home/other/old/x` in a comment does not, and must not keep a job here."""
+    if os.path.exists(pth):
+        return True
+    d = os.path.dirname(pth)
+    return len([x for x in d.split("/") if x]) >= 3 and os.path.isdir(d)
+
+
 def outside_paths(j, r, limit=3):
     """Absolute paths that the job (its command or the text files in its folder) uses and that exist only on this
     machine: under /home /mnt /data /tools /opt /scratch /media /srv, outside the job folder and not in path_map.
@@ -507,6 +516,8 @@ def outside_paths(j, r, limit=3):
             pth = m.group(1).rstrip(".")
             if any(pth == s or pth.startswith(s + "/") for s in skip if s):
                 continue
+            if not here(pth):
+                continue                     # not on this machine either (a URL path in a web page, an old path)
             if pth not in found:
                 found.append(pth)
             if len(found) >= limit:

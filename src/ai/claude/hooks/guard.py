@@ -254,7 +254,14 @@ SCRIPT_INVOKE = re.compile(r"(^|[\s/\"'`(\[,])(vivado|vitis-run|vitis_hls|vivado
 
 
 QUEUE_LINE = re.compile(r"(^|[\s;&|(/])ms\s+(q\s+add|flow\s+run|q\s+clone)\b|queue_submit")
-PY_INVOKE = re.compile(r"""['"](vivado|vitis-run|vitis_hls|vivado_hls|v\+\+|xtclsh|xst|ngdbuild|bitgen|par|xelab|xsim|quartus_sh)['"\s]""")
+_PYT = r"(?:vivado|vitis-run|vitis_hls|vivado_hls|v\+\+|xtclsh|xst|ngdbuild|bitgen|par|xelab|xsim|quartus_sh)"
+# Python that STARTS a tool: a call (subprocess, os.system ...) naming it on the same line, a command list that begins
+# with it, or a command string "vivado -mode ...". A dict key or a file name like "vivado_results.json" does not.
+PY_INVOKE = re.compile(
+    r"(?:subprocess\.\w+|os\.system|os\.exec\w*|os\.spawn\w*|os\.popen|Popen|check_output|check_call)\s*\([^\n]*?"
+    r"['\"/]" + _PYT + r"(?:['\"]|\s)"
+    r"|\[\s*f?r?['\"](?:[^'\"\s]*/)?" + _PYT + r"['\"]\s*,\s*f?r?['\"]-"
+    r"|['\"](?:[^'\"\s]*/)?" + _PYT + r"\s+-{1,2}[a-z]")
 WHICH_RX = re.compile(r"(\$\(|`)\s*(which|command\s+-v|type\s+-p)\s+(\S+)")
 CONTAINERS = {"docker", "podman", "singularity", "apptainer"}
 

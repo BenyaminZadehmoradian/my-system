@@ -1682,7 +1682,9 @@ def daemon_state():
         d = json.loads(DAEMON.read_text())
     except (OSError, ValueError):
         return "stopped", None
-    if time.time() - d.get("t", 0) > 30 or not _alive(d.get("pid")):
+    # The heartbeat decides: the scheduler rewrites it every few seconds. Its pid alone does not: inside a sandbox
+    # (an AI assistant's shell) other processes are invisible, and it looked "stopped" while it ran.
+    if time.time() - d.get("t", 0) > 30:
         return "stopped", d
     return ("error" if d.get("error") else "running"), d
 

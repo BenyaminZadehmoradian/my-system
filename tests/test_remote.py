@@ -414,6 +414,8 @@ print("ok")
 def test_path_map_on_the_node():
     out, notes, tmp, ms, env = run(r"""
 from mysys import remote as RM
+_here = RM.here
+RM.here = lambda p: True if "only_here" in p else _here(p)           # stands for a path that exists on this machine
 LT = os.path.join(os.path.dirname(W), "localtools", "2025.2.1")        # the tool's path on this machine
 SRV = os.path.join(os.environ["FAKE_HEAD"], "srvtools", "2025.2.1")    # where it is on the server
 os.makedirs(os.path.join(SRV, "bin")); os.makedirs(os.path.join(LT, "bin"))

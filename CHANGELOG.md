@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.26.1 — 2026-11-19
+Found by a Claude session working on protocol-lab:
+- `ms q` said "scheduler: stopped" inside a Claude Code session while the scheduler ran: the session's shell cannot
+  see other processes, and the check looked at the process id. The heartbeat now decides. (The session then asked
+  you to run `ms resume`, which was not needed.)
+- The guard blocked `python3 tools/merge_results.py` as "starts Vivado": any Python file with the word "vivado" in
+  quotes counted (a dict key, a tool name in results). Now only a real start does: subprocess/os.system naming the
+  tool, a command list beginning with it, or a command string like "vivado -mode batch".
+- Jobs were kept off the server for paths that do not exist on this machine either: `/data/vivado_kit.js` (a URL
+  path in a web page) or `/home/claude/uart-lab/...` (an old path in a comment). Only paths that exist here, or files
+  to be made in an existing folder at least three levels deep, keep a job here.
+
 ## 1.26.0 — 2026-11-19
 **Reports from AI sessions about my-system** (`ms feedback`)
 - A Claude session that runs into a problem with my-system (queue, server, rules, run log, a block it thinks is

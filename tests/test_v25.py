@@ -64,6 +64,44 @@ print("FB-OK")
     assert "FB-OK" in out, out
 
 
+def test_found_by_the_protocol_lab_session():
+    out, notes, tmp = py(r'''
+import importlib.util, json, shutil, subprocess
+ROOT = %r
+shutil.copytree(os.path.join(ROOT, "src", "ai"), os.path.join(MS, "ai"))
+# 1. the scheduler is "running" while its heartbeat is fresh, even when its process is invisible (sandbox)
+queue.DAEMON.parent.mkdir(parents=True, exist_ok=True); json.dump({"pid": 999999, "t": time.time()}, open(queue.DAEMON, "w"))
+assert queue.daemon_state()[0] == "running", queue.daemon_state()
+json.dump({"pid": os.getpid(), "t": time.time() - 120}, open(queue.DAEMON, "w"))
+assert queue.daemon_state()[0] == "stopped"
+# 2. a Python script that only mentions vivado is not blocked; one that starts it is
+spec = importlib.util.spec_from_file_location("g", os.path.join(MS, "ai", "claude", "hooks", "guard.py"))
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+p = os.path.join(W, "pl"); os.makedirs(os.path.join(p, "tools"))
+open(os.path.join(p, "tools", "merge_results.py"), "w").write(
+    'import json, sys\nTOOLS = ["vivado", "vitis"]\nd = json.load(open(sys.argv[1]))\nout = {"tool": "vivado", "rows": d}\n'
+    'open("data/vivado_results.js", "w").write("window.R=" + json.dumps(out))\n')
+open(os.path.join(p, "tools", "build.py"), "w").write('import subprocess\nsubprocess.run(["vivado", "-mode", "batch", "-source", "b.tcl"])\n')
+g.CWD = p
+assert not g.check_bash("cd %%s && python3 tools/merge_results.py runs/a/vivado_results.json" %% p, []), "merge must pass"
+assert g.check_bash("cd %%s && python3 tools/build.py" %% p, []), "a script that starts vivado is still blocked"
+# 3. paths that do not exist here either do not keep a job off the server
+from mysys import remote
+r = dict(remote.DEFAULTS, name="t", path_map="")
+d = os.path.join(W, "web"); os.makedirs(os.path.join(d, "out"))
+os.makedirs(os.path.join(W, "kit", "lib"))
+open(os.path.join(d, "index.html"), "w").write('<script src="/data/vivado_kit.js"></script><script src="/tools/vivado-kit/x.js"></script>\n')
+open(os.path.join(d, "a.js"), "w").write("// was /home/claude/uart-lab/data/library.js\n")
+assert remote.outside_paths({"cmd": "bash run.sh", "cwd": d}, r) == [], remote.outside_paths({"cmd": "bash run.sh", "cwd": d}, r)
+real = os.path.join(W, "kit", "lib")
+assert remote.here(real) and remote.here(real + "/new_out.txt")          # exists / a file to be made in a real folder
+assert not remote.here("/data/vivado_kit.js") and not remote.here("/home/claude/uart-lab/data/library.js")
+assert not remote.here("/tools/vivado-kit")
+print("PL-OK")
+''' % str(ROOT))
+    assert "PL-OK" in out, out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):
