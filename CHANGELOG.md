@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.24.0 — 2026-11-19
+- **A long sweep no longer blocks every other job for days.** A job that waited longer than QUEUE_STARVE_MIN got
+  room kept free for it, and smaller jobs that would have fitted beside it had to wait. In a sweep of 480 equal jobs
+  every later job "waits too long", so small jobs waited behind it for 88 hours. Room is now kept only for a job that
+  is really starved: one for which no job of its size has started recently.
+- Backfill: a job may also use the kept room when it is expected to end before the first running job here ends
+  (the starved job cannot start earlier anyway), not only when it takes under QUEUE_BACKFILL_MIN.
+
 ## 1.23.2 — 2026-11-12
 - A failed job says why: "exit code 1 — FAIL: MISSING INPUT: …" (the line of its last output that looks like the
   cause) instead of only "exit code 1", in the queue, the history, `ms ai status` and the notification.

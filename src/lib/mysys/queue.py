@@ -1054,6 +1054,36 @@ class Scheduler:
                 "avail": avail, "reserve": res, "max_slots": max_slots, "total": total,
                 "no_new": bool(r and r.get("no_new_jobs")), "reservation": r}
 
+    @staticmethod
+    def served_recently(j, need_t, need_m, running, now, window):
+        """A job is not starved while jobs at least as big keep starting here: room that frees up goes to jobs of its
+        size, it only waits its turn (a long sweep). Keeping room for it then blocks every smaller job for days."""
+        for r in running:
+            if (r.get("remote") or r["state"] != "running" or r["id"] == j["id"]
+                    or now - (r.get("started") or 0) > window):
+                continue
+            if float(r.get("mem_gb") or 0) * GiB >= need_m * 0.9 and float(r.get("cores") or 0) >= min(need_t, 1.0):
+                return True
+        return False
+
+    @staticmethod
+    def backfill_ok(j, short, running, now):
+        """May `j` use the room kept for a starved job? Yes when it is expected to end soon (QUEUE_BACKFILL_MIN), or
+        before the first running job here is expected to end — the starved job cannot start before that anyway."""
+        mine = usual_seconds(j)
+        if mine <= 0:
+            return False                       # unknown length: it might hold the room for hours
+        if short and mine <= short:
+            return True
+        ends = []
+        for r in running:
+            if r.get("remote") or r["state"] != "running":
+                continue
+            u = usual_seconds(r)
+            if u > 0:
+                ends.append(max(0.0, u - (now - (r.get("started") or now))))
+        return bool(ends) and mine <= min(ends)
+
     def waiting_advice(self, jobs):
         """Tell once when ready jobs have waited long (QUEUE_STUCK_NOTIFY_H) for CPU/RAM, and what would let them
         start. Jobs that wait on purpose (dependencies, start time, groups, licenses, idle machine) are left out.
@@ -1448,7 +1478,7 @@ class Scheduler:
             if protect and (free_t >= need_t or patient) and free_m >= need_m:
                 pj, pt, pm = protect
                 fits_beside = free_t - need_t >= pt and free_m - need_m >= pm
-                if not fits_beside and not (short and 0 < usual_seconds(j) <= short):
+                if not fits_beside and not self.backfill_ok(j, short, running, now):
                     msg = f"waiting: keeping room for #{pj['id']} (waiting {int((now - _wait_start(pj)) / 60)} min)"
                     if j.get("reason") != msg:
                         update(j["id"], reason=msg)
@@ -1496,7 +1526,7 @@ class Scheduler:
             q_t = sum(float(r.get("cores") or 0) for r in q_run)
             q_m = sum(float(r.get("mem_gb") or 0) * GiB for r in q_run)
             helps = (q_m >= need_m - free_m) if why == "RAM" else (q_t >= need_t - free_t)
-            if protect is None and starve and waited >= starve and helps:
+            if protect is None and starve and waited >= starve and helps and not self.served_recently(j, need_t, need_m, running, now, starve):
                 protect = (j, need_t, need_m)
             if j.get("preempt") and why == "CPU" and now - self.last_action > 30:
                 exempt = float(config.num("QUEUE_PREEMPT_EXEMPT_MIN") or 0) * 60
