@@ -1037,7 +1037,9 @@ def _uses(j, progs):
     return any(os.path.basename(w) in progs for w in words if w)
 
 
-PART_RX = re.compile(r"\b(x[ca][a-z]{0,3}\d[0-9a-z]*(?:-[0-9a-z]+){0,3})\b", re.I)   # xc7z020clg400-1, xczu9eg-…
+# AMD/Xilinx parts: xc7z020clg400-1, xczu9eg-…, xcvu9p, xck26, xcu25, xa7a100t, xq…; the letters after xc/xa/xq are a
+# family (zu, ku, vu, …), so an application note (XAPP1247) or an IP name (xadc_wiz) is not taken for a part.
+PART_RX = re.compile(r"\b(x[caq](?:zu|ku|vu|au|vc|ve|vm|vp|vh|v|s|k|u)?\d[0-9a-z]*(?:-[0-9a-z]+){0,3})\b", re.I)
 _PARTS_CACHE = {}
 PART_FILES = (".tcl", ".xpr", ".cfg", ".ini", ".sh", ".mk", ".json", ".yaml", ".yml")
 

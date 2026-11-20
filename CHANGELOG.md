@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.26.2 — 2026-11-20
+- An application note number (XAPP1247) in a project's files was taken for an FPGA part "not installed on the
+  server", so protocol-lab's IP jobs stayed here and waited for CPU. Parts are now recognised by their family
+  letters (xc7…, xczu…, xcku…, xcvu…, xck26, xcu25, xa…, xq…).
+
 ## 1.26.1 — 2026-11-19
 Found by a Claude session working on protocol-lab:
 - `ms q` said "scheduler: stopped" inside a Claude Code session while the scheduler ran: the session's shell cannot

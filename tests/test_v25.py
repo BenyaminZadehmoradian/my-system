@@ -97,6 +97,9 @@ real = os.path.join(W, "kit", "lib")
 assert remote.here(real) and remote.here(real + "/new_out.txt")          # exists / a file to be made in a real folder
 assert not remote.here("/data/vivado_kit.js") and not remote.here("/home/claude/uart-lab/data/library.js")
 assert not remote.here("/tools/vivado-kit")
+for t, want in (("see XAPP1247 and xadc_wiz_0", []), ("set_property PART xc7k325tfbg676-1", ["xc7k325tfbg676-1"]),
+                ("xczu9eg-ffvb1156-2-e xck26 xcu25 xcvu9p", ["xczu9eg-ffvb1156-2-e", "xck26", "xcu25", "xcvu9p"])):
+    assert [m.lower() for m in remote.PART_RX.findall(t)] == want, (t, remote.PART_RX.findall(t))
 print("PL-OK")
 ''' % str(ROOT))
     assert "PL-OK" in out, out
