@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.26.3 — 2026-11-22
+Found by a Claude session working on MCGEMMA:
+- The guard blocked `python3 hardware/repro/evidence.py pre …/optbuild.sh` as "optbuild.sh starts Vivado/ISE": a
+  script named anywhere among the first arguments counted as run. Only the script that is run counts now: the
+  program itself, or the first argument of an interpreter (`bash x.sh`, `python3 x.py`); later arguments are data.
+- `ms feedback add` failed with "Read-only file system" inside a Claude Code session: its shell may only write in
+  the project. The report is then left in the project's `.ms-feedback/` folder and filed by my-system within a
+  minute (the user is told as usual). The MCP tool feedback_add was not affected.
+
 ## 1.26.2 — 2026-11-20
 - An application note number (XAPP1247) in a project's files was taken for an FPGA part "not installed on the
   server", so protocol-lab's IP jobs stayed here and waited for CPU. Parts are now recognised by their family

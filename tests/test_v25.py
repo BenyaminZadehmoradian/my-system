@@ -105,6 +105,40 @@ print("PL-OK")
     assert "PL-OK" in out, out
 
 
+def test_found_by_the_mcgemma_session():
+    out, notes, tmp = py(r'''
+import importlib.util, shutil, subprocess
+from pathlib import Path
+ROOT = %r
+shutil.copytree(os.path.join(ROOT, "src", "ai"), os.path.join(MS, "ai"))
+spec = importlib.util.spec_from_file_location("g", os.path.join(MS, "ai", "claude", "hooks", "guard.py"))
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+p = os.path.join(W, "mcg"); os.makedirs(os.path.join(p, "repro"))
+open(os.path.join(p, "optbuild.sh"), "w").write("xtclsh build.tcl\n")
+open(os.path.join(p, "repro", "evidence.py"), "w").write("import hashlib, sys\nprint(hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest())\n")
+g.CWD = p
+assert not g.check_bash(f"cd {p} && python3 repro/evidence.py pre optbuild.sh", []), "hashing a script is not running it"
+assert not g.check_bash(f"cd {p} && sha256sum optbuild.sh && cat optbuild.sh", [])
+assert g.check_bash(f"cd {p} && bash optbuild.sh", []) and g.check_bash(f"cd {p} && ./optbuild.sh m 3", [])
+assert g.check_bash(f"cd {p} && bash -x optbuild.sh", [])
+# a report from a shell that cannot write to my-system's folder: left in the project, filed by the watcher
+from mysys import feedback
+real = feedback.DIR
+feedback.DIR = Path("/proc/ms-not-writable/feedback")
+f, how = feedback.add("evidence.py blocked as starting ISE", "it only hashes optbuild.sh", "bug", cwd=os.path.join(p, "repro"), by="ai")
+assert how == "dropped" and f["id"] is None and os.path.exists(f["drop"]), (how, f)
+feedback.DIR = real
+feedback._drop_places = lambda: {p, os.path.join(p, "repro")}
+assert feedback.collect() == [1]
+r = feedback.load(1)
+assert r["title"] == "evidence.py blocked as starting ISE" and r["by"] == "ai" and r["cwd"].endswith("repro"), r
+assert not os.path.exists(os.path.dirname(f["drop"])), "drop file and empty folder removed"
+assert feedback.collect() == []
+print("MCG-OK")
+''' % str(ROOT))
+    assert "MCG-OK" in out, out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

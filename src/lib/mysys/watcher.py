@@ -423,6 +423,11 @@ def tick():
         notify("CPU very hot", f"{t} °C", "high", "fire")
 
     cur = track_jobs(s, now, conf)
+    try:                                   # reports AI sessions left in their project (their sandbox is read-only)
+        from . import feedback
+        feedback.collect()
+    except Exception:
+        pass
 
     # 1.6: crash report, time-travel record, memory early warning, thrashing, hung shares, heartbeat
     from . import history

@@ -336,8 +336,15 @@ def check_heavy(c):
                                                                                          "tclsh", "perl", "source", "."):
             if prog not in ("make",) and any(os.path.basename(a) in HEAVY for a in args[:4]):
                 return msg.format(what=f"running {next(os.path.basename(a) for a in args if os.path.basename(a) in HEAVY)} directly")
-            scripts = ([argv[0]] if prog.endswith((".sh", ".tcl", ".py", ".bash")) else []) + \
-                      [a for a in args[:3] if a.endswith((".sh", ".tcl", ".py", ".bash")) or a == "Makefile"]
+            # Only the script that is RUN counts: the program itself (./build.sh), or the first argument of an
+            # interpreter (bash x.sh, python3 x.py). Later arguments are data: `python3 evidence.py pre optbuild.sh`
+            # hashes optbuild.sh, it does not run it.
+            if prog.endswith((".sh", ".tcl", ".py", ".bash")):
+                scripts = [argv[0]]
+            elif prog == "make":
+                scripts = []
+            else:
+                scripts = [a for a in args[:1] if a.endswith((".sh", ".tcl", ".py", ".bash"))]
             d = cm.cwd
             if prog == "make":
                 if "-C" in argv[1:]:

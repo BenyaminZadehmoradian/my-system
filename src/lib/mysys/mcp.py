@@ -47,6 +47,8 @@ def _inside_home(p):
 def t_feedback_add(title, details="", kind="bug", jobs=None, cwd=None):
     from . import feedback
     f, same = feedback.add(title, details, kind, jobs or [], cwd=cwd, by="ai")
+    if same == "dropped":
+        return f"report saved in {f['drop']}; my-system files it within a minute"
     return (f"added to report #{f['id']} ({f['title']})" if same else
             f"report #{f['id']} filed; the user decides (ms feedback show {f['id']})")
 

@@ -109,8 +109,19 @@ def similar(title, items=None):
     return out
 
 
+DROP = ".ms-feedback"         # inside a project: where a sandboxed AI session leaves a report for the watcher
+
+
+def _drop_dir(cwd):
+    """The project's drop folder (the project root when known, else the folder itself)."""
+    root = _project(cwd)
+    return os.path.join(root if os.path.isdir(root) else cwd, DROP)
+
+
 def add(title, text="", kind="bug", jobs=(), cwd=None, by=None):
-    """File a report; returns (report, existing) — existing is a similar open report it was added to instead."""
+    """File a report; returns (report, existing) — existing is a similar open report it was added to instead.
+    When state/feedback cannot be written (an AI assistant's sandbox makes it read-only), the report is left in the
+    project's .ms-feedback/ folder; the watcher files it within a minute (report id None, existing "dropped")."""
     title = " ".join(title.split())[:160]
     if not title:
         raise ValueError("a report needs a title")
@@ -118,19 +129,39 @@ def add(title, text="", kind="bug", jobs=(), cwd=None, by=None):
     cwd = os.path.abspath(cwd or os.getcwd())
     ctx = [c for c in (_job_context(j) for j in jobs) if c]
     by = by or _by()
-    now = time.time()
+    rec = {"t": time.time(), "kind": kind, "title": title, "text": text[:8000], "by": by, "cwd": cwd,
+           "project": _project(cwd), "jobs": ctx, "version": _version()}
+    try:
+        return file_record(rec)
+    except OSError:
+        d = _drop_dir(cwd)
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, f"{int(rec['t'] * 1000)}-{os.getpid()}.json")
+        with open(p, "w") as fh:
+            json.dump(rec, fh)
+        return dict(rec, id=None, drop=p), "dropped"
+
+
+def file_record(rec):
+    """Store a report record (from add() or a drop file): merge into a similar open report or make a new one."""
+    title, text, kind, by, cwd, ctx = rec["title"], rec.get("text", ""), rec.get("kind", "bug"), rec.get("by", "ai"), \
+        rec.get("cwd", ""), rec.get("jobs") or []
+    now = rec.get("t") or time.time()
+    DIR.mkdir(parents=True, exist_ok=True)
+    if not os.access(DIR, os.W_OK):
+        raise PermissionError(f"{DIR} is not writable")
     same = similar(title)
     if same:                                   # the same problem again: one more voice, not a second report
         f = same[0]
-        f.setdefault("votes", []).append({"t": now, "by": by, "cwd": cwd, "project": _project(cwd),
+        f.setdefault("votes", []).append({"t": now, "by": by, "cwd": cwd, "project": rec.get("project") or _project(cwd),
                                           "text": text[:4000], "jobs": ctx})
         save(f)
         return f, True
     DIR.mkdir(parents=True, exist_ok=True)
     fid = max([f["id"] for f in all_items()] + [0]) + 1
     f = {"id": fid, "t": now, "kind": kind, "title": title, "text": text[:8000], "by": by, "cwd": cwd,
-         "project": _project(cwd), "jobs": ctx, "version": _version(), "status": "open", "answer": "",
-         "answered": None, "votes": []}
+         "project": rec.get("project") or _project(cwd), "jobs": ctx, "version": rec.get("version") or _version(),
+         "status": "open", "answer": "", "answered": None, "votes": []}
     save(f)
     try:
         subprocess.Popen([str(config.MS / "bin" / "notify.sh"), f"Report #{fid} from {'an AI session' if by == 'ai' else 'you'}",
@@ -139,6 +170,63 @@ def add(title, text="", kind="bug", jobs=(), cwd=None, by=None):
     except OSError:
         pass
     return f, False
+
+
+def _drop_places():
+    """Folders that may hold a .ms-feedback/ drop: the detected projects, and the folders AI sessions worked in
+    during the last two days (from the guard's audit log) with their parents up to the home folder."""
+    out = set()
+    try:
+        from . import detect
+        out.update(detect.load_state().get("projects", []))
+    except Exception:
+        pass
+    home = os.path.expanduser("~")
+    try:
+        p = config.REPORTS / "ai_audit" / time.strftime("%Y-%m.jsonl")
+        with open(p, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(p) - 2_000_000))
+            tail = fh.read().decode(errors="replace").splitlines()[1:]
+        cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 2 * 86400))
+        for line in tail:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("t", "") < cut or not r.get("cwd"):
+                continue
+            d = r["cwd"]
+            while d.startswith(home + "/") or d.startswith("/mnt/"):
+                out.add(d)
+                d = os.path.dirname(d)
+    except OSError:
+        pass
+    return out
+
+
+def collect():
+    """File the reports AI sessions left in .ms-feedback/ folders (the watcher calls this every minute)."""
+    got = []
+    for base in _drop_places():
+        d = os.path.join(base, DROP)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".json"):
+                continue
+            p = os.path.join(d, name)
+            try:
+                rec = json.load(open(p))
+                f, _ = file_record(rec)
+                os.remove(p)
+                got.append(f["id"])
+            except (OSError, ValueError, KeyError):
+                continue
+        try:
+            os.rmdir(d)                       # only when empty
+        except OSError:
+            pass
+    return got
 
 
 def answer(fid, status, text=""):
@@ -264,6 +352,10 @@ def cli(a):
         except ValueError as e:
             print(f"ms feedback: {e}")
             return 2
+        if same == "dropped":
+            print(f"report saved in {f['drop']} — my-system files it within a minute (this shell cannot write to "
+                  "my-system's own folder); the user is told then")
+            return 0
         print(f"added to report #{f['id']} (same problem: {f['title']})" if same else
               f"report #{f['id']} filed — the user decides; see the answer later with: ms feedback show {f['id']}")
         return 0
