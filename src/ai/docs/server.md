@@ -16,6 +16,9 @@ is full, unreachable or measurably slower.
 - `cd DIR && CMD` (also inside `bash -c '...'`) runs in DIR. `.git` is not copied: do `git pull` before queuing and
   write the commit to a file if the job needs it.
 - **Programs** listed as missing there, and devices without a license there, always run here.
+- **Reservation:** after 5 measured jobs of the same family, the server reservation is lowered to what 9 of 10 of
+  them used (only cores, never memory; the job log says so). Ask for the right number anyway; `--exact-cores`
+  keeps yours when the job really needs it (e.g. a short phase that is parallel).
 - **Limits:** `max_jobs` and `max_cores` (reserved cores of your running jobs together). Smaller reservations =
   more jobs at once. `ms remote usage` lists what jobs of each name really used and what to ask for.
 - **Failures:** a job that could not run there (upload, missing program or file) runs here once. A job whose own

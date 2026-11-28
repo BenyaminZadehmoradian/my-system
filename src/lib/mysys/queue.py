@@ -1054,6 +1054,26 @@ class Scheduler:
                 "avail": avail, "reserve": res, "max_slots": max_slots, "total": total,
                 "no_new": bool(r and r.get("no_new_jobs")), "reservation": r}
 
+    def refresh_servers(self, RM, rms, now):
+        """Read each server's free CPUs again when the reading is over 10 minutes old (in the background: ssh must
+        not hold up the scheduler). It was only read when a job could go there, so it could be a week old."""
+        import threading
+        busy = getattr(self, "_refreshing", set())
+        self._refreshing = busy
+        for name, r in rms.items():
+            if r.get("offload", "never") == "never" or name in busy or now - RM._cache(name).get("t", 0) < 600:
+                continue
+            busy.add(name)
+
+            def go(r=r, name=name):
+                try:
+                    RM.status(r, fresh=True)
+                except Exception:
+                    pass
+                finally:
+                    busy.discard(name)
+            threading.Thread(target=go, daemon=True).start()
+
     @staticmethod
     def served_recently(j, need_t, need_m, running, now, window):
         """A job is not starved while jobs at least as big keep starting here: room that frees up goes to jobs of its
@@ -1367,6 +1387,7 @@ class Scheduler:
         try:
             from . import remote as RM
             rms = RM.remotes()
+            self.refresh_servers(RM, rms, now)
         except Exception:
             rms = {}
         protect = None                    # (job, need_t, need_m): room kept free for a job that waited too long

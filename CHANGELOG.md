@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.27.0 — 2026-11-28
+- **Server jobs reserve what jobs like them really used** (right_size). In 7 days server jobs reserved 611
+  core-hours and used 175 (29 %): AI sessions kept asking for 4 cores for jobs that use one (k89: 92 jobs, 0.95
+  cores), although the hint was shown at every start. With max_cores = 72 that let 18 jobs run instead of ~50. Now,
+  when at least 5 jobs of the same family ran there with room to spare, the job reserves what 9 of 10 of them stayed
+  under. Only cores are lowered, never memory (too little memory ends a job; too few cores only slows it). The job
+  log says so; `ms q add --exact-cores` keeps the request; `right_size = no` in remotes.conf turns it off. Jobs whose
+  reservation capped them are not used as evidence, so a family that needs more gets its full request again.
+- The server's free-CPU reading is refreshed in the background every 10 minutes. It was only read when a job could
+  go there, so `ms ai status` showed a reading 193 hours old.
+- A failed job's reason no longer quotes a success line ("exit code 1 — PASS: all inputs unpacked … and verified").
+
 ## 1.26.3 — 2026-11-22
 Found by a Claude session working on MCGEMMA:
 - The guard blocked `python3 hardware/repro/evidence.py pre …/optbuild.sh` as "optbuild.sh starts Vivado/ISE": a

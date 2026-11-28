@@ -74,7 +74,7 @@ DEFAULTS = {"type": "slurm", "ssh": "", "head": "", "account": "", "partition": 
             "exclude": ".git .Xil *.jou *.backup.log", "offload": "never", "offload_after_min": "30", "tools": "",
             "missing_tools": "", "links": "", "setup": "", "path_map": "", "map_job_dir": "yes",
             "max_download_gb": "20", "results_exclude": "",
-            "slurm_mem": "auto"}
+            "slurm_mem": "auto", "right_size": "yes"}
 GiB = 2**30
 
 
@@ -778,6 +778,11 @@ def run_job(jid):
                 ssh(r, f"rm -rf {shlex.quote(rdir)}", 120)
             return 130
         r["_slurm_mem"] = mem_supported(r)
+        fit, note = right_size(r, j)
+        if fit:
+            j["slurm_cores"] = fit
+            queue.update(jid, slurm_cores=fit)
+            say(note)
         script = job_script(r, j, rdir)
         # one attempt only: a second sbatch after a lost answer could start the job twice
         rc, out, err = ssh(r, f"cat > {shlex.quote(rdir)}/job.sh && cd {shlex.quote(rdir)} && sbatch --parsable job.sh", 120,
@@ -1003,8 +1008,36 @@ def cores_there(name, jobs):
 
 
 def slurm_cores(j):
-    """Whole cores Slurm reserves for a job (--cpus-per-task): 0.5 -> 1, 2.4 -> 2."""
+    """Whole cores Slurm reserves for a job (--cpus-per-task): 0.5 -> 1, 2.4 -> 2; fewer when right_size lowered it."""
+    if j.get("slurm_cores"):
+        return int(j["slurm_cores"])
     return max(1, int(round(float(j.get("cores") or 1))))
+
+
+def right_size(r, j, jobs=None):
+    """(cores, note) to reserve on the server instead of what the job asked for, or (None, None).
+    Jobs of the same family that ran there with room to spare (they used under 80 % of their reservation, so the
+    reservation did not cap them) and used far less: 9 of 10 stayed under N cores -> reserve N. Only cores, never
+    memory (too little memory ends a job; too few cores only slows it). remotes.conf: right_size = no turns it off."""
+    if str(r.get("right_size", "yes")).lower() in ("no", "false", "0", "off") or j.get("exact_cores"):
+        return None, None
+    asked = max(1, int(round(float(j.get("cores") or 1))))
+    if asked <= 1:
+        return None, None
+    try:
+        u = usage_summary(7, jobs)
+    except Exception:
+        return None, None
+    fam = family(j.get("name"))
+    ok = [x for x in u["groups"] if x["family"] == fam and x["n"] >= 5 and x["used_hi"] <= x["cores"] * 0.8]
+    if not ok:
+        return None, None
+    g = max(ok, key=lambda x: x["n"])
+    want = max(1, int(g["used_hi"] + 0.7))
+    if want >= asked:
+        return None, None
+    return want, (f"reserving {want} of the {asked} cores asked for: {g['n']} jobs like '{fam}…' used "
+                  f"{g['used']:.1f} on average, 9 of 10 under {g['used_hi']:.1f} (right_size; --exact-cores keeps {asked})")
 
 
 def full(name, r, j, jobs):

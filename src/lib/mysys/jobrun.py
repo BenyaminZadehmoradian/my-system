@@ -84,13 +84,17 @@ WHY = re.compile(r"\b(fail(ed|ure)?|error|fatal|missing|not found|no such file|c
                  r"traceback|exception|abort(ed)?|invalid|undefined)\b", re.I)
 
 
+OKLINE = re.compile(r"^\s*(PASS|OK|DONE|SUCCESS)\b|\b(passed|verified|succeeded|completed successfully)\b|\b0 errors?\b", re.I)
+
+
 def said_why(text, last_line="", tail=15):
     """The line of a failed job's last output that says why: the last one that looks like an error, else the last."""
     lines = [x.strip() for x in (text or "").splitlines()[-tail:] if x.strip() and not x.lstrip().startswith(("::ms", "=== ", "[remote]", "[queue]"))]
     for x in reversed(lines):
-        if WHY.search(x):
+        if WHY.search(x) and not OKLINE.search(x):
             return x[:160]
-    return (last_line or (lines[-1] if lines else "")).strip()[:160]
+    last = (last_line or (lines[-1] if lines else "")).strip()
+    return "" if OKLINE.search(last) else last[:160]       # "PASS: all inputs verified" is not why it failed
 
 
 class Runner:

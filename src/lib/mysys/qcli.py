@@ -210,7 +210,8 @@ ADD_SIMPLE = {"--name": "name", "--mem": "mem_gb", "--cores": "cores", "--priori
 ADD_LIST = {"--require": "require", "--follow": "follow", "--outputs": "outputs", "--inputs": "inputs",
             "--warn-pattern": "warn_patterns", "--secret": "secrets", "--junit": "junit", "--label": "labels"}
 ADD_FLAG = {"--no-limit": ("limit_memory", False), "--when-idle": ("when_idle", True), "--preempt": ("preempt", True),
-            "--protect": ("protect", True), "--stdin": ("stdin", True)}
+            "--protect": ("protect", True), "--stdin": ("stdin", True),
+            "--exact-cores": ("exact_cores", True)}       # on a server: reserve exactly --cores (no right_size)
 
 
 def parse_add(a):
