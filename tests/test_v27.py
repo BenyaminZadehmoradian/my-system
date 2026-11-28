@@ -65,6 +65,7 @@ assert jobrun.said_why("x\nPASS: all inputs unpacked to data/unpacked/ and verif
 assert jobrun.said_why("ERROR: HDLCompiler:1654 bad\nPASS: all inputs verified\n").startswith("ERROR: HDLCompiler")
 assert jobrun.said_why("make: *** [all] Error 2\n") == "make: *** [all] Error 2"
 assert jobrun.said_why("starting\nsegfault at 0x0\n") == "segfault at 0x0"
+assert jobrun.said_why("PASS: inputs verified\n::ms metric x 0\n::ms error sim rc=1 gema_match=false\n") == "sim rc=1 gema_match=false"
 d = os.path.join(W, "pz"); os.makedirs(d)
 k = queue.submit("echo 'PASS: all inputs verified'; exit 1", cwd=d, name="pz", **small)
 assert until(lambda: st(k["id"]) in queue.TERMINAL, 30)

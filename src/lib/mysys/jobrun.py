@@ -89,7 +89,12 @@ OKLINE = re.compile(r"^\s*(PASS|OK|DONE|SUCCESS)\b|\b(passed|verified|succeeded|
 
 def said_why(text, last_line="", tail=15):
     """The line of a failed job's last output that says why: the last one that looks like an error, else the last."""
-    lines = [x.strip() for x in (text or "").splitlines()[-tail:] if x.strip() and not x.lstrip().startswith(("::ms", "=== ", "[remote]", "[queue]"))]
+    raw = (text or "").splitlines()
+    for x in reversed(raw[-200:]):                 # the job said it itself: ::ms error TEXT
+        m = re.match(r"^\s*::ms\s+error\s+(.+)$", x)
+        if m:
+            return m.group(1).strip()[:160]
+    lines = [x.strip() for x in raw[-tail:] if x.strip() and not x.lstrip().startswith(("::ms", "=== ", "[remote]", "[queue]"))]
     for x in reversed(lines):
         if WHY.search(x) and not OKLINE.search(x):
             return x[:160]

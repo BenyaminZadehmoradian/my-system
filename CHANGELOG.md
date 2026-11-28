@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.27.1 — 2026-11-28
+- A failed job's reason is the job's own `::ms error TEXT` line when it printed one ("exit code 1 — sim rc=1
+  gema_match=false clocks=none"), before any guess from its last output lines.
+
 ## 1.27.0 — 2026-11-28
 - **Server jobs reserve what jobs like them really used** (right_size). In 7 days server jobs reserved 611
   core-hours and used 175 (29 %): AI sessions kept asking for 4 cores for jobs that use one (k89: 92 jobs, 0.95
