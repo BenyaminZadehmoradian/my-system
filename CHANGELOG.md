@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.28.1 — 2026-11-28
+- `ms remote tools` explains when ISE is on the server's head node but not where the jobs run (the nodes see
+  another folder through `links`), and how to move it.
+
 ## 1.28.0 — 2026-11-28
 - **ISE on the server.** `ms remote tools NAME` now also looks for ISE 14.x under the path_map targets
   (`/opt/Xilinx/14.7 => ~/me/xilinx/14.7`), loads its settings64.sh and synthesises a tiny design with XST

@@ -1804,8 +1804,21 @@ def tools_check(name, out=print):
         if ise_ok:
             out("       jobs of ISE-only projects may be sent there now")
     else:
-        out("  ..  ISE: not found on the server (no ISE_DS/settings64.sh under the path_map targets); "
-            "ISE jobs run here")
+        # where is it then? On the head node only (the nodes see another folder, e.g. through `links`)?
+        rc2, head, _ = ssh(r, f'for d in {ise_dirs(r)}; do [ -f "$d/ISE_DS/settings64.sh" ] && '
+                              f'echo "$d $(readlink -f "$d")"; done; true', 60)
+        found = [l.split() for l in (head or "").splitlines() if l.strip()]
+        if found:
+            real = found[0][-1]
+            links = [f"{a} -> {b}" for a, b in parse_links(r)]
+            step(False, "ISE is where the jobs run", f"it is on the head node ({real}), but the compute nodes do not see it",
+                 "the nodes get another folder there" + (f" through links ({'; '.join(links)})" if links else "")
+                 + ":\nput the copy into the folder the nodes use (for a link: its target), e.g.\n"
+                 + (f"ssh {r['ssh']} 'mv {real} {parse_links(r)[0][1]}/'  — then ms remote tools {name} again"
+                    if links else "the shared storage the nodes mount"))
+        else:
+            out("  ..  ISE: not found on the server (no ISE_DS/settings64.sh under the path_map targets); "
+                "ISE jobs run here")
     nl = unlicensed(r)
     if nl:
         out(f"  ..  no license there (seen in failed jobs) for: {' '.join(sorted(nl))} — jobs for them run here")
