@@ -229,3 +229,17 @@ by `C.UTF-8` on the node when it does not exist there (Vivado aborts on an unkno
 - Only your own jobs: `scancel --account=benyamin ID`, `ms remote clean` removes only my-system's job folders.
 - AI assistants cannot ssh/scp/sbatch to the server (guard); they submit through the queue.
 - Nothing secret travels: `--secret` jobs are never sent.
+
+
+## ISE 14.7 on the server
+
+ISE is not installed on most clusters. Copy your installation into your own folder there, then let my-system test it:
+
+1. `rsync -a --partial /opt/Xilinx/14.7/ titan:benyamin/xilinx/14.7/` (about 21 GB).
+2. ISE's `settings64.sh` files contain the path they were installed to; point them to the copy (on the server,
+   only in your copy).
+3. A license with `HOSTID=ANY` works on every node. Put it in your folder and name it in your copy's
+   `ISE_DS/settings64.sh` (`export XILINXD_LICENSE_FILE=…`), not in the shared `~/.Xilinx`.
+4. Add `/opt/Xilinx/14.7 => ~/benyamin/xilinx/14.7` to `path_map` in remotes.conf (`ms unlock` … `ms lock`).
+5. `ms remote tools titan`: it must report "ISE synthesises a test design". From then on, jobs of projects that
+   may only use ISE are sent there too.

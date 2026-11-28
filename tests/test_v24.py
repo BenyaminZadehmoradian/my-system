@@ -60,7 +60,7 @@ assert remote.server_has_ise("titan") is None and remote.why_not(mk("bash go.sh"
 probe.write_text("T tool.vivado=/x/2025.2.1/Vivado/bin/vivado\n")
 assert "ISE 14.7" in remote.why_not(mk("bash go.sh", ise), r, scan=False)
 assert remote.why_not(mk("bash go.sh", other), r, scan=False) is None
-probe.write_text("T settings=/opt/Xilinx/14.7/ISE_DS/settings64.sh\n")
+probe.write_text("T ise_settings=/x/14.7/ISE_DS/settings64.sh\nT tool.xtclsh=/x/bin/xtclsh\nT rc.xst=0\n")
 assert remote.server_has_ise("titan") is True and remote.why_not(mk("bash go.sh", ise), r, scan=False) is None
 w = remote.why_not(mk("bash ../optbuild.sh m_r8 7", ise), r, scan=False)
 assert w and "outside its folder: ../optbuild.sh" in w, w

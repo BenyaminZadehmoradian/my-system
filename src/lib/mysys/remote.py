@@ -1190,7 +1190,7 @@ def server_has_ise(name):
         txt = (STATE / f"{name}-tools.txt").read_text(errors="replace")
     except OSError:
         return None
-    return bool(re.search(r"/14\.\d/ISE_DS|ISE_DS/settings|tool\.xtclsh=/", txt))
+    return "T rc.xst=0" in txt and "T tool.xtclsh=/" in txt
 
 
 def ise_only(j):
@@ -1642,6 +1642,7 @@ run() {  # NAME CMD...: run with a time limit, show the first lines and the exit
   printf '%s\n' "$o" | grep -v '^\s*$' | head -6 | sed "s/^/V $n| /"
   echo "T rc.$n=$rc"
 }
+#ISE#
 run vivado vivado -version
 run vitis-run vitis-run --version
 run v++ v++ --version
@@ -1649,6 +1650,36 @@ run vitis_hls vitis_hls -version
 run xelab xelab -version
 echo probe=done > probe.txt
 """
+
+
+ISE_PROBE = r"""
+for d in %s; do                        # ISE 14.x where path_map puts it: load it and synthesise a tiny design
+  s="$d/ISE_DS/settings64.sh"; [ -f "$s" ] || continue
+  echo "T ise_settings=$s"
+  mkdir -p tooltest/ise && ( cd tooltest/ise && . "$s" >/dev/null 2>&1
+    echo "T ise_license=${XILINXD_LICENSE_FILE:-unset}"
+    p=$(command -v xtclsh 2>/dev/null); echo "T tool.xtclsh=${p:-none}"; [ -n "$p" ] || exit 0
+    printf 'module top(input clk, input d, output reg q); always @(posedge clk) q <= d; endmodule\n' > top.v
+    printf 'verilog work top.v\n' > top.prj
+    printf 'run -ifn top.prj -ifmt mixed -top top -p xc6slx9-2-tqg144 -ofn top.ngc\n' > top.xst
+    o=$(timeout 600 xst -ifn top.xst 2>&1 < /dev/null); rc=$?
+    [ -f top.ngc ] || [ $rc -ne 0 ] || rc=1
+    printf '%%s\n' "$o" | grep -E "ERROR|WARNING:Security|License|Release" | head -6 | sed 's/^/V xst| /'
+    echo "T rc.xst=$rc" )
+  break
+done
+"""
+
+
+def ise_dirs(r):
+    """Where ISE may be on the server: every path_map target and its parent (… => ~/me/xilinx/14.7)."""
+    out = []
+    for _, b in parse_path_map(r):
+        b = "$HOME/" + b[2:] if b.startswith("~/") else b
+        for x in (b, b.rsplit("/", 1)[0]):
+            if x and x not in out:
+                out.append(x)
+    return " ".join(f'"{x}"' for x in out) or '""'
 
 
 def _parse_probe(log):
@@ -1683,7 +1714,8 @@ def tools_check(name, out=print):
         out(f"  ..  link on each node: {a} -> {b}")
     out("  ..  sending a test job that starts the AMD tools on a node (a few minutes; Vivado is slow to start "
         "from a network share) …")
-    rc, log, d = _probe_job(r, TOOLS_PROBE, "remote_tools_check", cores=2, mem_gb=4, timeout_s=3600)
+    rc, log, d = _probe_job(r, TOOLS_PROBE.replace("#ISE#", ISE_PROBE % ise_dirs(r)), "remote_tools_check",
+                            cores=2, mem_gb=4, timeout_s=3600)
     facts, vers = _parse_probe(log)
     (STATE / f"{r['name']}-tools.txt").write_text(log)
     for line in log.splitlines():                 # what the job script itself reported (links, translations)
@@ -1763,6 +1795,17 @@ def tools_check(name, out=print):
         save_devices(r["name"], devs)
     elif have["vivado"]:
         out("  ..  could not ask Vivado for its installed devices")
+    if facts.get("ise_settings"):
+        ise_ok = facts.get("rc.xst") == "0"
+        step(ise_ok, "ISE synthesises a test design (XST, xc6slx9)", facts["ise_settings"] if ise_ok else
+             f"exit {facts.get('rc.xst', '?')}: " + " / ".join(vers.get("xst", [])[-3:]),
+             "" if ise_ok else "check the license (ise_license=" + facts.get("ise_license", "?") + ") and that\n"
+             "the paths inside ISE_DS/settings64.sh point to the copy on the server")
+        if ise_ok:
+            out("       jobs of ISE-only projects may be sent there now")
+    else:
+        out("  ..  ISE: not found on the server (no ISE_DS/settings64.sh under the path_map targets); "
+            "ISE jobs run here")
     nl = unlicensed(r)
     if nl:
         out(f"  ..  no license there (seen in failed jobs) for: {' '.join(sorted(nl))} — jobs for them run here")

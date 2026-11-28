@@ -75,6 +75,39 @@ print("WHY-OK")
     assert "WHY-OK" in out, out
 
 
+def test_ise_probe_on_the_server():
+    """The probe finds ISE under a path_map target, loads it and synthesises; server_has_ise reads the result."""
+    import subprocess, tempfile, os
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "lib"))
+    from mysys import remote
+    t = Path(tempfile.mkdtemp())
+    ise = t / "xilinx" / "14.7"
+    (ise / "ISE_DS" / "bin").mkdir(parents=True)
+    (ise / "ISE_DS" / "settings64.sh").write_text(f'export PATH="{ise}/ISE_DS/bin:$PATH"; export XILINXD_LICENSE_FILE=/lic/x.lic\n')
+    (ise / "ISE_DS" / "bin" / "xtclsh").write_text("#!/bin/sh\necho ok\n")
+    (ise / "ISE_DS" / "bin" / "xst").write_text("#!/bin/sh\necho 'Release 14.7 - xst'; touch top.ngc\n")
+    for f in ("xtclsh", "xst"):
+        os.chmod(ise / "ISE_DS" / "bin" / f, 0o755)
+    r = dict(remote.DEFAULTS, name="t", path_map=f"/opt/Xilinx/14.7 => {ise}")
+    assert f'"{ise}"' in remote.ise_dirs(r) and '"$HOME/a/b"' in remote.ise_dirs(dict(r, path_map="/opt/a/b => ~/a/b"))
+    out = subprocess.run(["bash", "-c", remote.ISE_PROBE % remote.ise_dirs(r)], cwd=t, capture_output=True, text=True).stdout
+    assert f"T ise_settings={ise}/ISE_DS/settings64.sh" in out and "T rc.xst=0" in out and "T tool.xtclsh=/" in out, out
+    assert "T ise_license=/lic/x.lic" in out and "V xst| Release 14.7" in out, out
+    (ise / "ISE_DS" / "bin" / "xst").write_text("#!/bin/sh\necho 'ERROR:Xst - no license'; exit 2\n")
+    out2 = subprocess.run(["bash", "-c", remote.ISE_PROBE % remote.ise_dirs(r)], cwd=t, capture_output=True, text=True).stdout
+    assert "T rc.xst=2" in out2 and "V xst| ERROR:Xst" in out2, out2
+    old = remote.STATE
+    remote.STATE = t
+    try:
+        (t / "t-tools.txt").write_text(out)
+        assert remote.server_has_ise("t") is True
+        (t / "t-tools.txt").write_text(out2)
+        assert remote.server_has_ise("t") is False
+    finally:
+        remote.STATE = old
+    assert "#ISE#" in remote.TOOLS_PROBE
+
+
 if __name__ == "__main__":
     t0 = time.time()
     for k, fn in list(globals().items()):

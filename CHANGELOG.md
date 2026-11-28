@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.28.0 — 2026-11-28
+- **ISE on the server.** `ms remote tools NAME` now also looks for ISE 14.x under the path_map targets
+  (`/opt/Xilinx/14.7 => ~/me/xilinx/14.7`), loads its settings64.sh and synthesises a tiny design with XST
+  (xc6slx9). Only when that works are jobs of ISE-only projects sent there; until then they run here as before.
+  The check reports the license file the job sees and what failed. See docs/remote-servers.md, "ISE".
+
 ## 1.27.1 — 2026-11-28
 - A failed job's reason is the job's own `::ms error TEXT` line when it printed one ("exit code 1 — sim rc=1
   gema_match=false clocks=none"), before any guess from its last output lines.
